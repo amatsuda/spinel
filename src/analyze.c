@@ -18283,6 +18283,7 @@ void analyze_program(Compiler *c) {
   desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
   desugar_extended_module_attrs(c);
   desugar_const_attr_op_assign(c);       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
+  desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M) in a body -> extend M */
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */

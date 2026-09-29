@@ -359,6 +359,7 @@ int desugar_bare_object_reopen_calls(Compiler *c);
 int desugar_match_predicate(Compiler *c);
 int desugar_masgn_store_evidence(Compiler *c);
 int desugar_const_attr_op_assign(Compiler *c);
+int desugar_singleton_class_mixin(Compiler *c);
 int desugar_singleton_attr(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
 int desugar_method_curry(Compiler *c);
