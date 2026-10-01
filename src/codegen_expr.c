@@ -1967,20 +1967,24 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int v = nt_ref(nt, id, "value");
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
     TyKind t = lv ? lv->type : TY_UNKNOWN;
-    const char *en = rename_local(nm);
-    char lhs[300]; snprintf(lhs, sizeof lhs, "lv_%s", en);
+    /* the slot as this scope reaches it: a proc that captured it, or a
+       cell, holds it elsewhere than the method's `lv_` local, which a
+       proc body does not have */
+    char lhs[300];
+    { Buf lb; memset(&lb, 0, sizeof lb); emit_local_ref(c, id, nm, &lb);
+      snprintf(lhs, sizeof lhs, "%s", lb.p ? lb.p : ""); free(lb.p); }
     char cond[400];
     if (t == TY_POLY) {
-      snprintf(cond, sizeof cond, "%ssp_poly_truthy(lv_%s)", is_or ? "!" : "", en);
+      snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
       emit_orw_guard(c, v, 1, cond, lhs, 1, 0, b);
     }
     else if (t == TY_BOOL) {
-      snprintf(cond, sizeof cond, "%slv_%s", is_or ? "!" : "", en);
+      snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
       emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
     }
     else if (t == TY_SYMBOL) {
       /* nilable symbol: (sp_sym)-1 is the nil sentinel */
-      snprintf(cond, sizeof cond, "lv_%s %s= (sp_sym)-1", en, is_or ? "=" : "!");
+      snprintf(cond, sizeof cond, "%s %s= (sp_sym)-1", lhs, is_or ? "=" : "!");
       emit_orw_guard(c, v, 0, cond, lhs, 1, 0, b);
     }
     else if (!is_or) emit_orw_guard(c, v, 0, NULL, lhs, 1, 0, b);
@@ -2003,7 +2007,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_printf(b, " } %s; })", rb.p);
         free(apre.p); free(abody.p);
       }
-      else buf_printf(b, "lv_%s", en);
+      else buf_puts(b, lhs);
       free(nb.p); free(rb.p);
     }
     return;
