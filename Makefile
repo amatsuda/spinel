@@ -58,7 +58,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test incremental-test incremental-bench gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-callbacks-test bop-share-check-test share-spec-check bop-callbacks-check arity-spec-check value-edges-check value-edges-regen implied-calls-check implied-calls-regen implied-calls-test lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test incremental-test incremental-bench gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-callbacks-test bop-share-check-test share-spec-check bop-callbacks-check arity-spec-check value-edges-check value-edges-regen implied-calls-check implied-calls-regen implied-calls-test lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test reach-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -1541,7 +1541,7 @@ test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check implied-calls-check implied-calls-test node-kinds-check package-facts-check reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-none-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check implied-calls-check implied-calls-test node-kinds-check package-facts-check reject-test cli-opts-test link-names-test reach-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-none-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -1884,6 +1884,24 @@ cli-opts-test: $(SPINEL) $(SPINEL_TIMEOUT)
 # mrb_str_new, ... The regexp engine must not define those names. If it does,
 # the link fails (GNU ld), or the engine calls mruby's copy and crashes (ld64).
 # test/link-names/foreign_mrb.c defines the names and aborts if one is called.
+# A class nothing names keeps none of its methods (#10592): each program in
+# test/reach lists the functions its C must not mention (`# absent:`) and
+# the ones it must (`# present:`), and runs to its .expected.
+reach-test: $(SPINEL) $(SP_RT_LIB)
+	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reach.XXXXXX); \
+	for t in test/reach/*.rb; do \
+	  if ! $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/p.c" >"$$tmp/b.out" 2>&1; then \
+	    echo "reach-test: FAIL ($$t: no C)"; sed -n 1,5p "$$tmp/b.out"; ok=0; continue; fi; \
+	  for f in $$(sed -n 's/^# absent: //p' "$$t"); do \
+	    ! grep -qw "$$f" "$$tmp/p.c" || { echo "reach-test: FAIL ($$t: the C has $$f)"; ok=0; }; done; \
+	  for f in $$(sed -n 's/^# present: //p' "$$t"); do \
+	    grep -qw "$$f" "$$tmp/p.c" || { echo "reach-test: FAIL ($$t: the C lacks $$f)"; ok=0; }; done; \
+	  if $(SPINEL) "$$t" -o "$$tmp/p" >"$$tmp/b.out" 2>&1 && "$$tmp/p" >"$$tmp/r.out" 2>&1 && cmp -s "$$tmp/r.out" "$$t.expected"; then :; \
+	  else echo "reach-test: FAIL ($$t did not build or printed other output)"; sed -n 1,5p "$$tmp/b.out" "$$tmp/r.out"; ok=0; fi; \
+	done; \
+	rm -rf "$$tmp"; \
+	[ $$ok = 1 ] && echo "reach-test: pass" || exit 1
+
 link-names-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-linknames.XXXXXX); t=test/link-names/regexp_program.rb; \
 	for a in $(SP_RT_LIB) $(SP_RT_MT_LIB); do \
@@ -1904,6 +1922,14 @@ link-names-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
 
 reject-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reject.XXXXXX); \
+	for model in inline graph; do for overflow in plain promote; do \
+	  fl=; [ "$$overflow" = promote ] && fl=--int-overflow=promote; \
+	  if $(SPINEL) --load-model=$$model $$fl test/reject/const_parent_array_pattern.rb -c --no-line-map -o "$$tmp/pat.c" >"$$tmp/pat.out" 2>&1; then \
+	    echo "reject-test: FAIL (const_parent_array_pattern compiled)"; ok=0; \
+	  elif ! grep -qF "unsupported pattern sub-form inside a container pattern" "$$tmp/pat.out"; then \
+	    echo "reject-test: FAIL (const_parent_array_pattern refusal)"; cat "$$tmp/pat.out"; ok=0; \
+	  fi; \
+	done; done; \
 	for t in $(shell grep -l '^\# spinel: reject-self-mutation$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
@@ -4543,6 +4569,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  "$$tmp/ibin" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$f: the program does not run)"; ok=0; }; \
 	done; \
 	for flags in '' --share-strings; do \
+	  $(SPINEL) $$flags test/is_a_user_class_guard_narrows.rb -c --no-line-map -o "$$tmp/iug.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (is_a_user_class_guard_narrows: -c)"; ok=0; }; \
+	  grep -q 'sp_Int_tag((sp_Int \*)(sp_Int \*)sp_poly_unbox_cls(lv_x' "$$tmp/iug.c" || { echo "infer-test: FAIL (is_a?(Int) left a guarded call on a user class in boxed dispatch)"; ok=0; }; \
 	  $(SPINEL) $$flags test/object_method_ivar_receivers.rb -c --no-line-map -o "$$tmp/oir.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_method_ivar_receivers: -c)"; ok=0; }; \
 	  grep -q 'static sp_PointValue sp_PointValue_new(' "$$tmp/oir.c" && ! grep -q 'iv_unused;' "$$tmp/oir.c" || { echo "infer-test: FAIL (an Object setter changes unrelated layouts)"; ok=0; }; \
 	  $(SPINEL) $$flags test/hash_store_boxed_unbounded.rb -c --no-line-map -o "$$tmp/hbu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_store_boxed_unbounded: -c)"; ok=0; }; \
@@ -4578,6 +4606,15 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  [ "$$(grep -cE '^static inline sp_o?int sp_(count_to|first_square_over|halvings)\(sp_int lv_n\) \{' "$$tmp/lss.c")" = 3 ] || { echo "infer-test: FAIL (loop_stop_iteration_sources: count_to, first_square_over or halvings not found)"; ok=0; }; \
 	  [ "$$(awk '/^static inline sp_o?int sp_(count_to|first_square_over|halvings)\(sp_int lv_n\) \{/,/^\}/' "$$tmp/lss.c" | grep -c 'setjmp')" = 0 ] || { echo "infer-test: FAIL (a loop whose body cannot raise StopIteration opened a handler)"; ok=0; }; \
 	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lss.c")" = 7 ] || { echo "infer-test: FAIL (a loop whose body can raise StopIteration lost its handler)"; ok=0; }; \
+	  $(SPINEL) $$flags test/poly_each_struct_elsewhere.rb -c --no-line-map -o "$$tmp/pse.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_each_struct_elsewhere: -c)"; ok=0; }; \
+	  [ "$$(grep -cE '^static inline sp_o?int sp_(run|count)\(sp_RbVal lv_ops[^;]*\{$$' "$$tmp/pse.c")" = 2 ] || { echo "infer-test: FAIL (poly_each_struct_elsewhere: run or count not found)"; ok=0; }; \
+	  [ "$$(awk '/^static inline sp_o?int sp_(run|count)\(sp_RbVal lv_ops[^;]*\{$$/,/^\}/' "$$tmp/pse.c" | grep -c 'sp_proc_new')" = 0 ] || { echo "infer-test: FAIL (a block over a boxed Array became a proc because a Struct the receiver cannot hold has an each)"; ok=0; }; \
+	  $(SPINEL) $$flags test/poly_each_struct_reaches.rb -c --no-line-map -o "$$tmp/pesr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_each_struct_reaches: -c)"; ok=0; }; \
+	  [ "$$(awk '/ sp_show_all\(.*\) \{$$/,/^\}/' "$$tmp/pesr.c" | grep -c 'sp_proc_new')" -ge 1 ] || { echo "infer-test: FAIL (a block over a boxed value that may be a Struct lost its dispatch)"; ok=0; }; \
+	  $(SPINEL) $$flags test/poly_each_split_builtin_inline.rb -c --no-line-map -o "$$tmp/psb.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_each_split_builtin_inline: -c)"; ok=0; }; \
+	  [ "$$(grep -cE '^static inline sp_RbVal sp_(total|first_big)\(sp_RbVal lv_v\) \{$$' "$$tmp/psb.c")" = 2 ] || { echo "infer-test: FAIL (poly_each_split_builtin_inline: total or first_big not found)"; ok=0; }; \
+	  [ "$$(awk '/^static inline sp_RbVal sp_(total|first_big)\(sp_RbVal lv_v\) \{$$/,/^\}/' "$$tmp/psb.c" | grep -c 'sp_poly_iter_walk')" = 2 ] || { echo "infer-test: FAIL (a block over a boxed Array went only through the dispatch beside a class with its own each)"; ok=0; }; \
+	  [ "$$(awk '/^static [^;]*_proc_nest3_[0-9]+\(.*\) \{$$/,/^\}/' "$$tmp/psb.c" | grep -c 'sp_poly_iter_walk')" = 0 ] || { echo "infer-test: FAIL (a boxed each in a split's dispatch arm split again in the arm's proc)"; ok=0; }; \
 	  $(SPINEL) $$flags test/loop_stop_iteration_kept_blocks.rb -c --no-line-map -o "$$tmp/lsk.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_kept_blocks: -c)"; ok=0; }; \
 	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lsk.c")" = 4 ] || { echo "infer-test: FAIL (a kept block that may raise StopIteration left a loop without its handler)"; ok=0; }; \
 	  $(SPINEL) $$flags test/loop_stop_iteration_kept_yield.rb -c --no-line-map -o "$$tmp/lky.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_kept_yield: -c)"; ok=0; }; \
@@ -4611,6 +4648,14 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	done; \
 	$(SPINEL) test/poly_length_unbuilt_class.rb -c --no-line-map -o "$$tmp/plu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_length_unbuilt_class: -c)"; ok=0; }; \
 	grep -q 'sp_int sp_count(sp_RbVal lv_x) {' "$$tmp/plu.c" || { echo "infer-test: FAIL (a class nothing constructs widened a poly receiver's return)"; ok=0; }; \
+	$(SPINEL) test/builtin_class_const_call_skips_class_method.rb -c --no-line-map -o "$$tmp/bcs.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_class_const_call_skips_class_method: -c)"; ok=0; }; \
+	! grep -Eq 'sp_Registry_(basename|join|sqrt|note_name|note_root)' "$$tmp/bcs.c" || { echo "infer-test: FAIL (a call on a core class's constant kept a program class's method of the same name, and all it calls)"; ok=0; }; \
+	$(SPINEL) test/builtin_class_const_call_keeps_marking.rb -c --no-line-map -o "$$tmp/bck.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_class_const_call_keeps_marking: -c)"; ok=0; }; \
+	grep -q 'sp_Cell_s_new__m(' "$$tmp/bck.c" && grep -q 'sp_Cell_s_seed(' "$$tmp/bck.c" && grep -q 'sp_Array_s_zeros(' "$$tmp/bck.c" || { echo "infer-test: FAIL (a class value of no known class, or a reopened core class, lost the class method its call reaches)"; ok=0; }; \
+	$(SPINEL) test/builtin_numeric_operator_reaches_coerce.rb -c --no-line-map -o "$$tmp/bnc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_numeric_operator_reaches_coerce: -c)"; ok=0; }; \
+	grep -q 'sp_Meters__plus(' "$$tmp/bnc.c" && grep -q 'sp_Meters__minus(' "$$tmp/bnc.c" && grep -q 'sp_Meters__star(' "$$tmp/bnc.c" && grep -q 'sp_Meters__slash(' "$$tmp/bnc.c" && grep -q 'sp_Meters__star_star(' "$$tmp/bnc.c" || { echo "infer-test: FAIL (a Rational's operator with an operand that has coerce lost the operator coerce hands the call to)"; ok=0; }; \
+	$(SPINEL) test/builtin_value_kinds_skip_program_method.rb -c --no-line-map -o "$$tmp/bvk.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_value_kinds_skip_program_method: -c)"; ok=0; }; \
+	! grep -Eq 'sp_Probe_(helper_|freeze|source|to_a|year|numerator|real|pre_match)' "$$tmp/bvk.c" || { echo "infer-test: FAIL (a call on a Regexp, Range, Time, Rational, Complex or MatchData kept a program class's method of the same name, and all it calls)"; ok=0; }; \
 	$(SPINEL) test/byref_string_selective_volatile.rb -c --no-line-map -o "$$tmp/bsv.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (byref_string_selective_volatile: -c)"; ok=0; }; \
 	for m in rb_plain_append unrelated_begin; do \
 	  grep -q "sp_$$m($(STR_BYREF_S)) {" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an ordinary borrowed String gained volatile: $$m)"; ok=0; }; \
@@ -4869,6 +4914,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/defined_guard_and_quiet.rb -c -o "$$tmp/dgq.c" 2>&1 >/dev/null | grep -q 'defined nowhere' && { echo "infer-test: FAIL (a constant behind a false defined? guard on the left of && warned)"; ok=0; }; \
 	printf 'Here = 1\np(defined?(::Here) && ::Lost)\n' > "$$tmp/dgw.rb"; \
 	$(SPINEL) "$$tmp/dgw.rb" -c -o "$$tmp/dgw.c" 2>&1 >/dev/null | grep -q 'uninitialized constant Lost: defined nowhere' || { echo "infer-test: FAIL (a missing constant behind a true defined? guard stays warned)"; ok=0; }; \
+	$(SPINEL) test/infer/emit_rbs_prepend_shadow.rb --emit-rbs -o "$$tmp/eps.rbs" >/dev/null 2>&1 || { echo "infer-test: FAIL (--emit-rbs on emit_rbs_prepend_shadow)"; ok=0; }; \
+	[ "$$(grep -c 'def speak:' "$$tmp/eps.rbs")" = 2 ] && ! grep -q 'def __prep [0-9]' "$$tmp/eps.rbs" || { echo "infer-test: FAIL (--emit-rbs declared a prepend's hidden copy)"; ok=0; }; \
+	$(SPINEL) test/infer/emit_rbs_prepend_copy_name.rb --emit-rbs -o "$$tmp/epc.rbs" >/dev/null 2>&1 || { echo "infer-test: FAIL (--emit-rbs on emit_rbs_prepend_copy_name)"; ok=0; }; \
+	[ "$$(grep -c 'def speak:' "$$tmp/epc.rbs")" = 2 ] && grep -q 'def __prep 0 speak' "$$tmp/epc.rbs" && ! grep -q 'def __prep 1 speak' "$$tmp/epc.rbs" || { echo "infer-test: FAIL (--emit-rbs left out a method named like a prepend's hidden copy, or declared the copy)"; ok=0; }; \
 	$(SPINEL) test/infer/emit_types_fields.rb --warn-widen --emit-rbs -o "$$tmp/ww.rbs" 2>&1 >/dev/null | grep -q ': warning: parameter `o` of `dist2`' || { echo "infer-test: FAIL (--warn-widen warns under --emit-rbs too)"; ok=0; }; \
 	grep -q '^spinel: test/infer/emit_types_fields.rb:13:28: note: passed `pts\[0\]` is untyped' "$$tmp/ww.err" && grep -q '^spinel: test/infer/emit_types_fields.rb:12:7: note: from `\[Point.new(1, 2), Point.new(3, 4)\]` is Array\[untyped\] -- born here' "$$tmp/ww.err" || { echo "infer-test: FAIL (--warn-widen: why: an inherited poly is followed to the expression it was born at)"; cat "$$tmp/ww.err"; ok=0; }; \
 	grep -q '^spinel: test/infer/emit_types_fields.rb:15:7: note: passed `"s"` is String, where the slot was Integer (two kinds meet: untyped)' "$$tmp/ww.err" && grep -q '^spinel: test/infer/emit_types_fields.rb:14:7: note: and `1` is Integer' "$$tmp/ww.err" || { echo "infer-test: FAIL (--warn-widen: why: two kinds meeting name both call sites)"; cat "$$tmp/ww.err"; ok=0; }; \

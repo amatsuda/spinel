@@ -977,7 +977,7 @@ static int empty_array_poly_view(Compiler *c, int arg) {
 static int zip_hash_arm_builtin(Compiler *c) {
   static const char *const conv[] = { "to_ary", "method_missing" };
   static const char *const owners[] = { "Hash", "Enumerable", "Object", "Kernel", "BasicObject" };
-  int hc = comp_class_index(c, "Hash");
+  int hc = comp_core_class(c, CORE_HASH);
   if (hc >= 0 && comp_method_in_chain(c, hc, "each", NULL) >= 0) return 0;
   for (size_t q = 0; q < sizeof(conv) / sizeof(conv[0]); q++) {
     if (call_target(c, -1, -1, conv[q], CT_TOP, NULL) >= 0) return 0;
@@ -6681,7 +6681,7 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   if (!is_hash_merge_bang(name) || argc < 1 || !nt_call_args_plain(nt, id)) return 0;
   /* the receiver is a builtin Hash: only a reopening of Hash owns the name
      over it, not a program class of its own with a merge! */
-  int hc_ci = comp_class_index(c, "Hash");
+  int hc_ci = comp_core_class(c, CORE_HASH);
   if (hc_ci >= 0 && call_target(c, id, hc_ci, name, 0, NULL) >= 0) return 0;
   int bad = -1, boxed = 0;
   for (int i = 0; i < argc && bad < 0; i++) {
@@ -13956,8 +13956,8 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
        under ruby/spec's `$~.should`): leave it to the Object reopening
        dispatch, which boxes the receiver -- a nil $~ included -- instead of
        refusing it as a MatchData method this table lacks */
-    else if (comp_class_index(c, "Object") >= 0 &&
-             call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL) >= 0) {
+    else if (comp_core_class(c, CORE_OBJECT) >= 0 &&
+             call_target(c, id, comp_core_class(c, CORE_OBJECT), name, 0, NULL) >= 0) {
       free(rs.p);
       return 0;
     }
@@ -13985,6 +13985,14 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1) { buf_puts(b, "sp_IntArray_new()"); return TY_INT_ARRAY; }
+  /* a Rational step collects the boxed walk's values */
+  if (comp_ntype(c, recv) == TY_RANGE && an_range_step_rat(c, id, 0)) {
+    int ta = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
+    int tc = emit_range_rat_step_for(c, recv, argv[0], 1, b);
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d); _t%d; })", ta, tc, ta);
+    return TY_POLY_ARRAY;
+  }
   int rn = nt_paren_single(c->nt, recv);
   int is_lit = rn >= 0 && nt_kind(nt, rn) == NK_RangeNode;
   int lo = is_lit ? nt_ref(nt, rn, "left") : -1;
@@ -14966,13 +14974,34 @@ int emit_aset_recv_read(Compiler *c, int recv, Buf *b) {
 /* See codegen_internal.h. */
 void emit_recv_slot(Compiler *c, int recv, Buf *b) {
   int rv = nt_paren_single(c->nt, recv);
-  const char *rn = rv >= 0 && nt_kind(c->nt, rv) == NK_LocalVariableReadNode ? nt_str(c->nt, rv, "name") : NULL;
+  NodeKind rk = nt_kind(c->nt, rv);
+  const char *rn = rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ? nt_str(c->nt, rv, "name") : NULL;
   Scope *sc = rn ? comp_scope_of(c, rv) : NULL;
-  LocalVar *lv = sc ? scope_local(sc, rn) : NULL;
+  LocalVar *lv = sc && rk == NK_LocalVariableReadNode ? scope_local(sc, rn) : NULL;
   /* (a local whose slot is boxed: a typed local viewed as a box is not one) */
-  if (lv && arg_ran_first(rv, 0) && repr_of_slot(c, lv).kind == RK_BOXED)
+  if (lv && arg_ran_first(rv, 0) && repr_of_slot(c, lv).kind == RK_BOXED) {
     emit_local_ref(c, rv, rn, b);
-  else emit_expr(c, recv, b);
+    return;
+  }
+  /* An instance variable the same way: inside a class dispatch's builtin
+     arm the receiver reads as the dispatch's temp (bi_default_probe binds
+     it), and a store-back written to that temp -- a by-value parameter
+     once pd_hoist has moved the switch out of line -- never reached the
+     variable: `@left.insert(1, ",")` beside a class of its own `insert`
+     kept @left as it was. The variable's own slot is its read with the
+     binding out of sight; it names `self`, so the switch stays inline. */
+  int ivi = -1;
+  if (sc && rk == NK_InstanceVariableReadNode && sc->class_id >= 0 && arg_ran_first(rv, 0))
+    ivi = comp_ivar_index(&c->classes[sc->class_id], rn);
+  if (ivi >= 0 && repr_of_ivar(c, sc->class_id, ivi).kind == RK_BOXED) {
+    int masked[MAX_ARG_OVERRIDE], nm = 0;
+    for (int i = 0; i < g_n_argov && nm < MAX_ARG_OVERRIDE; i++)
+      if (g_argov_node[i] == rv) { masked[nm++] = i; g_argov_node[i] = -1; }
+    emit_expr(c, rv, b);
+    for (int k = 0; k < nm; k++) g_argov_node[masked[k]] = rv;
+    return;
+  }
+  emit_expr(c, recv, b);
 }
 /* The store for poly_aset_rebound: the receiver into a temp ahead of the
    key and the value, even of a prelude the key moves ahead of the statement
@@ -15885,10 +15914,12 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
   /* (one representation: the box's String is the answer, below) */
   int tbox = ++g_tmp;
   if (tbox) buf_printf(b, "sp_RbVal _t%d = ", tbox);
+  /* (the variable's own slot: inside a class dispatch's builtin arm the
+     receiver reads as the dispatch's temp, which is not the variable) */
   { NodeKind rvtb_k = nt_kind(nt, recv);
     if ((rvtb_k == NK_LocalVariableReadNode ||
                  rvtb_k == NK_InstanceVariableReadNode)) {
-      emit_expr(c, recv, b);
+      emit_recv_slot(c, recv, b);
       buf_printf(b, " = sp_poly_str_become(_t%d, _t%d); ", tvb, tnb);
     }
     else buf_printf(b, "sp_poly_str_become(_t%d, _t%d); ", tvb, tnb);
@@ -16399,7 +16430,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            this builtin arm is what a Bignum lands on: it raises, as it did
            before sp_poly_ord answered a Bignum, rather than answer the
            builtin value the program overrode. */
-        int ici = sp_streq(name, "ord") ? comp_class_index(c, "Integer") : -1;
+        int ici = sp_streq(name, "ord") ? comp_core_class(c, CORE_INTEGER) : -1;
         if (ici >= 0 && comp_method_in_class(c, ici, "ord") >= 0) {
           int tg = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", tg); emit_expr(c, recv, b);
@@ -19129,7 +19160,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "cycle") && nt_ref(nt, id, "block") < 0 &&
       ((argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) ||
        (argc == 0 && comp_ntype(c, id) == TY_ENUMERATOR))) {
-    int oci = comp_class_index(c, "Object");
+    int oci = comp_core_class(c, CORE_OBJECT);
     int has_user = oci >= 0 && call_target(c, id, oci, name, 0, NULL) >= 0;
     if (!g_poly_builtin_arm)
     for (int kk = 0; kk < c->nclasses && !has_user; kk++)

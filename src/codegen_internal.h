@@ -1824,17 +1824,18 @@ static inline const char *isa_match_name(const NodeTable *nt, int arg, char *buf
    (codegen_call_exception.c), or NULL for no constant */
 const char *isa_exc_class_name(Compiler *c, int arg, char *buf, size_t bufsz);
 const char *c_type_name(TyKind t);
-int is_scalar_ret(TyKind t);
 /* A constant whose slot has a presence flag, cst_NAME__set (LocalVar.const_early):
    every assignment sets it (emit_const_flag_set) and the reads that see
    whether the constant exists test it. */
-int const_has_flag(const LocalVar *lv);
 void emit_const_flag_set(const LocalVar *lv, const char *key, Buf *b, int indent);
 /* The test of a read of node id that raises NameError while the constant is
    unset, as a `(test, ...)` prefix around the read: open before it, close
    after. They emit nothing for a constant with no flag. */
-void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b);
-void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b);
+int emit_const_read_stmt(Compiler *c, int id, Buf *b, int indent);
+int emit_const_read_prefix(Compiler *c, int id, Buf *b);
+void emit_const_read_open(Compiler *c, int id, const LocalVar *lv, Buf *b);
+void emit_const_read_close(Compiler *c, int id, const LocalVar *lv, Buf *b);
+int emit_const_class_call_wrap(Compiler *c, int id, Buf *b, void (*emit)(Compiler *, int, Buf *));
 int emit_const_recv_wrap(Compiler *c, int id, Buf *b);
 int emit_const_recv_stmt_wrap(Compiler *c, int id, Buf *b, int indent, int tail);
 void emit_const_slot_read(Compiler *c, int id, const LocalVar *lv, const char *key, int slot, int own, Buf *b);
@@ -2065,6 +2066,8 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b);
 int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b);
 int emit_product_inspect_expr(Compiler *c, int id, Buf *b);
 int emit_step_array_expr(Compiler *c, int id, Buf *b);
+void emit_boxed_step_head(Buf *b, int tc, int tl, int ts, const char *excl, const char *open, const char *guard);
+int emit_range_rat_step_for(Compiler *c, int recv, int step, int materialize, Buf *b);
 int emit_inject_expr(Compiler *c, int id, Buf *b);
 int emit_reduce_block_expr(Compiler *c, int id, Buf *b);
 int emit_sortby_expr(Compiler *c, int id, Buf *b);
@@ -2083,6 +2086,11 @@ int emit_block_cond_next(Compiler *c, int block, int indent, Buf *out);
 int fold_body_has_next(Compiler *c, int node);  /* a `next` of the body's own, not a nested block's */
 int iter_step_needs_frame(Compiler *c, int block);
 int emit_iter_step_stmts(Compiler *c, int body, Buf *b, int indent, const char *sep);
+/* Drop a dispatch's builtin-arm reading (g_poly_builtin_arm) for a block
+   body emitted inside that arm, and restore it: a user class owns the
+   body's own calls' names there as anywhere. */
+int step_arm_begin(void);
+void step_arm_end(Compiler *c, int tok);
 void emit_iter_step_body(Compiler *c, int block, Buf *b, int indent);
 void emit_iter_loop_stmts(Compiler *c, int body, Buf *b, int indent);
 /* One step of a builtin iterator's block (emit_iter_step_open). */
@@ -2109,6 +2117,12 @@ void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int in
 int emit_table_row_params(Compiler *c, int block, TyKind rt, const char *row, Buf *out, int indent);
 int emit_tuple_block_params(Compiler *c, int id, int block, const char *tuple_src, Buf *out);
 int poly_block_call_needs_dispatch(Compiler *c, int id);
+/* Does this emission split a boxed receiver's `each { }` on the receiver's
+   kind (cplan_each_split, outside either of its arms)? (codegen_iter.c) */
+int each_split_applies(Compiler *c, int id);
+/* The condition the dispatch's enum-proc arm tests `_t<tv>` with: an Array,
+   Hash, Range, String Range or Enumerator (codegen_poly_plan.c) */
+void emit_penum_kind_test(Buf *b, int tv);
 void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 void emit_pool_fwd(Compiler *c, int cid);
 void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b);
@@ -2251,9 +2265,10 @@ int aset_recv_may_mutate(Compiler *c, int recv, int key, int val);
 /* The receiver of such a store, read into a rooted temp in g_pre, ahead of
    any prelude its key or value moves there (1); inline without g_pre (0). */
 int emit_aset_recv_read(Compiler *c, int recv, Buf *b);
-/* The slot a boxed receiver's store-back writes: under --share-strings the
-   variable itself for a local held in a temp (the call ran on the held
-   value), any other receiver as it is read. */
+/* The slot a boxed receiver's store-back writes: the variable itself for a
+   local or an instance variable held in a temp (the call ran on the held
+   value: an argument run first, a class dispatch's receiver), any other
+   receiver as it is read. */
 void emit_recv_slot(Compiler *c, int recv, Buf *b);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
@@ -2313,6 +2328,7 @@ int a_super_target(Compiler *c, Scope *m);
 int an_arg_is_shared_handle(Compiler *c, int node);
 int an_super_object_text(Compiler *c, int n, int mi);
 int an_user_defines_method(Compiler *c, const char *name);
+int an_enum_own_find_index(Compiler *c);
 int an_scopes_named_first(Compiler *c, const char *nm);
 int an_scopes_named_next(Compiler *c, const char *nm, int s);
 int block_given_tail_then_last(Compiler *c, int last);
@@ -2506,8 +2522,11 @@ int view_mark(void);
    view_unwind: the node whose dispatch declines its own re-entry (the
    method dispatch's g_pd_skip, the block dispatch's g_prbd_skip), and
    g_poly_builtin_arm, under which no user class owns a name. send_split
-   prevents a boxed send's class arm from splitting the same call again. */
-typedef struct { int pd_skip, prbd_skip, builtin_arm, send_split; } ArmCtx;
+   prevents a boxed send's class arm from splitting the same call again;
+   each_inline and each_dispatch name the call a boxed `each` split is
+   emitting the inline and the dispatch arm of (cplan_each_split), so
+   neither arm splits it again. */
+typedef struct { int pd_skip, prbd_skip, builtin_arm, send_split, each_inline, each_dispatch; } ArmCtx;
 extern ArmCtx g_arm;
 #define g_pd_skip (g_arm.pd_skip)
 #define g_prbd_skip (g_arm.prbd_skip)
@@ -2533,6 +2552,8 @@ int view_bind(int node, const char *fmt, ...) __attribute__((format(printf, 2, 3
 void view_unbind(int n);
 /* One representation flag of node id seen as v for one nested emission,
    restored by view_pop (or view_unwind on a refusal) like a type view. */
+int view_const_read_done(Compiler *c, int id);
+int view_push_const_read(Compiler *c, int id);
 enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW, VR_NIL_TESTED, VR_HEAD_HELD };
 int view_push_repr(Compiler *c, int id, int flag, int v);
 /* A splice's alias of a caller's variable that the call's block assigns

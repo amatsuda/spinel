@@ -79,6 +79,9 @@ extern int g_wrap_mode;
 void an_rat_boxed_mark(int id);
 int an_rat_boxed(int id);
 int an_rat_value(Compiler *c, int n);
+int an_rat_operand(Compiler *c, int n, int infer);
+int an_step_rat_bound(Compiler *c, int id, int infer);
+int an_range_step_rat(Compiler *c, int id, int infer);
 extern int g_exc_abort;   /* --exceptions=abort (src/main.c) */
 extern int g_gc_none;     /* --gc=none (src/main.c) */
 /* is a def's value (the Symbol it names) used? par: an_parent_map */
@@ -115,6 +118,10 @@ void an_nil_facts(Compiler *c);
    (analyze_const.c). Runs once the constants are registered, ahead of the
    folds that decide `defined?(K)`. */
 void an_const_presence(Compiler *c);
+int const_has_flag(const LocalVar *lv);
+LocalVar *an_const_read_effect(Compiler *c, int id);
+int an_const_read_keeps_class(Compiler *c, int id);
+int an_const_read_is_value(Compiler *c, int id);
 /* The program's files under --load-model=graph (analyze_program.c, #9898):
    their top-level scopes and roots, and what the model refuses for now. */
 void prog_file_scopes(Compiler *c);
@@ -767,7 +774,7 @@ TyKind block_next_value_ty(Compiler *c, int node);
    array). Excludes range-native methods (each/map/select/sum/min/count-no-arg). */
 int range_enum_redispatch(Compiler *c, int id);
 int hash_enum_redispatch(Compiler *c, int id);
-int an_reopen_owner(Compiler *c, int id, const char *cn);   /* a builtin class reopen's method of the call's name, or -1 */
+int an_reopen_owner(Compiler *c, int id, int cn);   /* a builtin class reopen's method of the call's name, or -1 */
 int range_lit_float_end(Compiler *c, int recv);   /* (1..5.5): the Float end node, else -1 */
 int range_lit_endless(Compiler *c, int recv);     /* (1..): an endless literal with a begin */
 int reduce_tail_from_acc(Compiler *c, int tail, const char *accp);

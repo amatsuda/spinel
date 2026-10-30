@@ -6404,7 +6404,7 @@ static SP_NOINLINE sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b) {
       if (!_sa) { if (a.tag != SP_TAG_STR) return FALSE; _sa = a.v.s; }
       if (!_sb) { if (b.tag != SP_TAG_STR) return FALSE; _sb = b.v.s; }
       return sp_str_eq(_sa, _sb);
-    } } if (sp_poly_is_brat(a) || sp_poly_is_brat(b)) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_poly_to_f(a) == sp_poly_to_f(b); int _oka = sp_poly_is_brat(a) || sp_poly_is_rational(a) || a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT; int _okb = sp_poly_is_brat(b) || sp_poly_is_rational(b) || b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT; return (_oka && _okb) ? (sp_brat_cmp_poly(a, b) == 0) : FALSE; } /* A boxed Rational against a number: sp_poly_numeric_p covers only int/float/bigint, so without this a Rational operand fell through to the tag-equality test below and `Rational(1,1) == 1` answered false (#3382). The BigRational clause above already covers the mixed big cases. */ if (sp_poly_is_rational(a) || sp_poly_is_rational(b)) { int _qa = sp_poly_is_rational(a) || sp_poly_numeric_p(a); int _qb = sp_poly_is_rational(b) || sp_poly_numeric_p(b); if (!(_qa && _qb)) return FALSE; if (sp_poly_is_rational(a) && sp_poly_is_rational(b) && a.v.p && b.v.p) return sp_rational_eq(*(sp_Rational *)a.v.p, *(sp_Rational *)b.v.p); /* a Rational and an Integer compare exactly: equal only when the Rational is whole and its numerator is the Integer. Two Floats lost the low bits, so (2**53)r was == 2**53 + 1 (CRuby false). */ if (sp_poly_is_rational(a) && a.v.p && b.tag == SP_TAG_INT) return ((sp_Rational *)a.v.p)->den == 1 && ((sp_Rational *)a.v.p)->num == b.v.i; if (sp_poly_is_rational(b) && b.v.p && a.tag == SP_TAG_INT) return ((sp_Rational *)b.v.p)->den == 1 && ((sp_Rational *)b.v.p)->num == a.v.i; return sp_poly_to_f(a) == sp_poly_to_f(b); } if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { /* against a Float, exactly (sp_bigint_eq_f): sp_poly_as_bigint below would
+    } } if (sp_poly_is_brat(a) || sp_poly_is_brat(b)) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_poly_to_f(a) == sp_poly_to_f(b); int _oka = sp_poly_is_brat(a) || sp_poly_is_rational(a) || a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT; int _okb = sp_poly_is_brat(b) || sp_poly_is_rational(b) || b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT; return (_oka && _okb) ? (sp_brat_cmp_poly(a, b) == 0) : FALSE; } /* A boxed Rational against a number: sp_poly_numeric_p covers only int/float/bigint, so without this a Rational operand fell through to the tag-equality test below and `Rational(1,1) == 1` answered false (#3382). The BigRational clause above already covers the mixed big cases. */ if (sp_poly_is_rational(a) || sp_poly_is_rational(b)) { int _qa = sp_poly_is_rational(a) || sp_poly_numeric_p(a); int _qb = sp_poly_is_rational(b) || sp_poly_numeric_p(b); if (!(_qa && _qb)) return FALSE; if (sp_poly_is_rational(a) && sp_poly_is_rational(b) && a.v.p && b.v.p) return sp_rational_eq(*(sp_Rational *)a.v.p, *(sp_Rational *)b.v.p); /* a Rational and an Integer compare exactly: equal only when the Rational is whole and its numerator is the Integer. Two Floats lost the low bits, so (2**53)r was == 2**53 + 1 (CRuby false). */ if (sp_poly_is_rational(a) && a.v.p && b.tag == SP_TAG_INT) return ((sp_Rational *)a.v.p)->den == 1 && ((sp_Rational *)a.v.p)->num == b.v.i; if (sp_poly_is_rational(b) && b.v.p && a.tag == SP_TAG_INT) return ((sp_Rational *)b.v.p)->den == 1 && ((sp_Rational *)b.v.p)->num == a.v.i; /* ... and a Bignum exactly too, through the big Rational compare: (2**63 - 1)r is not 2**63 */ if ((sp_poly_is_rational(a) && b.tag == SP_TAG_BIGINT) || (sp_poly_is_rational(b) && a.tag == SP_TAG_BIGINT)) { SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b); return sp_brat_cmp_poly(a, b) == 0; } return sp_poly_to_f(a) == sp_poly_to_f(b); } if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { /* against a Float, exactly (sp_bigint_eq_f): sp_poly_as_bigint below would
    truncate the Float into a bignum */ if (a.tag == SP_TAG_BIGINT && b.tag == SP_TAG_FLT) return sp_bigint_eq_f((sp_Bigint *)a.v.p, b.v.f); if (b.tag == SP_TAG_BIGINT && a.tag == SP_TAG_FLT) return sp_bigint_eq_f((sp_Bigint *)b.v.p, a.v.f); sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } /* Two integers compare AS INTEGERS. The numeric fallback below converts both to double, which above 2^53 is lossy: -3145750702635002333 and -3145750702635002395 land on the same double and compared equal, so a poly-slotted Integer `==` answered true for two different numbers. The fallback is for the MIXED int/float case and keeps it. */ if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i == b.v.i; if (a.tag == SP_TAG_INT && b.tag == SP_TAG_FLT) return sp_int_flt_cmp(a.v.i, b.v.f) == 0; if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_INT) return sp_int_flt_cmp(b.v.i, a.v.f) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return sp_str_eq(a.v.s, b.v.s);  /* (NULL-safe, and the same object answers at once) */ case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; return sp_poly_eq_deep(a, b); } if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id) && a.cls_id != b.cls_id) return sp_poly_eq_deep(a, b); if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); case SP_BUILTIN_TIME: { sp_Time *ta = (sp_Time*)a.v.p, *tb = (sp_Time*)b.v.p; /* two Times read out of containers compare by instant, not by box (#3699) */ return (ta && tb) ? (ta->tv_sec == tb->tv_sec && ta->tv_nsec == tb->tv_nsec) : (ta == tb); } case SP_BUILTIN_RATIONAL: { sp_Rational *ra = (sp_Rational*)a.v.p, *rb = (sp_Rational*)b.v.p; return (ra && rb) ? sp_rational_eq(*ra, *rb) : (ra == rb); } case SP_BUILTIN_TMS: { sp_Tms *ta = (sp_Tms*)a.v.p, *tb = (sp_Tms*)b.v.p; /* Process::Tms is a Struct: field-wise, like its other by-value siblings here */ return (ta && tb) ? (ta->utime == tb->utime && ta->stime == tb->stime && ta->cutime == tb->cutime && ta->cstime == tb->cstime) : (ta == tb); } /* the structural heap handles (Object's identity arm routes a poly operand here: emit_native_object_protocol) */ case SP_BUILTIN_RANDOM: return sp_Random_eq((sp_Random *)a.v.p, (sp_Random *)b.v.p); case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_eq((sp_OpenStruct*)a.v.p, (sp_OpenStruct*)b.v.p); case SP_BUILTIN_EXCEPTION: return sp_exc_eq((sp_Exception*)a.v.p, (sp_Exception*)b.v.p); case SP_BUILTIN_IO: return sp_io_eq((sp_File*)a.v.p, (sp_File*)b.v.p); case SP_BUILTIN_COMPLEX: { sp_Complex *ca = (sp_Complex*)a.v.p, *cb = (sp_Complex*)b.v.p; return (ca && cb) ? (ca->re == cb->re && ca->im == cb->im) : (ca == cb); } case SP_BUILTIN_BIG_RATIONAL: { sp_BigRational *ra = (sp_BigRational*)a.v.p, *rb = (sp_BigRational*)b.v.p; return (ra && rb) ? (sp_bigint_cmp(ra->num, rb->num) == 0 && sp_bigint_cmp(ra->den, rb->den) == 0) : (ra == rb); } /* boxed hashes of the same variant compare by value like every other
      container -- the arm was simply missing, so [h] == [h-literal] was
      pointer identity and always false. */ case SP_BUILTIN_STR_INT_HASH: return sp_StrIntHash_eq((sp_StrIntHash*)a.v.p,(sp_StrIntHash*)b.v.p); case SP_BUILTIN_STR_STR_HASH: return sp_StrStrHash_eq((sp_StrStrHash*)a.v.p,(sp_StrStrHash*)b.v.p); case SP_BUILTIN_INT_STR_HASH: return sp_IntStrHash_eq((sp_IntStrHash*)a.v.p,(sp_IntStrHash*)b.v.p); case SP_BUILTIN_INT_INT_HASH: return sp_IntIntHash_eq((sp_IntIntHash*)a.v.p,(sp_IntIntHash*)b.v.p); case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH: return sp_poly_eq_deep(a, b); case SP_BUILTIN_RANGE: return sp_range_eq(*(sp_Range*)a.v.p,*(sp_Range*)b.v.p); case SP_BUILTIN_FLOAT_RANGE: { sp_FloatRange *fa=(sp_FloatRange*)a.v.p,*fb=(sp_FloatRange*)b.v.p; return (fa&&fb)?(fa->first==fb->first&&fa->last==fb->last&&fa->excl==fb->excl):(fa==fb); } case SP_BUILTIN_STR_RANGE: { sp_StrRange *sa=(sp_StrRange*)a.v.p,*sb=(sp_StrRange*)b.v.p; if(!sa||!sb)return sa==sb; return sp_srange_eq(*sa,*sb); } default: if (sp_obj_eq_hook) return sp_poly_eq_deep(a, b); /* a user exception subclass boxes under its own class id; with no hook installed nothing overrides its Exception#== */ return sp_is_exc_subclass_cls(a.cls_id) ? sp_exc_eq((sp_Exception*)a.v.p, (sp_Exception*)b.v.p) : FALSE; } case SP_TAG_CLASS: { const char *an = sp_class_val_name(a), *bn = sp_class_val_name(b); return (an && bn) ? strcmp(an, bn) == 0 : an == bn; } default: return FALSE; } }
@@ -12086,7 +12086,7 @@ static SP_NOINLINE sp_int sp_poly_for_next(const sp_Range *r, sp_PolyArray *a, s
   }
   return a->len > 0 ? 0 : -1;
 }
-static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
+static SP_NOINLINE sp_int sp_poly_arr_len_ex_slow(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
   if (sp_enum_is_walker(a)) return sp_enum_walk_len(a);
   /* a finite materialized Enumerator is its items: read as none, any?, all?,
@@ -12106,7 +12106,7 @@ static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
 /* sp_poly_each_elem: return the i-th element for sequential each-iteration.
    For arrays: element at index i. For hashes: the i-th insertion-order
    key-value pair as a 2-element PolyArray so |k, v| block splat works. */
-static sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
+static SP_NOINLINE sp_RbVal sp_poly_each_elem_slow(sp_RbVal a, sp_int i) {
   SP_GC_ROOT_RBVAL(a);   /* the boxing arms below allocate */
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
   if (sp_enum_is_walker(a)) return sp_enum_walk_at(a, i);
@@ -12170,6 +12170,29 @@ static sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
       return sp_box_poly_array(pair); }
     default: return sp_box_nil();
   }
+}
+/* A boxed walk's loop (sp_poly_arr_len_ex, sp_poly_each_elem) reads its
+   length and element once per step. An Array of a common kind answers here,
+   inline at the loop, before the Enumerator, Range and Hash cases the
+   functions above sort out; an Array is none of those. */
+static inline sp_int sp_poly_arr_len_ex(sp_RbVal a) {
+  if (a.tag == SP_TAG_OBJ && a.v.p) {
+    if (a.cls_id == SP_BUILTIN_POLY_ARRAY) return ((sp_PolyArray *)a.v.p)->len;
+    if (a.cls_id == SP_BUILTIN_INT_ARRAY) return ((sp_IntArray *)a.v.p)->len;
+    if (a.cls_id == SP_BUILTIN_FLT_ARRAY) return ((sp_FloatArray *)a.v.p)->len;
+  }
+  return sp_poly_arr_len_ex_slow(a);
+}
+static inline sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
+  if (a.tag == SP_TAG_OBJ && a.v.p) {
+    if (a.cls_id == SP_BUILTIN_POLY_ARRAY) {
+      sp_PolyArray *ar = (sp_PolyArray *)a.v.p;
+      return i >= 0 && i < ar->len ? ar->data[i] : sp_box_nil();
+    }
+    if (a.cls_id == SP_BUILTIN_INT_ARRAY) return sp_IntArray_box_elem((sp_IntArray *)a.v.p, i);
+    if (a.cls_id == SP_BUILTIN_FLT_ARRAY) return sp_FloatArray_box_elem((sp_FloatArray *)a.v.p, i);
+  }
+  return sp_poly_each_elem_slow(a, i);
 }
 /* Array#zip with no arguments: each element alone in a one-element array
    ([1, 2].zip -> [[1], [2]]), the degenerate case of zipping nothing (#3612). */
@@ -19891,6 +19914,18 @@ static sp_RbVal sp_poly_each_answer(sp_RbVal v) {
     return sp_enum_walk_result((sp_Enumerator *)v.v.p);
   return v;
 }
+/* The same after `walk` (sp_poly_iter_walk of v) ran: a generator's walk
+   that reached its end answers what the body answered, which the walker
+   kept; reading it through the Enumerator (its to_a) ran the body again
+   and answered the items. */
+static sp_RbVal sp_poly_each_walk_answer(sp_RbVal v, sp_RbVal walk) SP_UNUSED;
+static sp_RbVal sp_poly_each_walk_answer(sp_RbVal v, sp_RbVal walk) {
+  if (sp_enum_is_walker(walk)) {
+    sp_Enumerator *w = (sp_Enumerator *)walk.v.p;
+    if (w->gen && w->walk_done) return w->gen_result;
+  }
+  return sp_poly_each_answer(v);
+}
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
   e->yields_pair = SP_PAIR_PACKED;
@@ -20513,7 +20548,9 @@ static SP_COLD SP_NOINLINE sp_int sp_enum_walk_len(sp_RbVal v) {
       }
       if (!sp_Fiber_alive(w->fib)) { w->walk_done = TRUE; break; }
       it = sp_Fiber_resume(w->fib, sp_box_nil());
-      if (!sp_Fiber_alive(w->fib)) { w->walk_done = TRUE; break; }
+      /* the body ended: what it answered is the walk's answer (gen_result,
+         as #next keeps it for StopIteration#result) */
+      if (!sp_Fiber_alive(w->fib)) { sp_gc_wb((void *)w); w->gen_result = it; w->walk_done = TRUE; break; }
     }
     else {
       sp_int n = w->items ? w->items->len : 0;
@@ -21714,7 +21751,10 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
           case SP_PENUM_NONE: if (sp_poly_truthy(sp_penum_call1(blk, a))) return sp_box_bool(FALSE); break;
         }
       }
-      if (op == SP_PENUM_EACH || op == SP_PENUM_EACH_WITH_INDEX) return recv;
+      /* each answers what the Enumerator's walk does (its body's value, or
+         its source), each_with_index the Enumerator */
+      if (op == SP_PENUM_EACH) return sp_poly_each_walk_answer(recv, walk);
+      if (op == SP_PENUM_EACH_WITH_INDEX) return recv;
       if (op == SP_PENUM_FIND || op == SP_PENUM_FIND_INDEX) return sp_box_nil();
       return sp_box_bool(op != SP_PENUM_ANY);
     }
@@ -21748,7 +21788,8 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   switch (op) {
     case SP_PENUM_EACH:
       for (sp_int i = 0; i < SP_PENUM_LEN; i++) sp_penum_call1(blk, SP_PENUM_AT(i));
-      return recv;   /* Array#each answers the receiver */
+      /* Array#each answers the receiver; an Enumerator's each, its source */
+      return sp_poly_each_answer(recv);
     case SP_PENUM_EACH_WITH_INDEX:
       for (sp_int i = 0; i < SP_PENUM_LEN; i++) sp_penum_call2(blk, SP_PENUM_AT(i), sp_box_int(i));
       return recv;

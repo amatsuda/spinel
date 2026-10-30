@@ -1697,7 +1697,17 @@ static int str_self_chain_root(Compiler *c, int n) {
    copy of a frozen literal (`+"abc"`, BOPF_SELF_CLASS), or a builtin String
    method that answers a String of its own (no SELF-like flag on its row,
    the String family's BSH_PURE share)? A mutator's change of it is seen by
-   nobody. */
+   nobody.
+
+   A yield receiver (a per-call-site-inlined builtin call on it, kilau
+   K-035) answers the SAME question about the expression this specific
+   site's block actually tails in -- the inlined copy substitutes that
+   expression for `yield` one-for-one, so its freshness is the question's
+   answer too, not a reason to decline outright the way every OTHER name
+   in this file's dispatch treats a yield receiver (falling through to the
+   unresolved-call gate). The lookup mirrors sp_yield_site_type's own
+   (codegen_util.c): the current block's (g_block_id) own tail expression,
+   across any level of yield-forwarding (`wrap { yield }`). */
 int str_fresh_value(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   switch (vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
@@ -1706,6 +1716,20 @@ int str_fresh_value(Compiler *c, int n) {
   case VP1_MANY: return 0;
   }
   if (nt_kind(nt, n) == NK_InterpolatedStringNode) return 1;
+  if (nt_kind(nt, n) == NK_YieldNode) {
+    int bbody = g_block_id >= 0 ? nt_ref(nt, g_block_id, "body") : -1;
+    int bn = 0;
+    const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+    if (bn <= 0 || !bb) return 0;
+    int tail = bb[bn - 1];
+    for (int k = 1; nt_kind(nt, tail) == NK_YieldNode && yield_block_out(k) >= 0; k++) {
+      int fbody = nt_ref(nt, yield_block_out(k), "body");
+      int fn = 0; const int *fb = fbody >= 0 ? nt_arr(nt, fbody, "body", &fn) : NULL;
+      if (fn <= 0 || !fb) return 0;
+      tail = fb[fn - 1];
+    }
+    return nt_kind(nt, tail) == NK_YieldNode ? 0 : str_fresh_value(c, tail);
+  }
   if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0 || comp_ntype(c, n) != TY_STRING) return 0;
   int r = nt_ref(nt, n, "receiver");
   const char *nm = nt_str(nt, n, "name");
@@ -1756,11 +1780,17 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
       return 1;
     }
   }
-  /* slice!(start, len) on a String no other name holds answers the part
-     it cuts, as slice!(i) does on any receiver below; the change is seen
-     by nobody. Any other receiver that is no variable is left to the
-     unresolved-call gate. */
-  int span2 = argc == 2 && !sb_asgn && re_lit_index(c, argv[0]) < 0 && str_fresh_value(c, recv);
+  /* slice!(start, len) on a String that is no assignable variable (sb_asgn
+     false) answers the part it cuts, as slice!(i) does on any receiver
+     below -- there is nowhere to write a mutated copy back to, so the
+     change (if the receiver turns out mutable at runtime) is seen by
+     nobody, same as the str_fresh_value case this used to require. A
+     frozen literal still raises through sp_str_check_mutable below, the
+     same way slice!(i) already does unconditionally; this arm no longer
+     needs str_fresh_value to tell a literal/ternary/other-non-variable
+     receiver apart from one that is provably fresh, since both get
+     identical codegen once sb_asgn is false. */
+  int span2 = argc == 2 && !sb_asgn && re_lit_index(c, argv[0]) < 0;
   if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
     int tp2 = ++g_tmp;
     buf_puts(b, "({ "); emit_str_frozen_check(c, recv, b);
@@ -1822,6 +1852,33 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "sp_str_check_mutable(_t%d);", to);   /* frozen -> FrozenError (#3003) */
     buf_printf(b, " sp_int _t%d = (sp_int)sp_str_length(_t%d); sp_int _t%d, _t%d;",
                tn2, to, tb2, tl2);
+    /* slice!(range, n): Ruby has no two-argument overload that takes a
+       Range first -- raises TypeError, after the receiver's own frozen
+       check above (a frozen receiver with a Range first argument still
+       raises FrozenError, not TypeError: CRuby checks mutability before
+       argument shape) and after BOTH arguments' own side effects, in
+       the same left-to-right order Ruby evaluates them in before
+       raising. Neither argument is referenced anywhere else in this
+       arm (the TypeError is unconditional once argc == 2 and argv[0]
+       is a Range), so each needs its own explicit, discarded
+       evaluation here -- the generic operand-hoisting pass ahead of
+       this call only holds an argument it decides this arm's own code
+       will read; CodeRabbit caught on review that leaving argv[0]
+       unevaluated here (as an earlier version of this fix did) drops
+       its side effect entirely, since the hoisting pass evidently
+       does not always hold "the one argument not read downstream"
+       either. Range is the ONLY argv[0] kind the TY_RANGE arm below
+       answers for a plain index; argc == 1 is implied by reaching this
+       `if` with a Range, since argc == 2 is only otherwise possible
+       through span2, checked here first so the TY_RANGE arm no longer
+       sees it. */
+    if (argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) {
+      buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");");
+      buf_puts(b, " (void)("); emit_expr(c, argv[1], b); buf_puts(b, ");");
+      buf_puts(b, " sp_raise_cls(\"TypeError\", \"no implicit conversion of Range into Integer\");"
+                  " (const char *)0; })");
+      return 1;
+    }
     if (comp_ntype(c, argv[0]) == TY_RANGE) {
       int trg = ++g_tmp;
       buf_printf(b, " sp_Range _t%d = sp_range_ix(", trg); emit_expr(c, argv[0], b); buf_puts(b, ")");

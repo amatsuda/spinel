@@ -290,7 +290,7 @@ int desugar_bare_class_self_calls(Compiler *c) {
    reached through self on these receivers yet, so it keeps the bare call. */
 static int ie_enum_reopen_answers(Compiler *c, int cls, const char *nm) {
   if (comp_ary_root(c, cls) < 0 || comp_ary_is_str(c, cls)) return 0;
-  int en = comp_class_index(c, "Enumerable");
+  int en = comp_core_class(c, CORE_ENUMERABLE);
   int mi = en >= 0 ? comp_method_in_chain(c, en, nm, NULL) : -1;
   if (mi < 0) return 0;
   for (int m = 0; m < c->classes[en].nincluded_mods; m++) {
@@ -359,7 +359,7 @@ int desugar_ie_bare_object_calls(Compiler *c) {
    A module's method runs on its includer and an instance_eval block on its
    receiver; both are left as they were. */
 int desugar_bare_object_reopen_calls(Compiler *c) {
-  int obj = comp_class_index(c, "Object");
+  int obj = comp_core_class(c, CORE_OBJECT);
   if (obj < 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -4488,8 +4488,8 @@ static int send_family_user_answers(Compiler *c, int id, int recv, const char *n
   if (ty_is_object(rt)) return send_own_in_chain(c, id, ty_object_class(rt), name, 0);
   if (rt == TY_POLY || rt == TY_UNKNOWN) return 1;
   /* a builtin receiver: the program's only through a reopening of its class */
-  const char *bcls = builtin_class_of_type(rt);
-  int bci = bcls ? comp_class_index(c, bcls) : -1;
+  int bcls = builtin_class_of_type(rt) ? core_of_type(rt) : -1;
+  int bci = bcls >= 0 ? comp_core_class(c, bcls) : -1;
   return bci >= 0 && send_own_in_chain(c, id, bci, name, 0);
 }
 
@@ -4779,7 +4779,7 @@ void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, 
 
 int step_kw_unknown(Compiler *c, NodeTable *nt, int id, int args) {
   if (nt_int(nt, id, "step_kw_unk", 0)) return 0;
-  static const char *step_owners[] = { "Integer", "Float", "Numeric", "Range" };
+  static const int step_owners[] = { CORE_INTEGER, CORE_FLOAT, CORE_NUMERIC, CORE_RANGE };
   for (size_t i = 0; i < sizeof(step_owners) / sizeof(*step_owners); i++)
     if (an_reopen_owner(c, id, step_owners[i]) >= 0) return 0;
   int sn = nt_safe_nav(nt, id), recv = nt_ref(nt, id, "receiver");
@@ -6979,6 +6979,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          call of that name does.) On a receiver of a known class it is the
          method that class reaches: ThreadGroup's `__remove` is a helper
          where a program's own `Box#__remove` is not. */
+      if (comp_name_is_shadow_copy(c, use[k], SHADOW_PREP)) continue;
       if (computed && (name_is_synth_method(c, use[k]) || dsend_name_is_helper(c, obj_recv, use[k]))) continue;
       /* A method the program defines takes only the arities its definitions
          take: with a fixed argument list, a name no definition accepts at
@@ -7655,11 +7656,11 @@ int desugar_interp_reopened_to_s(Compiler *c) {
   if (g_infer_optimistic) return 0;
   /* true and false: either class's own to_s makes the part a call, which
      picks the side by value (cplan_bool_sides) */
-  const char *const names[] = { "Integer", "Float", "Symbol", "TrueClass", "FalseClass" };
+  static const int names[] = { CORE_INTEGER, CORE_FLOAT, CORE_SYMBOL, CORE_TRUECLASS, CORE_FALSECLASS };
   const TyKind kinds[] = { TY_INT, TY_FLOAT, TY_SYMBOL, TY_BOOL, TY_BOOL };
   int own[5], any = 0;
   for (int k = 0; k < 5; k++) {
-    int ci = comp_class_index(c, names[k]);
+    int ci = comp_core_class(c, names[k]);
     own[k] = ci >= 0 && comp_method_in_chain(c, ci, "to_s", NULL) >= 0;
     any |= own[k];
   }
@@ -7730,7 +7731,7 @@ static int interp_empty_part(const NodeTable *nt, int p) {
    --share-strings only: a build without it copies in every case. */
 int desugar_interp_elided_to_s(Compiler *c) {
   if (g_infer_optimistic) return 0;
-  int sc = comp_class_index(c, "String");
+  int sc = comp_core_class(c, CORE_STRING);
   if (sc >= 0 && comp_method_in_chain(c, sc, "to_s", NULL) >= 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
   unsigned char *nested = calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
@@ -9196,9 +9197,9 @@ static int fwd_io_one_param_iter(Compiler *c, const char *name) {
     "each", "each_line", "each_char", "each_byte", "each_codepoint", NULL };
   if (!str_in(name, names)) return 0;
   /* not where the program reopens File or IO with its own method of the name */
-  static const char *const owners[] = { "File", "IO", NULL };
-  for (int k = 0; owners[k]; k++) {
-    int ci = comp_class_index(c, owners[k]);
+  static const int owners[] = { CORE_FILE, CORE_IO, -1 };
+  for (int k = 0; owners[k] >= 0; k++) {
+    int ci = comp_core_class(c, owners[k]);
     if (ci >= 0 && comp_method_in_chain(c, ci, name, NULL) >= 0) return 0;
   }
   return 1;
@@ -9725,7 +9726,7 @@ int desugar_value_callable_forwards(Compiler *c) {
       const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
       int fsplat = 0;
       for (int k = 0; k < fn; k++) if (nt_kind(nt, fv[k]) == NK_SplatNode) fsplat = 1;
-      int aci = comp_class_index(c, "Array");
+      int aci = comp_core_class(c, CORE_ARRAY);
       int ami = aci >= 0 ? comp_method_in_chain(c, aci, name, NULL) : -1;
       int fown = ami >= 0 && ami < c->nscopes && c->scopes[ami].def_node >= 0 &&
                  !nt_int(nt, c->scopes[ami].def_node, "node_bi", 0);
@@ -10411,16 +10412,36 @@ int desugar_sort_by_with_index_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
-/* Does an Enumerable reopen of the program define find_index? Such a
-   program goes without the builtin definitions, and the reopen's own takes
-   their name on the generic dispatch (__enum_find_index__N, with no
-   node_bi mark), so a find_index call keeps its route to it, block and
-   all. A find_index of another class keeps its own name and does not
-   answer for a Hash or a Range. */
+/* Does an Enumerable reopen of the program define find_index? It
+   replaces the builtin definition, so a find_index call on an Enumerable
+   keeps its route to it, block and all. A reopen with find_index alone
+   takes the generic dispatch name (__enum_find_index__N, with no node_bi
+   mark); one with other methods beside it keeps the def in the module
+   body. A find_index of another class does not answer for a Hash or a
+   Range. These passes run before the classes are registered, so it reads
+   the defs. */
 static int find_index_program_own(const NodeTable *nt) {
   NT_FOREACH_KIND(nt, NK_DefNode, d) {
     const char *dn = nt_str(nt, d, "name");
     if (dn && !nt_int(nt, d, "node_bi", 0) && strncmp(dn, "__enum_find_index__", 19) == 0) return 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+    const char *mn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
+    if (!mn || !sp_streq(mn, "Enumerable") || nt_int(nt, m, "node_bi", 0)) continue;
+    int body = nt_ref(nt, m, "body"), bn = 1;
+    const int *bb = &body;
+    if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) bb = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; body >= 0 && i < bn; i++) {
+      int dd = bb[i];
+      /* `protected def find_index ...` (or private/public) wraps the def */
+      if (nt_kind(nt, dd) == NK_CallNode && nt_ref(nt, dd, "receiver") < 0) {
+        int ac = 0; const int *av = call_args(nt, dd, &ac);
+        dd = ac == 1 ? av[0] : -1;
+      }
+      if (dd < 0 || nt_kind(nt, dd) != NK_DefNode || nt_ref(nt, dd, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, dd, "name");
+      if (dn && sp_streq(dn, "find_index")) return 1;
+    }
   }
   return 0;
 }
@@ -10507,7 +10528,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        rerouting it through to_a would answer an Array instead. */
     if (comp_ntype(c, id) != TY_UNKNOWN) continue;
     /* a Hash or Range reopen's own method of the name is the call's target */
-    if (an_reopen_owner(c, id, ty_is_hash(rt) ? "Hash" : "Range") >= 0) continue;
+    if (an_reopen_owner(c, id, ty_is_hash(rt) ? CORE_HASH : CORE_RANGE) >= 0) continue;
     /* A blockless each_* over a Range has an arm already, and its Enumerator
        keeps the Range as its source (`(1..6).each_slice(2)` inspects as
        `1..6:each_slice(2)`); routing it would answer the elements instead. A
@@ -12558,6 +12579,7 @@ int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, in
     int ifn = nt_new_node(nt, "IfNode");
     nt_node_set_ref(nt, ifn, "predicate", fwd_new_call(nt, cdef_local(nt, "GlobalVariableReadNode", arm[k].sel), "==",
                                                        nt_new_int(nt, arm[k].val)));
+    if (arm[k].hist) nt_node_set_int(nt, nt_ref(nt, ifn, "predicate"), "ver_hist", arm[k].hist);
     nt_node_set_ref(nt, ifn, "statements", cdef_stmts(nt, call));
     nt_node_set_ref(nt, ifn, "subsequent", chain);
     chain = ifn;
@@ -12649,7 +12671,7 @@ int desugar_conditional_defs(Compiler *c) {
     for (int k = ng - 1; k >= 0; k--) {
       /* register_module_functions finds the arms by this name */
       snprintf(nm[k], sizeof nm[k], "%s#__cond%d", base, serial + k + 1);
-      arm[k] = (DispArm){ sel, k + 1, nm[k] };
+      arm[k] = (DispArm){ sel, k + 1, nm[k], 0 };
       nt_set_str(nt, g[k].def, "name", nm[k]);
       cdef_method_name(nt, nt_ref(nt, g[k].def, "parameters"), base);
       cdef_method_name(nt, nt_ref(nt, g[k].def, "body"), base);
@@ -13965,18 +13987,22 @@ static int spl_if(NodeTable *nt, int pred, int yes, int no) {
 /* An arm: the original call with these arguments and block, cloned so it
    keeps what earlier passes marked on the site (the Ruby-defined builtin
    copy an Enumerable name was given) */
-static int spl_arm(NodeTable *nt, int id, int recv, const int *args, int argc, int blk) {
+static int spl_arm_on(NodeTable *nt, int id, int recv, const int *args, int argc, int blk) {
   int call = nt_new_node(nt, "CallNode");
   if (call < 0) return -1;
   const SpNode *src = &nt->nodes[id];
   for (int i = 0; i < src->ni; i++) nt_node_set_int(nt, call, src->i[i].key, src->i[i].val);
   nt_node_set_str(nt, call, "name", nt_str(nt, id, "name"));
-  nt_node_set_ref(nt, call, "receiver", nt_clone_subtree(nt, recv));
+  nt_node_set_ref(nt, call, "receiver", recv);
   int an = -1;
   if (argc > 0) { an = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, an, "arguments", args, argc); }
   nt_node_set_ref(nt, call, "arguments", an);
   nt_node_set_ref(nt, call, "block", blk);
   return call;
+}
+/* (on a copy of the receiver, each arm its own) */
+static int spl_arm(NodeTable *nt, int id, int recv, const int *args, int argc, int blk) {
+  return spl_arm_on(nt, id, nt_clone_subtree(nt, recv), args, argc, blk);
 }
 int desugar_builtin_splat_forward(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -14083,6 +14109,100 @@ int desugar_builtin_splat_forward(Compiler *c) {
   return changed;
 }
 
+/* `recv.index(v, &expr)` (rindex, find_index): with a value the block is
+   not used, so the emitters of the value form left `expr` out, and a
+   `def mk = (puts "made"; proc { })` in `a.index(2, &mk)` never ran. CRuby
+   evaluates it once, after the receiver and the value. It is bound to a
+   local first, `(r = recv; x = v; b = expr; r.index(x, &b))`, and so are
+   the receiver and the value, so the order stays: expr may assign the
+   local the receiver reads (`a.index(2, &(a = [2]; mk))`). Only self, a
+   constant or a literal is read as it is. A read of a local or an instance
+   variable, a Symbol, nil or a lambda literal as expr does nothing, and
+   the call stays as it is. */
+static int value_block_pass_pure(const NodeTable *nt, int n) {
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_SymbolNode ||
+         k == NK_NilNode || k == NK_LambdaNode;
+}
+static int value_arg_pure(const NodeTable *nt, int n) {
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_SelfNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode || k == NK_IntegerNode || k == NK_FloatNode || k == NK_SymbolNode ||
+         k == NK_NilNode || k == NK_TrueNode || k == NK_FalseNode;
+}
+int desugar_index_value_block_pass(Compiler *c) {
+  static const char *const names[] = { "index", "rindex", "find_index", NULL };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int *calls, ncalls = an_calls_named_any(c, names, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
+    if (nt_kind(nt, id) != NK_CallNode || nt_safe_nav(nt, id)) continue;
+    int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block");
+    if (recv < 0 || args < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0 || value_block_pass_pure(nt, ex)) continue;
+    int argc = 0; const int *av = nt_arr(nt, args, "arguments", &argc);
+    if (argc != 1 || nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode ||
+        nt_kind(nt, av[0]) == NK_BlockArgumentNode) continue;
+    int encl = c->nscope[id];
+    if (encl < 0 || encl >= c->nscopes) continue;
+    Scope *sc = &c->scopes[encl];
+    int base = nt->count;
+    int pre[3], npre = 0;
+    char tn[64];
+    if (!value_arg_pure(nt, recv)) {
+      snprintf(tn, sizeof tn, "_spvr%s", comp_node_tag(c, id));
+      scope_local_intern(sc, tn);
+      pre[npre++] = hwi_lwrite(nt, tn, recv);
+      recv = hwi_lread(nt, tn);
+    }
+    int arg = av[0];
+    if (!value_arg_pure(nt, arg)) {
+      snprintf(tn, sizeof tn, "_spva%s", comp_node_tag(c, id));
+      scope_local_intern(sc, tn);
+      pre[npre++] = hwi_lwrite(nt, tn, arg);
+      arg = hwi_lread(nt, tn);
+    }
+    snprintf(tn, sizeof tn, "_spvb%s", comp_node_tag(c, id));
+    scope_local_intern(sc, tn);
+    pre[npre++] = hwi_lwrite(nt, tn, ex);
+    int nblk = nt_new_node(nt, "BlockArgumentNode");
+    nt_node_set_ref(nt, nblk, "expression", hwi_lread(nt, tn));
+    int call = nblk >= 0 ? spl_arm_on(nt, id, recv, &arg, 1, nblk) : -1;
+    if (call < 0) break;
+    /* An arm of a runtime-name send is found by its dyn_name and keeps the
+       send's visibility rule: the sequence that replaces it carries the name
+       (as fwd_branch_on_callable does), the call carries the rule. */
+    const char *dn = nt_str(nt, id, "dyn_name");
+    static const char *const keep[] = { "vis_enforce", "send_blind", "dyn_name", NULL };
+    for (int k = 0; keep[k]; k++)
+      if (nt_str(nt, id, keep[k])) nt_node_set_str(nt, call, keep[k], nt_str(nt, id, keep[k]));
+    int stmts[4];
+    for (int i = 0; i < npre; i++) stmts[i] = pre[i];
+    stmts[npre] = call;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", stmts, npre + 1);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", body);
+    if (dn) {
+      nt_node_set_int(nt, id, "dyn_arm", 1);
+      nt_node_set_str(nt, id, "dyn_name", nt_str(nt, call, "dyn_name"));
+    }
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) {
+      c->nscope[j] = c->nscope[id];
+      nt_node_set_int(nt, j, "node_line", line);
+      nt_node_set_int(nt, j, "node_file", file);
+    }
+    changed = 1;
+  }
+  free(calls);
+  return changed;
+}
+
 /* The name a call had before the pre-pass renamed it to the builtin's
    (detect to find, collect_concat to flat_map), which is the name a class of
    the program may answer with a reader or a method of its own. Written back
@@ -14130,7 +14250,7 @@ int enum_builtin_responds(Compiler *c, const char *name, TyKind rt) {
    by. Such a call is refused, once per call. (An attr_writer defines
    `with_object=`, which leaves with_object the builtin's.) */
 int enumerator_own_with_object(Compiler *c, int id) {
-  int ci = comp_class_index(c, "Enumerator");
+  int ci = comp_core_class(c, CORE_ENUMERATOR);
   if (ci < 0) return 0;
   const char *rn = comp_resolve_alias(c, ci, "with_object");
   if (comp_method_in_chain(c, ci, "with_object", NULL) < 0 && !comp_reader_in_chain(c, ci, "with_object", NULL) &&
@@ -14368,9 +14488,9 @@ int desugar_builtin_enum_calls(Compiler *c) {
     /* an Array, Hash, Range or Enumerator reopen's own method of the name is
        the call's target, as the call plan takes it (for an Integer Range: a
        Float or String one has no route to the reopen yet) */
-    const char *reopen_cn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" :
-                            rt == TY_ENUMERATOR ? "Enumerator" : NULL;
-    if (reopen_cn && an_reopen_owner(c, id, reopen_cn) >= 0) continue;
+    int reopen_cn = ty_is_array(rt) ? CORE_ARRAY : ty_is_hash(rt) ? CORE_HASH : rt == TY_RANGE ? CORE_RANGE :
+                    rt == TY_ENUMERATOR ? CORE_ENUMERATOR : -1;
+    if (reopen_cn >= 0 && an_reopen_owner(c, id, reopen_cn) >= 0) continue;
     if (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_FLOAT_RANGE ||
         rt == TY_STR_RANGE || (rt == TY_ENUMERATOR && !lazy_driven)) ok = 1;
     /* an empty `[]` / `{}` receiver has no type until its use decides one,
@@ -15857,7 +15977,7 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
 int desugar_enum_iter_splat_args(Compiler *c) {
   static const char *const names[] = {
     "map", "collect", "flat_map", "collect_concat", "filter_map", "take_while",
-    "find_index", "each", "uniq", "select", "filter", "find_all", "reject", "sort_by",
+    "each", "uniq", "select", "filter", "find_all", "reject", "sort_by",
     "group_by", "min_by", "max_by", "minmax_by", "each_entry", "partition", "drop_while",
     "each_with_index", NULL };
   NodeTable *nt = (NodeTable *)c->nt;
@@ -16029,9 +16149,9 @@ int desugar_reduce_splat_args(Compiler *c) {
    (reopened, or through a module it includes there; not one builtins/
    defines): the call reaches it, and it takes what arguments it says. */
 static int iter_name_program_defined(Compiler *c, const char *nm) {
-  static const char *const owners[] = { "Array", "Hash", "Range", "Enumerable", NULL };
-  for (int k = 0; owners[k]; k++) {
-    int ci = comp_class_index(c, owners[k]);
+  static const int owners[] = { CORE_ARRAY, CORE_HASH, CORE_RANGE, CORE_ENUMERABLE, -1 };
+  for (int k = 0; owners[k] >= 0; k++) {
+    int ci = comp_core_class(c, owners[k]);
     int mi = ci >= 0 ? comp_method_in_chain(c, ci, nm, NULL) : -1;
     if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0))
@@ -24413,7 +24533,7 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
     else {
       if (call_target(c, id, -1, name, CT_TOP, NULL) >= 0) continue;
       int bk = body_cls ? body_cls[id] : -1;
-      int obj = comp_class_index(c, "Object");
+      int obj = comp_core_class(c, CORE_OBJECT);
       if (bk >= 0) {
         /* a class-body statement: self is the class */
         if (call_target(c, id, bk, name, CT_CMETHOD, NULL) >= 0) continue;

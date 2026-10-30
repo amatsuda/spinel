@@ -3148,6 +3148,7 @@ void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b) {
 static void emit_boxed_string(Compiler *c, int node, Buf *b);
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
+  if (emit_const_class_call_wrap(c, node, b, emit_boxed)) return;
   if (g_idset_marks && emit_idset_checked(c, node, b, 1)) return;
   int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   if (c->n_cext_extensions && ran_first_handle(node) >= 0) {
@@ -4171,7 +4172,7 @@ static int iter_each_proc_form(Compiler *c, int k) {
      arm, and the normalization walked the object as an empty container
      (#5101) */
   if (mi < 0) {
-    int oc = comp_class_index(c, "Object");
+    int oc = comp_core_class(c, CORE_OBJECT);
     int od = -1;
     if (oc >= 0 && oc != k) {
       mi = comp_method_in_chain(c, oc, "each", &od);
@@ -12339,6 +12340,22 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     return;
   }
   if (ci->ary_root > 0) { buf_printf(b, "sp_%s__alloc()", ci->c_name); return; }   /* #7449 */
+  /* A subclass of a native class is not pooled (#9269): its constructor
+     allocates it with the native finalizer, which frees what the object
+     holds, and defines no pool. Allocated through SP_POOL_NEW here, a
+     StringIO extended with a module (a singleton link below StringIO) named
+     a pool nothing declares in the Class#allocate switch, and the C did not
+     build. */
+  if (ci->nsub_root > 0) {
+    const char *fin = c->classes[ci->nsub_root - 1].native_free;
+    buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), %s, sp_%s__gc_scan);"
+                  " _t%d->cls_id = %d;",
+               ci->c_name, t, ci->c_name, ci->c_name, fin ? fin : "NULL", ci->c_name, t, cid);
+    char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
+    emit_ivar_nil_inits(c, b, ci, lv, " ", ";");
+    buf_printf(b, " _t%d; })", t);
+    return;
+  }
   if (is_val) {
     buf_printf(b, "({ sp_%s _t%d = {0}; _t%d.cls_id = %d;", ci->c_name, t, t, cid);
     char lv[32]; snprintf(lv, sizeof lv, "_t%d.", t);
@@ -13419,6 +13436,8 @@ static int class_inspectable(Compiler *c, int i) {
   ClassInfo *ci = &c->classes[i];
   if (is_builtin_reopen(ci->name)) return 0;
   if (ci->is_native_class) return 0;   /* the package owns the struct */
+  /* no instance of it can exist (compute_reachable) */
+  if (ci->no_instance) return 0;
   /* an exception subclass renders as #<Cls: msg>, which the dispatch below
      routes to sp_exc_inspect: without a case here `p e` fell to the default
      and printed #<Object> (#3813) */
@@ -13464,20 +13483,22 @@ static void emit_inspect_ivar_value(Compiler *c, TyKind t, const char *expr, con
   else if (t == TY_POLY_ARRAY) buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
   else if (ty_is_hash(t) && ty_hash_cname(t))
     buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(t), expr);
-  /* an Integer / Float ivar boxes by its nil bit */
-  else if (t == TY_INT || t == TY_FLOAT) {
-    buf_puts(b, "sp_poly_inspect(");
-    emit_marshal_box_ivar_n(c, t, expr, nilt, b);
-    buf_puts(b, ")");
+  /* a scalar renders through its own kind's inspect, as sp_poly_inspect's
+     arm for its box does: through sp_poly_inspect, one Integer ivar linked
+     every kind's inspect (bignums, floats, regexps, times) into a program
+     that had no other use for them */
+  else if (t == TY_INT || t == TY_FLOAT || t == TY_UNKNOWN) {
+    const char *fn = t == TY_FLOAT ? "sp_float_to_s" : "sp_int_to_s";
+    if (nilt && t != TY_UNKNOWN) buf_printf(b, "(%s ? SPL(\"nil\") : %s(%s))", nilt, fn, expr);
+    else buf_printf(b, "%s(%s)", fn, expr);
   }
+  else if (t == TY_STRING) buf_printf(b, "(%s ? sp_str_inspect(%s) : SPL(\"nil\"))", expr, expr);
+  else if (t == TY_STRBUF) buf_printf(b, "(%s ? sp_str_inspect(sp_String_cstr(%s)) : SPL(\"nil\"))", expr, expr);
+  else if (t == TY_BOOL) buf_printf(b, "(%s ? sp_str_frozen_true : sp_str_frozen_false)", expr);
+  else if (t == TY_SYMBOL) buf_printf(b, "sp_sym_inspect(%s)", expr);
   else if (marshal_ivar_type_ok(t) && !marshal_container_type(t) && t != TY_UNKNOWN) {
     buf_puts(b, "sp_poly_inspect(");
     emit_marshal_box_ivar(c, t, expr, b);
-    buf_puts(b, ")");
-  }
-  else if (t == TY_UNKNOWN) {
-    buf_puts(b, "sp_poly_inspect(");
-    emit_marshal_box_ivar(c, TY_INT, expr, b);
     buf_puts(b, ")");
   }
   else buf_puts(b, "\"#<?>\"");
@@ -13547,7 +13568,7 @@ static void emit_inspect_class_row(Compiler *c, int i, MarRows *R, Buf *b) {
   else buf_puts(b, "NULL };\n");
 }
 /* the walk over the rows, as the arm per class wrote it */
-static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
+static void emit_inspect_walk(Compiler *c, int any_anon, int any_obj, int any_computed, Buf *b) {
   buf_printf(b,
     "static int sp_insp_set(const sp_insp_iv *v, const char *o) {\n"
     "  switch (v->set) {\n"
@@ -13563,9 +13584,14 @@ static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
     MSET_FLAG, MSET_UMARK, SP_IVAR_UNSET_MARK, MSET_NB, MSET_POLY, MSET_NONNULL, MSET_BOOL);
   buf_puts(b,
     "static const char *sp_insp_value(const sp_insp_iv *v, char *o) {\n"
-    "  void *s = o + v->off;\n"
-    "  if (v->obj == 2) return sp_poly_inspect(sp_box_nullable_obj_dyn(*(void **)s, v->arg));\n"
-    "  if (v->obj) return sp_poly_inspect(*(void **)s ? sp_box_obj(*(void **)s, v->arg) : sp_box_nil());\n"
+    "  void *s = o + v->off;\n");
+  /* an object ivar renders by its class, through sp_poly_inspect; with
+     none, the walk does not link it */
+  if (any_obj)
+    buf_puts(b,
+      "  if (v->obj == 2) return sp_poly_inspect(sp_box_nullable_obj_dyn(*(void **)s, v->arg));\n"
+      "  if (v->obj) return sp_poly_inspect(*(void **)s ? sp_box_obj(*(void **)s, v->arg) : sp_box_nil());\n");
+  buf_puts(b,
     "  return sp_insp_fn[v->arg](s, v->nb >= 0 ? (const uint8_t *)(o + v->nb) : NULL);\n"
     "}\n");
   buf_printf(b,
@@ -13606,7 +13632,7 @@ static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
     "      sp_String_append(_s, \"=\"); sp_String_append(_s, sp_insp_value(v, o));\n"
     "    }\n"
     "  }\n"
-    "  if (d->computed) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n"
+    "%s"
     "  sp_String_append(_s, \">\");\n"
     "  if (d->niv > 0) sp_poly_recur_pop(_rcm);\n"
     "  return _s->data;\n"
@@ -13616,6 +13642,7 @@ static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
     "  return d ? sp_insp_walk_row(d, cls_id, p) : \"#<Object>\";\n"
     "}\n",
     any_anon ? "d->name ? d->name : sp_class_display((sp_Class){cls_id})" : "d->name",
+    any_computed ? "  if (d->computed) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n" : "",
     c->nclasses > 0 ? c->nclasses : 1);
 }
 static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
@@ -13857,7 +13884,14 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       if (iwalk[i] & 2) buf_printf(b, "%s[%d] = &sp_insp_c_%d", icol++ ? ", " : " ", i, i);
     buf_puts(b, icol ? " };\n" : " NULL };\n");
   }
-  emit_inspect_walk(c, any_anon_walk, b);
+  int any_obj_walk = 0;
+  for (int i = 0; i < c->nclasses && !any_obj_walk; i++)
+    if (iwalk[i])
+      for (int j = 0; j < c->classes[i].nivars && !any_obj_walk; j++)
+        any_obj_walk = inspect_ivar_is_obj(c->classes[i].ivar_types[j]);
+  int any_computed_walk = 0;
+  for (int i = 0; i < c->nclasses; i++) if (iwalk[i] && c->classes[i].computed_ivar_set) any_computed_walk = 1;
+  emit_inspect_walk(c, any_anon_walk, any_obj_walk, any_computed_walk, b);
   if (sw.p) buf_puts(b, sw.p);
   free(sw.p); free(irows.p); free(IR.pool.p); free(IR.kinds); free(IR.pnames); free(IR.poffs); free(iwalk);
 }
@@ -14690,7 +14724,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      (`super { |v| yield v + 1 }` in a class that prepends). Those, and
      under --plan-check as the assertion, take the lookup. */
   const CallPlan *spl = cplan_user(c, id);
-  const char *own = comp_prep_user_name(comp_scope_def_name(c, s));
+  const char *own = comp_scope_def_name(c, s);
   int mi = -1;
   if (spl->via == UC_SUPER && spl->mi >= 0 && spl->owner_ci == (shadow ? s->class_id : p) &&
       (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, own)))) {
@@ -14703,7 +14737,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int omi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
                                       : comp_method_in_class(c, s->class_id, shadow))
             : p < 0 ? -1
-            : cplan_super_chain_mi(c, s, p, own);
+            : cplan_super_chain_mi(c, id, s, p, own);
     if (!shadow && omi >= 0) odef = c->scopes[omi].class_id;
     if (mi < 0) {
       if (g_plan_check && omi >= 0)
@@ -15241,13 +15275,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
     if (g_plan_check && served) cplan_served("super");
     cplan_check_missing(c, id, smi, s->class_id, shadow, 0, "super");
     if (g_plan_check && smi >= 0) ucall_observe(c, id, smi, s->class_id, 0);
+    /* A replaced shadow has its own versioned C name, as the entry's arms do. */
+    if (smi >= 0) buf_puts(b, mc_method(c, &c->scopes[smi]));
+    else buf_printf(b, "sp_%s_%s", c->classes[s->class_id].c_name, mc(shadow));
+    buf_puts(b, "(");
     if (repr_self_handle(c, smi) || repr_self_handle(c, (int)(s - c->scopes))) {
-      buf_printf(b, "sp_%s_%s(", c->classes[s->class_id].c_name, mc(shadow));
       emit_reopen_self_arg(c, id, smi, b);
     }
-    else buf_printf(b, "sp_%s_%s((sp_%s *)%s",
-                    c->classes[s->class_id].c_name, mc(shadow),
-                    c->classes[s->class_id].c_name, g_self);
+    else buf_printf(b, "(sp_%s *)%s", c->classes[s->class_id].c_name, g_self);
     if (ty_k == NK_ForwardingSuperNode && smi >= 0) {
       /* laid out over the shadow's parameters as any bare super is: passed
          slot by slot, a `**` went into the shadow's first keyword */
@@ -15263,7 +15298,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     return;
   }
-  /* Strip __prep_N_ prefix to get the user method name for parent chain lookup. */
+  /* Strip __prep N prefix to get the user method name for parent chain lookup. */
   int p = comp_super_parent(c, s->class_id, s->is_cmethod);
   const char *uname = comp_super_name(c, p, comp_scope_def_name(c, s), s->is_cmethod);
   /* super inside a class method: resolve through the parent's CLASS-method
@@ -17195,7 +17230,7 @@ static void rbs_class_methods(Compiler *c, Buf *b, int ci, int cmeth) {
   for (int si = 1; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
     if (s->class_id != ci || !!s->is_cmethod != !!cmeth) continue;
-    if (!s->name || !*s->name) continue;
+    if (!s->name || !*s->name || s->shadow == SHADOW_PREP) continue;
     Buf pre; memset(&pre, 0, sizeof pre);
     buf_printf(&pre, "def %s%s", cmeth ? "self." : "", s->name);
     rbs_method_line(c, b, pre.p ? pre.p : "def ?", s);
@@ -18793,7 +18828,7 @@ static void reject_define_method_runtime_block(Compiler *c) {
    raised NoMethodError for a name the builtin lacks. */
 static void reject_range_reopen_nonint(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int rci = comp_class_index(c, "Range");
+  int rci = comp_core_class(c, CORE_RANGE);
   if (rci < 0) return;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int rv = nt_ref(nt, id, "receiver");
@@ -18880,7 +18915,7 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   if (rk != NK_ConstantReadNode) return 0;
   const char *rn = nt_str(c->nt, recv, "name");
   if (!rn || !sp_streq(rn, "Time")) return 0;
-  int time_ci = comp_class_index(c, "Time");
+  int time_ci = comp_core_class(c, CORE_TIME);
   if (time_ci >= 0 && call_target(c, id, time_ci, name, CT_CMETHOD, NULL) >= 0) return 0;
   if (!sp_feature_required("time"))
     snprintf(msg, cap,

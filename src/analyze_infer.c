@@ -1032,17 +1032,17 @@ int loop_never_completes(Compiler *c, int node) {
 /* Whether the program's own `kept` (Range or Array), Enumerator or
    Enumerable defines `name`: the kept value would then answer the
    program's method, not the Enumerator's. */
-static int kept_enum_reopen_defines(Compiler *c, const char *kept, const char *name) {
-  const char *const CLS[] = { kept, "Enumerator", "Enumerable", NULL };
-  for (int i = 0; CLS[i]; i++) {
-    int ci = comp_class_index(c, CLS[i]);
+static int kept_enum_reopen_defines(Compiler *c, int kept, const char *name) {
+  const int CLS[] = { kept, CORE_ENUMERATOR, CORE_ENUMERABLE, -1 };
+  for (int i = 0; CLS[i] >= 0; i++) {
+    int ci = comp_core_class(c, CLS[i]);
     int dc = -1;
     if (ci >= 0 && comp_method_in_chain(c, ci, name, &dc) >= 0 && dc == ci) return 1;
   }
   return 0;
 }
 static int range_enum_reopen_defines(Compiler *c, const char *name) {
-  return kept_enum_reopen_defines(c, "Range", name);
+  return kept_enum_reopen_defines(c, CORE_RANGE, name);
 }
 /* The walks with a block, and the argless readers, whose answer over the
    members laid out ahead is the Enumerator's answer */
@@ -1146,7 +1146,7 @@ int an_blockless_tuples_kept(Compiler *c, int id) {
   /* nor is a `to_a` a desugar puts under a walk (made_to_a): the walk
      reads the Enumerator through it and may answer its source */
   if (!pn || nt_str(nt, p, "enum_recv") || nt_int(nt, p, "made_to_a", 0) ||
-      kept_enum_reopen_defines(c, "Array", pn)) return 0;
+      kept_enum_reopen_defines(c, CORE_ARRAY, pn)) return 0;
   int pblk = nt_ref(nt, p, "block");
   int pac = 0; { int pa = nt_ref(nt, p, "arguments"); if (pa >= 0) nt_arr(nt, pa, "arguments", &pac); }
   int each = sp_streq(pn, "each"), ewi = sp_streq(pn, "each_with_index");
@@ -1921,7 +1921,7 @@ int range_enum_redispatch(Compiler *c, int id) {
   /* a Range reopen's own method of the name is the call's target, as the
      inference arm for a Range receiver takes it (`class Range; def sum = 0;
      end`) */
-  if (an_reopen_owner(c, id, "Range") >= 0) return 0;
+  if (an_reopen_owner(c, id, CORE_RANGE) >= 0) return 0;
   int block = nt_ref(nt, id, "block");
   int args = nt_ref(nt, id, "arguments"); int argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
@@ -2002,6 +2002,16 @@ int range_enum_redispatch(Compiler *c, int id) {
   return 0;
 }
 
+/* Does Enumerable's method chain hold a find_index the program wrote (an
+   Enumerable reopen; the builtin definition carries node_bi)? That method
+   then answers a Hash's or an Enumerator's find_index, block and all. */
+int an_enum_own_find_index(Compiler *c) {
+  int en = comp_class_index(c, "Enumerable");
+  int mi = en >= 0 ? comp_method_in_chain(c, en, "find_index", NULL) : -1;
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+}
+
 /* A Hash Enumerable method served by materializing the hash into its
    [key, value] pair array (sp_enum_items_from) and re-dispatching as a poly
    array: reduce/inject and each_with_index block forms. The hash-native
@@ -2012,7 +2022,7 @@ int hash_enum_redispatch(Compiler *c, int id) {
   if (!name) return 0;
   /* a Hash reopen's own method of the name is the call's target, not the
      pair array (`class Hash; def uniq = "mine"; end`) */
-  if (an_reopen_owner(c, id, "Hash") >= 0) return 0;
+  if (an_reopen_owner(c, id, CORE_HASH) >= 0) return 0;
   int block = nt_ref(nt, id, "block");
   /* blockless pair-order Enumerables: min/max compare the [k, v] pairs */
   if (block < 0 && (is_extrema_family(name)))
@@ -2032,6 +2042,8 @@ int hash_enum_redispatch(Compiler *c, int id) {
   /* pair-array Enumerables with no dedicated hash emitter: find_index, uniq,
      zip, tally, reverse_each ride the materialized redispatch, block or not
      (#2372) */
+  /* (an Enumerable reopen's own find_index is the call's target) */
+  if (sp_streq(name, "find_index") && an_enum_own_find_index(c)) return 0;
   if (sp_streq(name, "find_index") || sp_streq(name, "uniq") ||
       sp_streq(name, "zip") || sp_streq(name, "tally") ||
       sp_streq(name, "reverse_each")) return 1;
@@ -2943,8 +2955,8 @@ static TyKind kconv_hash_kind(Compiler *c, int arg) {
   return TY_POLY_POLY_HASH;                      /* Hash(nil) / Hash([]) -> {} */
 }
 
-static int an_reopen_method(Compiler *c, const char *cls, const char *name) {
-  int oc_ci = comp_class_index(c, cls);
+static int an_reopen_method(Compiler *c, int cls, const char *name) {
+  int oc_ci = comp_core_class(c, cls);
   return oc_ci >= 0 ? comp_method_in_chain(c, oc_ci, name, NULL) : -1;
 }
 
@@ -2997,7 +3009,7 @@ int sclass_value_call(Compiler *c, int id) {
 int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out) {
   const char *name = nt_str(c->nt, call_id, "name");
   if (!name || builtin_method_known(cls, name) || builtin_object_method_known(name)) return 0;
-  int oci = comp_class_index(c, "Object");
+  int oci = comp_core_class(c, CORE_OBJECT);
   int omi = oci >= 0 ? call_target(c, call_id, oci, name, 0, NULL) : -1;
   if (omi < 0) return 0;
   /* a yielding one given a block answers what its proc form does, a boxed
@@ -3515,10 +3527,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* the count form too, but not where a reopened Object or Kernel has a
          curry, which answers for every receiver the Proc arm does not */
       if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode && sp_streq(name, "curry") &&
-          !(comp_class_index(c, "Object") >= 0 &&
-            call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL) >= 0) &&
-          !(comp_class_index(c, "Kernel") >= 0 &&
-            call_target(c, id, comp_class_index(c, "Kernel"), name, 0, NULL) >= 0))
+          !(comp_core_class(c, CORE_OBJECT) >= 0 &&
+            call_target(c, id, comp_core_class(c, CORE_OBJECT), name, 0, NULL) >= 0) &&
+          !(comp_core_class(c, CORE_KERNEL) >= 0 &&
+            call_target(c, id, comp_core_class(c, CORE_KERNEL), name, 0, NULL) >= 0))
         { *out = an_poly_concrete(c, id, name, TY_CURRY); return 1; }
       if (argc == 0 && sp_streq(name, "to_proc")) { *out = an_poly_concrete(c, id, name, TY_POLY); return 1; }
       /* Integer#chr(Encoding::X) on a boxed Integer (emit_poly_call) */
@@ -5000,6 +5012,8 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
       /* an endless one is walked as it is read: an Enumerator (sp_range_endless_step) */
       if (argc == 1 && range_lit_endless(c, recv)) { *out = TY_ENUMERATOR; return 1; }
+      /* a Rational step yields boxed Rational/Integer values */
+      if (rt == TY_RANGE && an_range_step_rat(c, id, 1)) { *out = TY_POLY_ARRAY; return 1; }
       /* a float step, or a literal range with float bounds, yields floats */
       int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
       int rn = nt_paren_single(nt, recv);
@@ -5335,6 +5349,8 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
     /* a Bignum limit or step walks the sequence boxed (#3006) */
     for (int sk = 0; sk < sc; sk++)
       if (infer_type(c, sv[sk]) == TY_BIGINT) { *out = TY_POLY_ARRAY; return 1; }
+    /* and so does an Integer's Rational limit or step */
+    if (rt == TY_INT && an_step_rat_bound(c, id, 1)) { *out = TY_POLY_ARRAY; return 1; }
     if ((rt == TY_INT || rt == TY_FLOAT) && (sc == 0 || nt_kind(nt, sv[0]) == NK_NilNode)) { *out = TY_ENUMERATOR; return 1; }
     if (rt == TY_INT && !isf && infer_type(c, sv[0]) == TY_POLY) { *out = TY_ENUMERATOR; return 1; }
     { *out = isf ? TY_FLOAT_ARRAY : TY_INT_ARRAY; return 1; }
@@ -5989,7 +6005,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     Scope *s = comp_scope_of(c, id);
     /* the name codegen answers (comp_scope_def_name) is a symbol of the
        program's table, which codegen writes before it emits the call */
-    if (s && s->name && s->name[0]) comp_sym_intern(c, comp_prep_user_name(comp_scope_def_name(c, s)));
+    if (s && s->name && s->name[0]) comp_sym_intern(c, comp_scope_def_name(c, s));
     { *out = (s && s->name && s->name[0]) ? TY_SYMBOL : TY_NIL; return 1; }
   }
 
@@ -6280,7 +6296,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
          boxes self for it), so the call answers the method's return. Below
          the builtin surface, as Ruby's lookup puts Object last. */
       if (mi < 0 && !self->is_cmethod) {
-        int oc = comp_class_index(c, "Object");
+        int oc = comp_core_class(c, CORE_OBJECT);
         int omi = oc >= 0 && oc != self->class_id ? call_target(c, id, oc, name, 0, NULL) : -1;
         if (omi >= 0) { *out = c->scopes[omi].ret; return 1; }
       }
@@ -6665,24 +6681,17 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       *out = o == t || o == TY_UNKNOWN || o == TY_VOID ? t : TY_POLY;
       return 1;
     }
-    const char *oc_cn = NULL;
+    int oc_cn = -1;
     switch (rt) {
-    case TY_STRING: oc_cn = "String"; break;
-    case TY_INT:    oc_cn = "Integer"; break;
-    case TY_FLOAT:  oc_cn = "Float"; break;
-    case TY_SYMBOL: oc_cn = "Symbol"; break;
-    case TY_RANGE:  oc_cn = "Range"; break;
-    case TY_TIME:   oc_cn = "Time"; break;
-    case TY_THREAD: oc_cn = "Thread"; break;
-    case TY_FIBER:  oc_cn = "Fiber"; break;
-    case TY_ENUMERATOR: oc_cn = "Enumerator"; break;
-    case TY_RANDOM: oc_cn = "Random"; break;
-    case TY_IO:     oc_cn = "File"; break;
-    case TY_CLASS:  oc_cn = "Class"; break;
+    case TY_STRING: case TY_INT: case TY_FLOAT:
+    case TY_SYMBOL: case TY_RANGE: case TY_TIME:
+    case TY_THREAD: case TY_FIBER: case TY_ENUMERATOR:
+    case TY_RANDOM: case TY_IO: case TY_CLASS:
+      oc_cn = core_of_type(rt); break;
     default: break;
     }
-    if (oc_cn) {
-      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
+    if (oc_cn >= 0) {
+      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_core_class(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = call_target(c, id, oc_ci, name, 0, NULL);
         if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = an_planned_call_ret(c, id, TY_POLY); return 1; }
@@ -6825,7 +6834,7 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
        (sp_streq(name, "===") && argc >= 1) ||
        (sp_streq(name, "bind_call") && argc >= 1))) {
     CallPlan p = cplan_method_call(c, id);
-    int mi = p.mi;
+    int mi = p.dispatch == CP_SWITCH ? -1 : p.mi;
     if (mi >= 0) {
       if (g_plan_check) an_user_call_record(c, id, mi, p.via, p.owner_ci);
       *out = c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret; return 1;
@@ -7052,7 +7061,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   if (recv >= 0) {
     /* a boxed receiver too: the builtin-only answer the poly dispatch's
        default arm is shaped by is the Object fallback's call */
-    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : object_fallback_class_of_type(rt);
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : core_class_name(object_fallback_class_of_type(rt));
     TyKind ort;
     if (ocls && object_reopen_answers(c, ocls, id, &ort)) { *out = ort; return 1; }
   }
@@ -7858,32 +7867,32 @@ static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, cons
   if (recv >= 0) {
     /* Array reopening: any array-typed receiver */
     if (ty_is_array(rt)) {
-      int oc_mi = an_reopen_method(c, "Array", name);
+      int oc_mi = an_reopen_method(c, CORE_ARRAY, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* Hash reopening: any hash-typed receiver */
     if (ty_is_hash(rt)) {
-      int oc_mi = an_reopen_method(c, "Hash", name);
+      int oc_mi = an_reopen_method(c, CORE_HASH, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* Numeric reopening: integers and floats */
     if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
-      int oc_mi = an_reopen_method(c, "Numeric", name);
+      int oc_mi = an_reopen_method(c, CORE_NUMERIC, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* FalseClass methods (TrueClass already checked earlier for TY_BOOL) */
     if (rt == TY_BOOL) {
-      int oc_mi = an_reopen_method(c, "FalseClass", name);
+      int oc_mi = an_reopen_method(c, CORE_FALSECLASS, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* NilClass methods on a receiver known to be nil */
     if (rt == TY_NIL) {
-      int oc_mi = an_reopen_method(c, "NilClass", name);
+      int oc_mi = an_reopen_method(c, CORE_NILCLASS, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* Object reopening: universal fallback for any receiver type */
     {
-      int oc_mi = an_reopen_method(c, "Object", name);
+      int oc_mi = an_reopen_method(c, CORE_OBJECT, name);
       /* a yielding one given a block answers what its proc form does,
          a boxed value (#5779) */
       if (oc_mi >= 0 && c->scopes[oc_mi].yields && nt_ref(c->nt, id, "block") >= 0) { *out = TY_POLY; return 1; }
@@ -8461,45 +8470,45 @@ static int chain_has_aliases(Compiler *c, int ci) {
    a.size`), which leaves the block unused, as codegen calls it
    (reopen_override_block_ok). The reopen's method, or -1. */
 static int ty_array_or_hash(TyKind t) { return ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t); }
-static int reopen_owner_of(Compiler *c, int id, const char *cn, const char *name) {
+static int reopen_owner_of(Compiler *c, int id, int cn, const char *name) {
   /* A block-carrying call of a builtin's name is the reopen's only when it
      does not yield; asked first whether the program reopens the class at
      all, counted again only as the class table grows (a lookup before the
      table is frozen scans it, and most such calls are a plain `each`) */
-  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(cn, name)) {
+  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(core_class_name(cn), name)) {
     static int ahr_n = -1, ahr_any = 0;
     if (ahr_n != c->nclasses) {
       ahr_n = c->nclasses;
-      ahr_any = comp_class_index(c, "Array") >= 0 || comp_class_index(c, "Hash") >= 0 ||
-                comp_class_index(c, "Range") >= 0 || comp_class_index(c, "Symbol") >= 0;
+      ahr_any = comp_core_class(c, CORE_ARRAY) >= 0 || comp_core_class(c, CORE_HASH) >= 0 ||
+                comp_core_class(c, CORE_RANGE) >= 0 || comp_core_class(c, CORE_SYMBOL) >= 0;
     }
     if (!ahr_any) return -1;
   }
-  int aci = comp_class_index(c, cn);
+  int aci = comp_core_class(c, cn);
   int adc = -1, ami = aci >= 0 ? call_target(c, id, aci, name, 0, &adc) : -1;
   /* the reopen's own method under this very name: an alias taken before the
      reopen (`alias orig_first first`) still names the builtin */
   if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, name)) return -1;
-  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(cn, name) && c->scopes[ami].yields) return -1;
+  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(core_class_name(cn), name) && c->scopes[ami].yields) return -1;
   return ami;
 }
 static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *name) {
-  return reopen_owner_of(c, id, ty_is_hash(rt) ? "Hash" : "Array", name);
+  return reopen_owner_of(c, id, ty_is_hash(rt) ? CORE_HASH : CORE_ARRAY, name);
 }
-/* The method the program's reopen of builtin class cn ("Array", "Hash",
-   "Range" or "Symbol") defines itself under call id's name, which the call
+/* The method the program's reopen of builtin core id cn (CORE_ARRAY, CORE_HASH,
+   CORE_RANGE or CORE_SYMBOL) defines itself under call id's name, which the call
    reaches over the builtin's (a module the reopen includes does not
    displace the builtin's method). -1 for none, and for a call marked
    builtin_only. A rewrite that turns the call into another builtin's asks
    it first. */
-int an_reopen_owner(Compiler *c, int id, const char *cn) {
+int an_reopen_owner(Compiler *c, int id, int cn) {
   const char *name = nt_str(c->nt, id, "orig_name") ? nt_str(c->nt, id, "orig_name") : nt_str(c->nt, id, "name");
   if (!name || nt_int(c->nt, id, "builtin_only", 0)) return -1;
   int mi = reopen_owner_of(c, id, cn, name);
   /* (a Symbol or Range one; an Array or Hash one keeps the answer the
      inference arm above gives it) */
-  if (mi >= 0 && c->scopes[mi].is_include_copy && builtin_method_known(cn, name) &&
-      (sp_streq(cn, "Symbol") || sp_streq(cn, "Range"))) return -1;
+  if (mi >= 0 && c->scopes[mi].is_include_copy && builtin_method_known(core_class_name(cn), name) &&
+      (cn == CORE_SYMBOL || cn == CORE_RANGE)) return -1;
   return mi;
 }
 
@@ -10681,7 +10690,7 @@ int std_stream_value_classes(Compiler *c, char *set) {
 int std_stream_foreign_writer(Compiler *c, const char *nm) {
   char *set = calloc((size_t)c->nclasses + 1, 1);
   int bounded = set && std_stream_value_classes(c, set);
-  int sio = comp_class_index(c, "StringIO"), hit = 0;
+  int sio = comp_core_class(c, CORE_STRINGIO), hit = 0;
   for (int k = 0; k < c->nclasses && !hit; k++) {
     if (k == sio || (bounded && !set[k])) continue;
     int writes = comp_method_in_chain(c, k, "write", NULL) >= 0;
@@ -10703,7 +10712,7 @@ int std_stream_assigned(Compiler *c, const char *nm) {
 /* A reopening needs its empty receiver's kind during parameter binding and
    proc-form selection, before the late empty-operand marking. */
 static TyKind infer_empty_array_reopen(Compiler *c, int id) {
-  if (comp_class_index(c, "Array") < 0) return TY_UNKNOWN;
+  if (comp_core_class(c, CORE_ARRAY) < 0) return TY_UNKNOWN;
   int call = comp_recv_parent(c, id);
   if (call >= 0 && !nt_int(c->nt, call, "builtin_only", 0) &&
       comp_builtin_kind_reopen_mi(c, TY_POLY_ARRAY, nt_str(c->nt, call, "name")) >= 0)
@@ -11642,7 +11651,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (p < 0) return none;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
-    int mi = cplan_super_chain_mi(c, s, p, uname);
+    int mi = cplan_super_chain_mi(c, id, s, p, uname);
     /* a subclass of a native class (#9269): super reaches the native
        class's constructor (initialize) or binding */
     if (mi < 0 && !s->is_cmethod && uname && c->classes[s->class_id].nsub_root > 0) {
@@ -12019,6 +12028,60 @@ void an_rat_boxed_mark(int id) {
   g_rat_boxed[id] = 1;
 }
 int an_rat_boxed(int id) { return id >= 0 && id < g_rat_boxed_cap && g_rat_boxed[id]; }
+/* Is node n a Rational: one typed so, or one --int-overflow=promote holds
+   boxed (an_rat_value)? infer reads it through infer_type, codegen through
+   its settled type. */
+int an_rat_operand(Compiler *c, int n, int infer) {
+  TyKind t = infer ? infer_type(c, n) : comp_ntype(c, n);
+  return t == TY_RATIONAL || (t == TY_POLY && an_rat_value(c, n));
+}
+
+/* An Integer's step(limit[, step]) with a Rational limit or step and no
+   Float among them: it walks the boxed sequence a Rational receiver walks,
+   so `1.step(3, 1r/2)` yields 1, (3/2), (2/1), ... In the Integer loop the
+   step 1/2 was the sp_int 0. A nil limit (no end) is left to the endless
+   walk. */
+int an_step_rat_bound(Compiler *c, int id, int infer) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments");
+  int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
+  if (sc < 1 || sc > 2 || nt_kind(nt, sv[0]) == NK_NilNode) return 0;
+  int rat = 0;
+  for (int k = 0; k < sc; k++) {
+    if ((infer ? infer_type(c, sv[k]) : comp_ntype(c, sv[k])) == TY_FLOAT) return 0;
+    if (an_rat_operand(c, sv[k], infer)) rat = 1;
+  }
+  return rat;
+}
+
+/* An Integer Range's step(r) with a Rational r (a literal's bounds both
+   Integers, as written): it walks the boxed sequence from the begin,
+   (1..2).step(1r/2) yielding 1, (3/2), (2/1). An endless Range is left to
+   its Enumerator. */
+int an_range_step_rat(Compiler *c, int id, int infer) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments");
+  int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
+  if (sc != 1 || !an_rat_operand(c, sv[0], infer)) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || range_lit_endless(c, recv)) return 0;
+  /* a program's own Range#step is not this walk */
+  int rg = comp_class_index(c, "Range");
+  int mi = rg >= 0 ? comp_method_in_chain(c, rg, "step", NULL) : -1;
+  if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+      !nt_int(nt, c->scopes[mi].def_node, "node_bi", 0)) return 0;
+  int rn = nt_paren_single(nt, recv);
+  if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode) {
+    int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+    if (lo < 0 || hi < 0) return 0;
+    for (int k = 0; k < 2; k++) {
+      int e = k ? hi : lo;
+      if ((infer ? infer_type(c, e) : comp_ntype(c, e)) != TY_INT) return 0;
+    }
+  }
+  return 1;
+}
+
 /* Is node n a Rational --int-overflow=promote holds boxed: one infer_type
    boxed (an_rat_boxed), or the read of a local or an instance variable
    whose every write is one. A parameter, or a slot written any other way,

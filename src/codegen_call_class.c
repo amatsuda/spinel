@@ -3865,9 +3865,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       if (ncc == 0) {
         char cid_expr[40]; snprintf(cid_expr, sizeof cid_expr, "_cl%d.cls_id", _clt);
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
-        buf_puts(b, "; "); emit_class_id_is(c, "Thread", cid_expr, b); buf_puts(b, " ? ");
+        buf_puts(b, "; "); emit_class_id_is(c, CORE_THREAD, cid_expr, b); buf_puts(b, " ? ");
         emit_boxed_text(c, TY_THREAD, "sp_Thread_current()", b);
-        buf_puts(b, " : "); emit_class_id_is(c, "Fiber", cid_expr, b); buf_puts(b, " ? ");
+        buf_puts(b, " : "); emit_class_id_is(c, CORE_FIBER, cid_expr, b); buf_puts(b, " ? ");
         emit_boxed_text(c, TY_FIBER, "sp_fiber_current", b);
         buf_puts(b, " : (sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method 'current' for class\")[1])), sp_box_nil()); })");
         return 1;
@@ -5079,7 +5079,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (rt == TY_RANDOM) {
       const CallPlan *pl = cplan_user(c, id);
       if (pl->mi >= 0 && pl->via == UC_REOPEN && pl->dispatch == CP_DIRECT &&
-          pl->owner_ci == comp_class_index(c, "Random")) {
+          pl->owner_ci == comp_core_class(c, CORE_RANDOM)) {
         int mi = pl->mi, ci = pl->owner_ci;
         if (emit_reopen_block_call(c, id, recv, mi, NULL, b)) return 1;
         if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
@@ -5092,23 +5092,17 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         return 1;
       }
     }
-    const char *oc_cn = NULL;
+    int oc_cn = -1;
     switch (rt) {
-    case TY_STRING: case TY_STRBUF: oc_cn = "String"; break;
-    case TY_INT:    oc_cn = "Integer"; break;
-    case TY_FLOAT:  oc_cn = "Float"; break;
-    case TY_SYMBOL: oc_cn = "Symbol"; break;
-    case TY_RANGE:  oc_cn = "Range"; break;
-    case TY_TIME:   oc_cn = "Time"; break;
-    case TY_THREAD: oc_cn = "Thread"; break;
-    case TY_FIBER:  oc_cn = "Fiber"; break;
-    case TY_ENUMERATOR: oc_cn = "Enumerator"; break;
-    case TY_IO:     oc_cn = "File"; break;
-    case TY_CLASS:  oc_cn = "Class"; break;
+    case TY_STRING: case TY_STRBUF: case TY_INT:
+    case TY_FLOAT: case TY_SYMBOL: case TY_RANGE:
+    case TY_TIME: case TY_THREAD: case TY_FIBER:
+    case TY_ENUMERATOR: case TY_IO: case TY_CLASS:
+      oc_cn = core_of_type(rt); break;
     default: break;
     }
-    if (oc_cn) {
-      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
+    if (oc_cn >= 0) {
+      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_core_class(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = call_target(c, id, oc_ci, name, 0, NULL);
         if (oc_mi >= 0 && rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return 1; }
@@ -5131,7 +5125,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* Hash reopening: any hash-typed receiver -> box to sp_RbVal */
     if (ty_is_hash(rt)) {
-      int hc_ci = comp_class_index(c, "Hash");
+      int hc_ci = comp_core_class(c, CORE_HASH);
       int hc_mi = hc_ci >= 0 ? call_target(c, id, hc_ci, name, 0, NULL) : -1;
       if (hc_mi >= 0 && emit_reopen_block_call(c, id, recv, hc_mi, NULL, b)) return 1;
       if (hc_mi >= 0) {
@@ -5147,7 +5141,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* NilClass methods on a receiver known to be nil (self is the `int self`
        the bool reopens take; nil carries nothing) */
     if (rt == TY_NIL) {
-      int nc_ci = comp_class_index(c, "NilClass");
+      int nc_ci = comp_core_class(c, CORE_NILCLASS);
       int nc_mi = nc_ci >= 0 ? call_target(c, id, nc_ci, name, 0, NULL) : -1;
       if (nc_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, nc_mi, nc_ci, 0);
@@ -5161,7 +5155,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* Numeric reopening: an Integer / Float receiver whose own reopen (above)
        did not answer; the inference twin has typed it. Self is boxed. */
     if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
-      int nm_ci = comp_class_index(c, "Numeric");
+      int nm_ci = comp_core_class(c, CORE_NUMERIC);
       int nm_mi = nm_ci >= 0 ? call_target(c, id, nm_ci, name, 0, NULL) : -1;
       if (nm_mi >= 0 && emit_reopen_block_call(c, id, recv, nm_mi, NULL, b)) return 1;
       if (nm_mi >= 0) {
@@ -5175,7 +5169,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* Array reopening: any array-typed receiver -> box to sp_RbVal */
     if (ty_is_array(rt)) {
-      int oc_ci2 = comp_class_index(c, "Array");
+      int oc_ci2 = comp_core_class(c, CORE_ARRAY);
       if (oc_ci2 >= 0) {
         int oc_mi2 = call_target(c, id, oc_ci2, name, 0, NULL);
         if (oc_mi2 >= 0) {
@@ -5194,7 +5188,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* Object reopening: universal fallback -> box receiver to sp_RbVal */
     {
-      int oc_ci3 = comp_class_index(c, "Object");
+      int oc_ci3 = comp_core_class(c, CORE_OBJECT);
       if (oc_ci3 >= 0) {
         const CallPlan *pl = cplan_user(c, id);
         int planned = pl->via == UC_REOPEN && pl->owner_ci == oc_ci3 && pl->dispatch == CP_DIRECT;
@@ -5283,7 +5277,7 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          fallback boxes its receiver. Only inlining served it before; the
          method body itself raised NoMethodError. */
       if (mi < 0 && !self->is_cmethod && nt_ref(nt, id, "block") < 0 && g_self) {
-        int oc = comp_class_index(c, "Object");
+        int oc = comp_core_class(c, CORE_OBJECT);
         int omi = oc >= 0 && oc != dispatch_cid ? call_target(c, id, oc, name, 0, NULL) : -1;
         if (omi >= 0) {
           const char *scn = c->classes[dispatch_cid].name;

@@ -447,6 +447,7 @@ static inline int lv_set_proc_ret(LocalVar *lv, int t) {
 #define STRBUF_LIFT_FRESH_CALL 2
 
 enum { RBS_CONT_HASH = 1, RBS_CONT_ARRAY = 2 };   /* Scope.ret_rbs_cont: the class a container return seed checks */
+enum { SHADOW_NONE = 0, SHADOW_INC, SHADOW_PREP };   /* Scope.shadow: the kind of hidden copy */
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
   int idx;          /* its index in Compiler.scopes: the owner its slots' writes move */
@@ -466,11 +467,15 @@ typedef struct {
      (call_plan.c's version entries): it calls the version the run-time
      cells name, one per parameter count the calls need (version_n
      numbers the later ones in C). It has the method's name, as a replaced
-     version does; no lookup of the method by name answers it (sm_owns),
-     only the calls call_target binds to it reach it; main_n, codegen's
+     version does; ENTRY_DISPATCH marks this argument-specific forwarding
+     entry. No lookup of the method by name answers it (sm_owns),
+     only the calls call_target binds to it reach it. entry == ENTRY_TABLE is a
+     general prepend guard: the table answers it under the ordinary name,
+     and its guard_behind names the hidden copy; main_n, codegen's
      number for a method of main's own whose name Object's methods have
      too (both are top-level functions in C) */
-  unsigned char versioned, replaced, entry;
+  unsigned char versioned, replaced;
+  enum { ENTRY_NONE, ENTRY_DISPATCH, ENTRY_TABLE } entry;
   int version_n, main_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
@@ -493,9 +498,23 @@ typedef struct {
                                  front of the class's own (its super reaches
                                  that one -- the builtin's, for a builtin) */
   int mixin_guarded;          /* such a copy of a prepend a later top-level
-                                 reopening makes: it hands the call to the
-                                 class's own method until that statement has
-                                 run (mixin_guard_body) */
+                                 reopening makes: the number of the cell that
+                                 statement sets (n_prepend_cells), 0 for
+                                 none. A call reaches it through its guard
+                                 entry (call_plan.c), which runs the method
+                                 behind it, guard_behind, until the cell is
+                                 set */
+  int guard_behind;
+  /* a hidden copy: a body the compiler moved behind another method of its
+     name. A SHADOW_PREP copy is named apart from every method the program
+     names (comp_shadow_name); a SHADOW_INC copy's name is not checked against
+     them. SHADOW_PREP: a prepend's `__prep <n> m` (the class's own body
+     behind the module's copy, or a later prepend's guarded copy); SHADOW_INC:
+     an include's, extend's or alias's `__inc <n> m`. shadow_user is m, the
+     name the program wrote (a proc-form clone's with its "#pf"). SHADOW_NONE
+     and NULL for every method the program names, however it is spelled. */
+  unsigned char shadow;
+  char *shadow_user;
   int is_extend_copy;         /* the class method an `extend` copied in: a later
                                  extend of a module defining the same name
                                  replaces it the same way */
@@ -968,9 +987,17 @@ typedef struct {
                           switch can drop its `case` arm (the referenced method
                           then becomes an unreferenced static the C compiler
                           DCEs). Set by compute_instantiated. */
+  int unreferenced;    /* a class the program opens with `class` that no reached
+                          code names (compute_reachable, #10592): none of its
+                          methods is reached and it has no instance */
+  int no_instance;     /* such a class whose instance side no reached code
+                          opens: its singleton methods may run, but nothing
+                          builds one, and its instance methods stay unreached */
+  int live_sides;      /* the sides an earlier compute_reachable opened: 1 its
+                          singleton methods, 2 its instances; kept open */
   /* Prepend shadow chain: when `prepend M` is called on this class,
      M's methods overwrite the active slot; the previous slot is
-     renamed to a shadow `__prep_N_<m>`.  The chain maps each name
+     renamed to a shadow `__prep N <m>`.  The chain maps each name
      (user name or shadow name) to the next shadow in the chain,
      so `emit_super` can follow it rather than the parent class. */
   char **prep_from;      /* source name in the chain link */
@@ -1646,14 +1673,15 @@ typedef struct {
   int pres_noinit;
   int **pres_ord;
   int pres_ord_n;
-  /* the flags of the later prepends that guard their copies
-     (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
-  int n_mixin_flags;
+  /* the cells of the later prepends whose copies a guard entry chooses
+     (Scope.mixin_guarded, ver_prepend_cell_name): 1 .. n_prepend_cells */
+  int n_prepend_cells;
   /* the version entries (call_plan.c, ver_entries_build): one method per
      (class, side, name, parameter count) for the calls whose version is
-     known only at run time, and each of its arms' calls pinned to the
-     version it runs */
-  struct VerEntry { const char *name; int cls, sg, ar, scope; } *ver_entries;
+     known only at run time, or with guard, for the calls that reach a
+     later prepend's copy (Scope.mixin_guarded), and each of its arms'
+     calls pinned to the method it runs */
+  struct VerEntry { const char *name; int guard, cls, sg, ar, scope; } *ver_entries;
   int nver_entries;
   struct VerChain *ver_chain;   /* how many versions a class's chain holds of a name, by (class, side, name) (call_plan.c, ver_chain_count) */
   struct VerHold *ver_hold;   /* the holders of a name worth asking, by name (call_plan.c, ver_holders) */
@@ -1663,8 +1691,13 @@ typedef struct {
   unsigned ver_ix_nb;
   struct VerPin { int node, scope; } *ver_pins;
   int nver_pins;
-  /* the entries are made (ver_entries_build) */
+  /* the entries are made (ver_entries_build): the versions the calls get
+     are kept, and a call that reaches a later prepend's copy binds its
+     guard entry */
   int ver_built;
+  /* the scopes that are hidden copies (Scope.shadow), which
+     comp_name_is_shadow_copy reads */
+  int *shadow_copies, nshadow_copies, cshadow_copies;
   /* the version each call asked on a class runs, once the entries are
      made (call_plan.c, ct_version): open addressing, name NULL for a free
      slot; dc the class it answers, -2 for the table's */
@@ -2157,7 +2190,7 @@ int        comp_ary_is_hash(Compiler *c, int cid);
 int        comp_ary_is_str(Compiler *c, int cid);
 int        comp_arysub_emb(Compiler *c, int cid);
 int        comp_arysub_str_boxed(const char *n);
-const char *comp_arysub_builtin(Compiler *c, int cid);
+int        comp_arysub_builtin(Compiler *c, int cid);
 /* a name the builtin cid's chain embeds answers (comp_array_method_name, or Hash's) */
 int        comp_arysub_builtin_name(Compiler *c, int cid, const char *n);
 int        comp_arysub_reopen(Compiler *c, int cid);
@@ -2306,7 +2339,14 @@ const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);
    method of the same name. */
 const char *comp_super_shadow(Compiler *c, const Scope *s);
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to);
-const char *comp_prep_user_name(const char *name);
+/* The hidden copies (Scope.shadow): the name a new `__prep <n> <name>` copy of
+   class ci's gets, set on the scope where the copy is made, carried by the
+   clones, and read back as the name the program wrote. */
+void comp_shadow_name(Compiler *c, int ci, const char *name, char *out, size_t size);
+void comp_scope_set_shadow(Compiler *c, int si, int kind, const char *user);
+void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix);
+const char *comp_scope_user_name(const Scope *s);
+int comp_name_is_shadow_copy(Compiler *c, const char *name, int kind);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
 const char *comp_scope_def_name(Compiler *c, const Scope *s);
 int comp_super_is_class_new(Compiler *c, int id);
@@ -2453,6 +2493,7 @@ int poly_string_read_p(const char *name);
    receiver, which resolve statically (#3415). */
 int class_recv_is_dynamic(Compiler *c, int recv);
 int self_class_static_ci(Compiler *c, int recv);  /* self.class naming one class */
+int self_class_base_ci(Compiler *c, int recv);    /* self.class: the instance method's own class */
 int allocate_on_own_class(Compiler *c, int id);    /* allocate on the method's own class */
 
 /* An ivar whose type came from an --rbs seed (class_pin_ivar). Codegen reads

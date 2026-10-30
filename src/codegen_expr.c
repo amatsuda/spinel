@@ -2008,13 +2008,13 @@ static int emit_promote_rat_exact(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   if (!nm) return 0;
   if (sp_streq(nm, "to_r") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_FLOAT &&
-      comp_method_in_chain(c, comp_class_index(c, "Float"), "to_r", NULL) < 0) {
+      comp_method_in_chain(c, comp_core_class(c, CORE_FLOAT), "to_r", NULL) < 0) {
     /* boxed, so a Float that may be nil answers nil's (0/1) */
     buf_puts(b, "sp_poly_to_r_m("); emit_boxed(c, recv, b); buf_puts(b, ")");
     return 1;
   }
   if (sp_streq(nm, "rationalize") && argc <= 1 && recv >= 0 && comp_ntype(c, recv) == TY_FLOAT &&
-      comp_method_in_chain(c, comp_class_index(c, "Float"), "rationalize", NULL) < 0) {
+      comp_method_in_chain(c, comp_core_class(c, CORE_FLOAT), "rationalize", NULL) < 0) {
     buf_puts(b, "sp_poly_rationalize_m("); emit_boxed(c, recv, b);
     buf_printf(b, ", %d, ", argc);
     if (argc) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
@@ -2030,6 +2030,7 @@ static int emit_promote_rat_exact(Compiler *c, int id, Buf *b) {
 }
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
+  if (emit_const_class_call_wrap(c, id, b, emit_expr)) return;
   /* a block's statement an emitter inlines (gsub!'s `{ |m| m + m }`): its
      operands are not held across the block, and two copies of one live
      String, neither rooted, let the second's allocation collect the first */
@@ -3367,27 +3368,42 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
   return 0;
 }
 
-/* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order) */
-static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
+/* The NameError raise of a constant defined nowhere, valued as a Class
+   placeholder. `checks` is the text of the parents' presence checks (it opens
+   a comma expression and ends with ", "), or empty: they go into the message
+   operand, which C evaluates before the raise, so an unset parent's NameError
+   still comes first and the raise stays at the head of the text. */
+static void emit_const_undefined_raise(Buf *b, const char *checks, const char *name) {
+  buf_puts(b, "(sp_raise_cls(\"NameError\", ");
+  if (checks && checks[0]) buf_printf(b, "%s\"uninitialized constant %s\")", checks, name);
+  else buf_printf(b, "\"uninitialized constant %s\"", name);
+  buf_puts(b, "), ((sp_Class){-1}))");
+}
+
+/* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order).
+   `checks` holds the parents' presence checks of a path: the raise of an
+   undefined path takes them and empties the buffer, any other form leaves
+   them to the caller. */
+static int emit_constant_value(Compiler *c, int id, Buf *b, Buf *checks, const NodeTable *nt, const char *ty, int slot) {
   if (sp_streq(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cv && !slot && repr_of_slot(c, cv).kind == RK_STRBUF && !cv->init_guarded) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
-      emit_const_check_open(c, id, cv, b);
+      emit_const_read_open(c, id, cv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
-      emit_const_check_close(c, id, cv, b);
+      emit_const_read_close(c, id, cv, b);
       return 1;
     }
     if (cv && cv->type != TY_UNKNOWN) {
       if (cv->init_guarded) {
         /* a read during the const's own Class.new init raises NameError */
-        emit_const_check_open(c, id, cv, b);
+        emit_const_read_open(c, id, cv, b);
         buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
                       " \"uninitialized constant %s\"), %scst_%s) : %scst_%s)",
                    nm, nm, slot ? "&" : "", nm, slot ? "&" : "", nm);
-        emit_const_check_close(c, id, cv, b);
+        emit_const_read_close(c, id, cv, b);
       }
       else emit_const_slot_read(c, id, cv, nm, slot, 1, b);
       return 1;
@@ -3456,7 +3472,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
              NameError is legal Ruby, and ruby/spec does exactly that. */
           if (!const_ref_is_rescued(c, id) && !const_ref_is_guarded(c, id))
             warn_undefined_constant(c, id, nm);
-          buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", nm);
+          emit_const_undefined_raise(b, NULL, nm);
         }
       }
     }
@@ -3479,9 +3495,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        whose class only the value knows, so it takes the run-time read below --
        treating it as a path looked the leaf up and answered a top-level
        constant of that name (#4259). */
-    if (par_nmc && par_tyc_k == NK_ConstantReadNode &&
-        comp_class_index(c, par_nmc) < 0 && !is_builtin_class_name(par_nmc) &&
-        comp_const(c, par_nmc))
+    if (par_nmc && par_tyc_k == NK_ConstantReadNode && an_const_read_is_value(c, par_idc))
       par_nmc = NULL;
     /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
        plain-constant table, or a same-leaf plain constant in another module
@@ -3595,9 +3609,9 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cpcv && !slot && repr_of_slot(c, cpcv).kind == RK_STRBUF) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
-      emit_const_check_open(c, id, cpcv, b);
+      emit_const_read_open(c, id, cpcv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
-      emit_const_check_close(c, id, cpcv, b);
+      emit_const_read_close(c, id, cpcv, b);
       return 1;
     }
     if (cpcv && cpcv->type != TY_UNKNOWN) { emit_const_slot_read(c, id, cpcv, nm, slot, 1, b); return 1; }
@@ -3738,7 +3752,10 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* class/module constant as value */
     if (nm) {
       int _cpidx = comp_class_index(c, nm);
-      if (_cpidx >= 0) { buf_printf(b, "((sp_Class){%d})", _cpidx); return 1; }
+      if (_cpidx >= 0) {
+        buf_printf(b, "((sp_Class){%d})", _cpidx);
+        return 1;
+      }
       int _bcpid = builtin_class_id(nm);
       if (_bcpid != 0) { buf_printf(b, "((sp_Class){%d})", _bcpid); return 1; }
     }
@@ -3770,7 +3787,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          "uninitialized constant Mylib" */
       { int segs[32], ns = 0;
         for (int s = nt_ref(nt, id, "parent"); s >= 0 && ns < 32 &&
-             (nt_kind(nt, s) == NK_ConstantReadNode || nt_kind(nt, s) == NK_ConstantPathNode);
+             (nt_kind_is_constant(nt_kind(nt, s)));
              s = nt_kind(nt, s) == NK_ConstantPathNode ? nt_ref(nt, s, "parent") : -1)
           segs[ns++] = s;
         for (int i = ns - 1; i >= 0; i--)
@@ -3780,7 +3797,8 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
             if (miss[0]) snprintf(fullname, sizeof fullname, "%s", miss);
             break;
           } }
-      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
+      emit_const_undefined_raise(b, checks->p, fullname);
+      checks->len = 0;
     }
     return 1;
   }
@@ -3793,7 +3811,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
    leaves no trace, its temporaries' numbers put back). */
 int const_read_raises(Compiler *c, int id) {
   NodeKind k = nt_kind(c->nt, id);
-  if ((k != NK_ConstantReadNode && k != NK_ConstantPathNode) || !comp_const_undefined(c, id)) return 0;
+  if (!nt_kind_is_constant(k) || !comp_const_undefined(c, id)) return 0;
   Buf t, pre;
   memset(&t, 0, sizeof t); memset(&pre, 0, sizeof pre);
   Buf *saved_pre = g_pre; int saved_tmp = g_tmp;
@@ -3804,6 +3822,22 @@ int const_read_raises(Compiler *c, int id) {
   int r = !pre.p && t.p && !strncmp(t.p, raise, sizeof raise - 1);
   free(t.p); free(pre.p);
   return r;
+}
+
+static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
+  if (!nt_kind_is_constant(nt_kind(nt, id))) return 0;
+  int par = nt_kind(nt, id) == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
+  int dynamic = nt_kind(nt, par) == NK_ConstantReadNode && an_const_read_is_value(c, par);
+  Buf pre = {0};
+  int effect = !dynamic && !view_const_read_done(c, id) ? emit_const_read_prefix(c, par, &pre) : 0;
+  if (!effect) return emit_constant_value(c, id, b, &pre, nt, ty, slot);
+  Buf v = {0};
+  int result = emit_constant_value(c, id, &v, &pre, nt, ty, slot);
+  /* checks no raise took lead the value; a raise that took them is the value */
+  if (pre.len) buf_printf(b, "%s%s)", pre.p, v.p ? v.p : "");
+  else buf_puts(b, v.p ? v.p : "");
+  free(pre.p); free(v.p);
+  return result;
 }
 
 void emit_constant_slot(Compiler *c, int id, Buf *b) {
@@ -4553,8 +4587,14 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       int fempty = 0;
       if (ln == 1 && ty_is_array(fres) && node_is_empty_container(c, lb[0]))
         fempty = an_empty_container_kind(c, lb[0]) == 1;
+      /* ...and an Integer / Float slot that holds its nil (an sp_oint, as the
+         analysis gives `x.is_a?(Integer) ? x : raise` while the dead arm is
+         still counted) takes the arm in its oint form, as the unfolded pair
+         renders each arm: emitted raw, a plain sp_int went into the sp_oint */
+      int fo = cond_res_oint(c, id, fres);
       if (ln == 1) {
-        if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
+        if (fo) emit_ternary_arm_o(c, lb[0], fres, 1, b);
+        else if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
         return 1;
       }
       /* The leading statements go into the PRELUDE, not inside a statement
@@ -4567,7 +4607,8 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          won and a branch reached its tail without running its own first
          line (#4139). The prelude keeps them in source order. */
       for (int j = 0; j < ln - 1; j++) emit_stmt(c, lb[j], g_pre, g_indent);
-      if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
+      if (fo) emit_ternary_arm_o(c, lb[ln - 1], fres, 1, b);
+      else if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
       else emit_expr(c, lb[ln - 1], b);
       return 1;
     }
@@ -5714,6 +5755,19 @@ static int masgn_hold_target_parts(Compiler *c, int id) {
   }
   return held;
 }
+/* A forwarded block call has the node's representation, including its nil
+   bit. The proc ABI returns a box; the optional conversion preserves nil
+   until the consuming operation unwraps the value. */
+static void emit_forwarded_block_value(Compiler *c, int id, Buf *b) {
+  TyKind ty = repr_of(c, id).as_ty;
+  int optional = oint_kind(ty) && node_is_oint(c, id);
+  if (optional) buf_printf(b, "%s(", oint_unbox(ty));
+  emit_yield_proc_call(c, nt_ref(c->nt, id, "arguments"),
+                       optional ? TY_POLY : ty != TY_UNKNOWN ? ty : g_yield_slot_ty,
+                       b, 0, 1);
+  if (optional) buf_puts(b, ")");
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -6246,15 +6300,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       { /* the node's OWN type is what this expression position wants -- the
            inline's return slot is only the right answer when the yield IS the
            tail (a yield nested in a literal wants the element type, #3688) */
-        TyKind yt = repr_of(c, id).as_ty;
         /* A POLY node type is an answer, not an absence: the inline's return
            slot is only right when the call IS the tail, and a `&blk` forwarded
            into a map wants the element (boxed) form -- unboxing to the
            method's array type did not build (#3886). */
-        emit_yield_proc_call(c, nt_ref(nt, id, "arguments"),
-                             yt != TY_UNKNOWN
-                               ? yt : g_yield_slot_ty,
-                             b, 0, 1); }
+        emit_forwarded_block_value(c, id, b); }
     else if (nt_safe_nav(nt, id)) {
       /* `blk&.call`: the nil parameter answers nil instead of raising (an
          Integer / Float answer is the node's oint, as `&.` always is) */

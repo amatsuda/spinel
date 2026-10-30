@@ -10,6 +10,8 @@
 #ifndef SPINEL_BUILTIN_NAMES_H
 #define SPINEL_BUILTIN_NAMES_H
 
+#include "types.h"
+
 int is_zip_name(const char *n);       /* zip: tuple-yielding iteration */
 int is_dig_name(const char *n);       /* dig: a path through containers */
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
@@ -274,6 +276,7 @@ int is_self_rebinding_call(const char *n); /* instance_/class_/module_ eval and 
 int is_class_relatives_query(const char *n); /* ancestors superclass subclasses descendants included_modules */
 int is_class_query(const char *n); /* class */
 int is_method_owner_query(const char *n); /* owner */
+int is_instance_method_name(const char *n); /* instance_method public_instance_method */
 int is_method_object_maker(const char *n); /* method public_method singleton_method instance_method public_instance_method */
 /* const_get const_source_location nesting attached_object each_object eval binding */
 int is_constant_or_object_reflection(const char *n);
@@ -436,6 +439,8 @@ enum {
 };
 /* CORE_* for any builtin row or non-row slot above, -1 for any other name. */
 int builtin_core_class_slot(const char *n);
+int core_of_type(TyKind t);
+const char *core_class_name(int k);
 int is_builtin_method_host_name(const char *n); /* Object BasicObject Kernel Comparable Enumerable Module */
 int is_boolean_class_name(const char *n); /* FalseClass TrueClass */
 int is_numeric_literal_tag(const char *n); /* Float Int */

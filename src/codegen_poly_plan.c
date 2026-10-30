@@ -20,6 +20,13 @@ static int g_pa_n, g_pa_cap;
 static long g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra;
 static long g_pa_trial_kept, g_pa_trial_dropped;
 
+/* (codegen_internal.h) the kinds sp_poly_enum_proc walks */
+void emit_penum_kind_test(Buf *b, int tv) {
+  buf_printf(b, "_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || "
+                "_t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)",
+             tv, tv, tv, tv, tv, tv);
+}
+
 int pa_begin(int id) {
   if (g_pa_n == g_pa_cap) {
     int ncap = g_pa_cap ? g_pa_cap * 2 : 8;
@@ -99,7 +106,8 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default first/last(n)", "default delete/dig/values_at",
                                      "default merge", "default aref2", "default aref/fetch",
                                      "block map!", "subclass re-entry", "array re-entry",
-                                     "array re-entry (receiver)", "face str-bang" };
+                                     "array re-entry (receiver)", "face str-bang", "io-timeout",
+                                     "enum-inline" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
@@ -1712,7 +1720,7 @@ int emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKi
                            int *blk_tmp0, Buf *b) {
   const NodeTable *nt = c->nt;
   int done = 0;
-  { int obj_cls = comp_class_index(c, "Object");
+  { int obj_cls = comp_core_class(c, CORE_OBJECT);
     if (obj_cls >= 0) {
       int obj_def = -1;
       int obj_mi = call_target(c, id, obj_cls, name, 0, &obj_def);
@@ -1888,7 +1896,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
          Kernel count the program defines. A String reopening's own count
          takes its arm below instead, and so does a Symbol, which has no
          count of its own. */
-      int sci = comp_class_index(c, "String"), dc = -1;
+      int sci = comp_core_class(c, CORE_STRING), dc = -1;
       int str_own = sci >= 0 && call_target(c, id, sci, name, 0, &dc) >= 0 && dc == sci;
       if (!str_own)
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %ssp_poly_count(_t%d)%s; else ", tv, tr, bopen, tv, bclose);
@@ -2054,7 +2062,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
                   " { sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p);", tv, tv, tv);
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
     buf_puts(b, " }\nelse ");
-    int sio_cid3 = comp_class_index(c, "StringIO");
+    int sio_cid3 = comp_core_class(c, CORE_STRINGIO);
     if (sio_cid3 >= 0)
     {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d)"
@@ -2179,7 +2187,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
      upcase; "nope"; end` has to reach "nope" for a run-time-typed
      receiver too, the way it now does for a concrete one. */
   int str_reopen_owns = 0;
-  { int sci = comp_class_index(c, "String");
+  { int sci = comp_core_class(c, CORE_STRING);
     if (sci >= 0 && call_target(c, id, sci, name, 0, NULL) >= 0) str_reopen_owns = 1; }
   if (argc == 0 && !str_reopen_owns) {
     const BuiltinZeroOp *str_op = bop_zero_find(TY_STRING, name);
@@ -2297,7 +2305,9 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
          members are known to it); without it a boxed Range fell to the
          user-class switch's NoMethodError (#4840). So does a String Range
          (a Range of Symbols too), over its members. */
-      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) { _t%d = ", tv, tv, tv, tv, tv, tv, tr);
+      buf_puts(b, "if (");
+      emit_penum_kind_test(b, tv);
+      buf_printf(b, ") { _t%d = ", tr);
       if (ret == TY_POLY) buf_puts(b, pcall);
       else emit_unbox_text(c, ret, pcall, b);
       buf_puts(b, "; }\nelse ");
