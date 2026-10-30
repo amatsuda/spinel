@@ -1883,8 +1883,8 @@ static void emit_concat_hold(Compiler *c, int node, TyKind type, int boxed, int 
    or a guarded builtin arm. Hold arguments, then guard before the boxed
    conversions performed here; already-desugared direct conversions are
    argument effects upstream. Capture each operand before later callbacks
-   and append only when all conversions succeed. bulk retains the existing
-   Integer statement append choice; it does not change capture policy. */
+   and append only when all conversions succeed. bulk admits the single
+   Integer block append; it does not change capture policy. */
 int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const int *argv, int argc, int bulk, Buf *b) {
   int fresh = an_push_widens_fresh(c, id);
   if (fresh) rt = TY_POLY_ARRAY;
@@ -1895,7 +1895,7 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   if (!prepare_concat_operands(c, argv, argc, op)) { free(op); return 0; }
   int int_bulk = bulk && argc == 1 && rt == TY_INT_ARRAY && !op[0].boxed && op[0].conv_mi < 0 &&
                  op[0].repr.as_ty == rt;
-  int single_length = argc == 1 && !op[0].boxed && op[0].conv_mi < 0 && !op[0].repr.may_nil && !int_bulk;
+  int single_length = argc == 1 && !op[0].boxed && op[0].conv_mi < 0 && !op[0].repr.may_nil;
   int tr = ++g_tmp, base = g_tmp + 1;
   g_tmp += argc;
   int lengths = g_tmp + 1; g_tmp += argc;
@@ -1943,7 +1943,7 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
       if (op[i].repr.may_nil)
         buf_printf(b, " if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");", tv);
       if (op[i].snapshot) buf_printf(b, " _t%d = sp_%sArray_dup(_t%d);", tv, ak, tv);
-      if (!int_bulk && !single_length) buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lengths + i, ak, tv);
+      if (!single_length) buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lengths + i, ak, tv);
     }
   }
   for (int i = 0; i < argc; i++) {
@@ -1951,8 +1951,19 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
     TyKind at = op[i].repr.as_ty;
     const char *ak = arr_kind(at);
     if (int_bulk) {
-      buf_printf(b, " sp_IntArray_append_o(_t%d, _t%d);", tr, tv);
+      /* One element stays on the inline push; an empty operand does no
+         append work. Both choices use the length captured above. */
+      buf_printf(b, " if (_t%d == 1) sp_IntArray_push_o(_t%d, sp_IntArray_oget(_t%d, 0));"
+                    " else if (_t%d > 1) sp_IntArray_append_o(_t%d, _t%d);",
+                 lengths + i, tr, tv, lengths + i, tr, tv);
       continue;
+    }
+    int boxed_bulk = argc == 1 && rt == TY_INT_ARRAY && op[i].boxed;
+    if (boxed_bulk) {
+      buf_printf(b, " if (_t%d.cls_id == SP_BUILTIN_INT_ARRAY) {"
+                    " if (_t%d == 1) sp_IntArray_push_o(_t%d, sp_IntArray_oget((sp_IntArray *)_t%d.v.p, 0));"
+                    " else if (_t%d > 1) sp_IntArray_append_o(_t%d, (sp_IntArray *)_t%d.v.p); }\nelse {",
+                 tv, lengths + i, tr, tv, lengths + i, tr, tv);
     }
     int ti = ++g_tmp;
     int same = !op[i].boxed && at == rt;
@@ -1986,6 +1997,7 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
     else emit_unbox_text(c, ty_array_elem(rt), el.p, b);
     free(el.p);
     buf_puts(b, ");");
+    if (boxed_bulk) buf_puts(b, " }");
   }
   free(op);
   buf_printf(b, " _t%d; })", tr);
@@ -1999,7 +2011,7 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   /* emit_builtin_op_ex selected the builtin row in the caller's arm. */
-  return emit_builtin_array_concat(c, x->id, x->recv, x->rt, argv, argc, 0, b);
+  return emit_builtin_array_concat(c, x->id, x->recv, x->rt, argv, argc, 1, b);
 }
 
 /* Array#index(v) / #find_index(v) / #rindex(v) without a block on a poly
