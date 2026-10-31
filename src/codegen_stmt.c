@@ -17009,6 +17009,21 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     if (argc == 2) return masgn_store_slice(c, id, mt, tgt, recv, argv, val, vt, recv_tmp, key_tmp, indent, b);
     Repr rr = repr_of(c, recv);
     TyKind rt = rr.as_ty;
+    /* an object Array holds the class's own pointers: the single store's
+       sp_PtrArray_set_grow, which grows past the end and refuses a frozen
+       Array (`list[0], list[1] = list[1], list[0]` was refused) */
+    if (ty_is_obj_array(rt)) {
+      if (comp_ntype(c, argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array index target"); return 1; }
+      masgn_recv_guard(c, recv, recv_tmp, "[]=", indent, b);
+      emit_indent(b, indent);
+      buf_puts(b, "sp_PtrArray_set_grow(");
+      emit_node_or_tmp(c, recv, recv_tmp, b); buf_puts(b, ", ");
+      if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp); else emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", ");
+      masgn_conv(c, id, ty_array_elem(rt), vt, val, b);
+      buf_puts(b, ");\n");
+      return 1;
+    }
     if (ty_is_array(rt)) {
       const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
       if (!k || comp_ntype(c, argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array index target"); return 1; }
@@ -18357,17 +18372,18 @@ static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
     if (index && nt_int(nt, flat[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
     int k2 = index ? masgn_target_key2(nt, flat[i]) : -1;
     if (k2 >= 0) obj_ix = 0;   /* a user `[]=` takes one key here */
-    if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
+    int arr_ix = index && (ty_is_array(rt) || ty_is_obj_array(rt));
+    if (index && (k < 0 || !(poly_r || obj_ix || arr_ix || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
     /* an attribute's receiver is an object or a boxed value, whose store
        dispatches on its class */
     if (!index && !ty_is_object(rt) && rt != TY_POLY) continue;
     mt->recv[i] = masgn_hoist_part(c, r, poly_r || rr.kind == RK_BOXED ? TY_POLY : rt, hb);
     if (obj_ix) mt->key[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb);
-    else if (index) mt->key[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
+    else if (index) mt->key[i] = masgn_hoist_part(c, k, poly_r || arr_ix ? TY_INT : ty_hash_key(rt), hb);
     /* a Hash raises for two keys, so its second key is only evaluated */
     if (k2 >= 0 && !obj_ix) {
       TyKind k2t = repr_of(c, k2).as_ty;
-      mt->key2[i] = masgn_hoist_part(c, k2, poly_r || ty_is_array(rt) ? TY_INT : k2t == TY_NIL || k2t == TY_VOID || k2t == TY_UNKNOWN ? TY_POLY : k2t, hb);
+      mt->key2[i] = masgn_hoist_part(c, k2, poly_r || arr_ix ? TY_INT : k2t == TY_NIL || k2t == TY_VOID || k2t == TY_UNKNOWN ? TY_POLY : k2t, hb);
     }
   }
 }
@@ -18946,8 +18962,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       if (recv_id < 0 || idx_argc < 1 || idx_argc > 2) { unsupported(c, id, "multiple assignment index target"); continue; }
       Repr recv_tr = repr_of(c, recv_id);
       TyKind recv_t = recv_tr.as_ty;
-      /* two keys (`a[i, n], x = ...`) store a slice, which masgn_store takes */
-      if (ty_is_object(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0) || idx_argc == 2) {
+      /* two keys (`a[i, n], x = ...`) store a slice, which masgn_store
+         takes, as it takes an object Array's element */
+      if (ty_is_object(recv_t) || ty_is_obj_array(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0) || idx_argc == 2) {
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
         masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
