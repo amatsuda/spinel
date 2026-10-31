@@ -26,8 +26,8 @@
 #
 # - test/analysis-forms/class_macro_*.rb and the corpus programs the form
 #   answers (MACRO_FORMS) are run as above;
-# - every other test/class_macro_*.rb and test/define_method_*.rb is refused
-#   or answers its .expected;
+# - every other test/class_macro_*.rb and test/define_method_*.rb is refused,
+#   or answers its .expected and exits 0;
 # - test/reject/*macro*.rb stays refused;
 # - test/analysis-forms/declines/*.rb, one program per reason the form
 #   leaves a call as written, is refused, under the switch and under
@@ -95,7 +95,8 @@ for t in test/class_macro_*.rb test/define_method_*.rb; do
   case " $(echo $MACRO_FORMS) " in *" $t "*) continue ;; esac
   n=$((n + 1))
   "$SP" "$t" -o "$tmp/m.bin" >"$tmp/m.cc" 2>&1 || continue
-  $TO "$tmp/m.bin" >"$tmp/m.out" 2>&1
+  $TO "$tmp/m.bin" >"$tmp/m.out" 2>&1; rc=$?
+  [ $rc -eq 0 ] || { echo "analysis-forms-test: FAIL ($t: compiled under SPINEL_CLASS_MACROS=analysis, run exits $rc)"; ok=0; }
   cmp -s "$tmp/m.out" "$t.expected" ||
     { echo "analysis-forms-test: FAIL ($t: compiled under SPINEL_CLASS_MACROS=analysis, wrong output)"; diff -u "$t.expected" "$tmp/m.out" | head -10; ok=0; }
   rm -f "$tmp/m.bin"
