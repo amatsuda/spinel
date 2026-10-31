@@ -19719,6 +19719,14 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
      (cr_count_name, compute_reachable). A 0-argument `r.attribute` kept a
      2-parameter `attribute` alive, and with it a define_method whose name
      is not literal. */
+  /* A class body's call on self that the plan binds to one class method
+     (cplan_cbody_direct) reaches that method alone: no other scope of the
+     name, whatever its arity, is a target */
+  if (g_cr_typed && k0 == NK_CallNode && nm && names[0] == nm && !nt_int(nt, id, "dyn_arm", 0) &&
+      cplan_cbody_direct(c, id)) {
+    cr_add_targets(c, id, out, n, cap);
+    names[0] = NULL;
+  }
   char argc_name[300];
   if (g_cr_typed && k0 == NK_CallNode && names[0] && (names[0] == nm || names[0] == inst_name) && !nt_int(nt, id, "dyn_arm", 0)) {
     const char *cn = cr_count_name(c, nt, id, names[0], argc_name, sizeof argc_name, out, n, cap);

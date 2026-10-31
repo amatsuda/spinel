@@ -1816,6 +1816,16 @@ int cplan_def_takes_argc(Compiler *c, int mi, int argc) {
   return sc->def_node < 0 || nt_kind(c->nt, sc->def_node) != NK_DefNode || cplan_def_takes(c, mi, -1, argc);
 }
 
+int cplan_cbody_direct(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || id >= c->node_cap || !c->node_cbody || c->node_cbody[id] < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  const Scope *s = comp_scope_of(c, id);
+  int r = nt_ref(nt, id, "receiver");
+  if ((s && s->name) || (r >= 0 && nt_kind(nt, r) != NK_SelfNode)) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  return p->mi >= 0 && p->via == UC_CMETH && p->dispatch == CP_DIRECT && p->owner_ci == c->node_cbody[id];
+}
+
 int cplan_target_binds(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
   if (id < 0 || mi < 0 || mi >= c->nscopes || nt_kind(nt, id) != NK_CallNode) return 1;
