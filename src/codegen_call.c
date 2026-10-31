@@ -28165,6 +28165,7 @@ static void emit_call_inner(Compiler *c, int id, Buf *b) {
   if (g_plan_check) ucall_emitted(id);
   if (g_repr_check) repr_check_ask(c, id);
   if (emit_call_non_proc_block(c, id, b)) return;
+  if (nt_int(c->nt, id, "concat_builtin_version", 0) && emit_array_splat_mutator(c, id, b)) return;
   /* A builtin_only call on a boxed receiver (a prepended Array method's
      `super`, self boxed): the builtin's arm alone, as a poly dispatch's
      builtin arm re-enters the call -- the program's method of that name

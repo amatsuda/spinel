@@ -945,6 +945,7 @@ int desugar_method_call_runtime_name(Compiler *c);
 int desugar_builtin_method_defined_conds(Compiler *c);
 int desugar_engine_branches(Compiler *c);
 int desugar_conditional_defs(Compiler *c);
+int desugar_concat_builtin_version(Compiler *c);
 /* A dispatcher def over arms `<sel> == <val>` calling `callee` with the
    def's parameters passed on, and an else arm (disp_def_build,
    analyze_desugar.c); `raise NoMethodError, msg` for that arm */

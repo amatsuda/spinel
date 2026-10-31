@@ -13169,6 +13169,53 @@ int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, in
   return def;
 }
 
+/* A program's Array#concat replaces an existing method. Keep that builtin
+   as the first version, so a call in a method or a kept block can choose
+   it until the program's definition runs, through the usual version cells. */
+int desugar_concat_builtin_version(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  CondDef *v = NULL;
+  int n = 0, like = -1;
+  for (int r = 0; r < nt_nroots(nt); r++)
+    cdef_walk(nt, prog_root_stmts(c, r), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0, -1, -1, -1 }, &v, &n);
+  for (int i = 0; i < n; i++) {
+    if (v[i].def >= 0 && !v[i].cm && sp_streq(v[i].path, "/Array") &&
+        nt_ref(nt, v[i].cls, "superclass") < 0 && sp_streq(nt_str(nt, v[i].def, "name"), "concat"))
+      like = v[i].def;
+    free((char *)v[i].path);
+  }
+  free(v);
+  if (like < 0) return 0;
+  int call = disp_forward_call(nt, "concat", -1, 0);
+  nt_node_set_ref(nt, call, "receiver", nt_new_node(nt, "SelfNode"));
+  nt_node_set_int(nt, call, "builtin_only", 1);
+  nt_node_set_int(nt, call, "desugar_builtin", 1);
+  nt_node_set_int(nt, call, "concat_builtin_version", 1);
+  int args = nt_ref(nt, call, "arguments"), argc = 0;
+  const int *argv = nt_arr(nt, args, "arguments", &argc);
+  nt_node_set_arr(nt, args, "arguments", argv, 1);
+  int def = disp_def_build(nt, like, "concat", 0, -1, 0, NULL, 0, call);
+  nt_node_set_ref(nt, nt_ref(nt, def, "parameters"), "keyword_rest", -1);
+  nt_node_set_ref(nt, def, "body", cdef_stmts(nt, call));
+  nt_node_set_int(nt, def, "concat_builtin_version", 1);
+  nt_node_set_int(nt, def, "node_line", 0);
+  nt_node_set_int(nt, def, "node_col", 0);
+  int cls = fwd_new_node_like(nt, like, "ClassNode"), cp = nt_new_node(nt, "ConstantReadNode");
+  nt_node_set_str(nt, cp, "name", "Array");
+  nt_node_set_ref(nt, cls, "constant_path", cp);
+  nt_node_set_ref(nt, cls, "body", cdef_stmts(nt, def));
+  int top = prog_root_stmts(c, 0), count = 0;
+  const int *old = nt_arr(nt, top, "body", &count);
+  int *body = malloc(sizeof(int) * (size_t)(count + 1));
+  if (!body) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  body[0] = cls;
+  if (count) memcpy(body + 1, old, sizeof(int) * (size_t)count);
+  nt_node_set_arr(nt, top, "body", body, count + 1);
+  free(body);
+  comp_grow_node_arrays(c);
+  return 1;
+}
+
 int desugar_conditional_defs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   CondDef *v = NULL;
@@ -24149,6 +24196,7 @@ int desugar_method_added_hook(Compiler *c) {
       int st = stmts[k];
       out[m++] = st;
       if (nt_kind(nt, st) != NK_DefNode || nt_ref(nt, st, "receiver") >= 0) continue;
+      if (nt_int(nt, st, "concat_builtin_version", 0)) continue;
       const char *mname = nt_str(nt, st, "name");
       if (!mname) continue;
       if (k + 1 < n && nt_kind(nt, stmts[k + 1]) == NK_CallNode) {

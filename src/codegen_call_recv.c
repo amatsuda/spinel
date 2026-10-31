@@ -1447,8 +1447,8 @@ void emit_gather_call_args(Compiler *c, const int *argv, int argc, int ta, Buf *
    [1, 2, [3, 4]]) and dropped an anonymous `*` altogether. Gather the
    arguments into one poly array -- a splat contributes each of its elements --
    and apply the operation element by element. Used by the value and the
-   statement form alike. A poly receiver is taken for insert alone, which may
-   be a String's (one text) as well as an Array's. */
+   statement form alike. A poly receiver is taken for insert, which may be
+   a String's (one text), and the initial builtin concat method version. */
 int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -1467,8 +1467,9 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
   if (is_insert && nt_kind(nt, argv[0]) == NK_SplatNode) return 0;
   Repr rr = repr_of(c, recv), ir = repr_of(c, id);
   TyKind rt = rr.as_ty;
-  int poly = rr.kind == RK_BOXED && is_insert;
-  if (poly)
+  int poly_concat = rr.kind == RK_BOXED && is_concat && nt_int(nt, id, "concat_builtin_version", 0);
+  int poly = rr.kind == RK_BOXED && (is_insert || poly_concat);
+  if (poly && !poly_concat)
     for (int k2 = 0; k2 < c->nclasses; k2++)
       if (comp_poly_arm_defines(c, k2, name)) return 0;
   /* a typed literal receiver given elements of another kind is rebuilt as
@@ -1508,6 +1509,10 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_int _t%d = ", ti); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
   }
   emit_gather_call_args(c, argv + (is_insert ? 1 : 0), argc - (is_insert ? 1 : 0), ta, b);
+  /* The builtin method version has already received its arguments. Its
+     frozen check precedes any to_ary, including an empty argument list. */
+  if (poly_concat)
+    buf_printf(b, " if (sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d);", tr, tr);
   if (is_concat) {
     int tf = ++g_tmp, tc = ++g_tmp;
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
@@ -1519,7 +1524,7 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
   /* a frozen receiver raises even when the splats spread no element */
   if (!poly)
     buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", tr, tr, tr, array_frozen_cls(rt));
-  else buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id) && sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d);", tr, tr, tr, tr);
+  else if (!poly_concat) buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id) && sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d);", tr, tr, tr, tr);
   int tj = ++g_tmp;
   /* the values come boxed, and a nil converts to an Integer or Float
      array's nil element */
@@ -1528,7 +1533,13 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
      value: nil there is the operand TypeError */
   const char *pconv = et == TY_INT ? "sp_poly_elem_i_v" : et == TY_FLOAT ? "sp_poly_elem_f_v" : conv;
   if (!nsfx[0]) conv = pconv;
-  if (is_push || is_concat)
+  if (poly_concat)
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {"
+                  " if (_t%d.cls_id == SP_BUILTIN_SYM_ARRAY)"
+                  " sp_IntArray_push((sp_IntArray *)_t%d.v.p, sp_bm_arg_sym(_t%d->data[_t%d]));"
+                  " else sp_poly_ary_append(_t%d, _t%d->data[_t%d]); }",
+               tj, tj, ta, tj, tr, tr, ta, tj, tr, ta, tj);
+  else if (is_push || is_concat)
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
                   " sp_%sArray_push%s(_t%d, %s(_t%d->data[_t%d]));",
                tj, tj, ta, tj, k, nsfx, tr, conv, ta, tj);

@@ -47547,6 +47547,7 @@ static void an_phase_desugar_register(Compiler *c) {
                                            ahead of the runtime-condition defs, which it answers statically */
   AN_STEP_V("desugar_class_body_self_calls", desugar_class_body_self_calls(c));     /* self.v = x / v in a class body -> Cls.v = x / Cls.v */
   AN_STEP_V("desugar_conditional_defs", desugar_conditional_defs(c));
+  AN_STEP_V("desugar_concat_builtin_version", desugar_concat_builtin_version(c));
   lower_run(c, &lc, LW_MARK_MATCH_RANGES);   /* when 0..0.05 matches as 0.0..0.05 */
   lower_run(c, &lc, LW_MARK_RANGE_LOCALS);
   lower_run(c, &lc, LW_DUPLICATE_UNDERSCORE_PARAMS); /* |_, _| -> |_, _dup1| */
