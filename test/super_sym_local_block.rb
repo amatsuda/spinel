@@ -1,5 +1,7 @@
 # super(args, &s) with s a local holding a Symbol hands the parent's &b,
-# yield or a kept proc the Symbol's block, reading s where super runs.
+# yield or a kept proc the Symbol's block, reading s where super runs:
+# after an argument that rebinds s, and sending every value the parent
+# yields (`yield 255, 16` with :to_s is 255.to_s(16)).
 class A
   def m(a, &b)
     b ? b.call(a) : "no block"
@@ -63,3 +65,19 @@ class C < A
   end
 end
 p C.new.m("MiX")
+class E
+  def y = yield(255, 16)
+  def m(a, &b) = b.call(a)
+end
+class F < E
+  def y
+    s = :to_s
+    super(&s)
+  end
+  def m(a)
+    s = :upcase
+    super((s = :downcase; a), &s)
+  end
+end
+p F.new.y
+p F.new.m("Hi")

@@ -17131,12 +17131,15 @@ static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n
 
 /* For a call `id` of a method of the program, how many values it passes its
    block when that is more than one and its body agrees on it, else 0; -1
-   when the call reaches no method of the program. */
+   when the call reaches no method of the program. A `super` asks the
+   method it calls. */
 static int user_block_values(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
-  if (nt_kind(nt, id) != NK_CallNode || (nm && strncmp(nm, "__enum_", 7) == 0)) return -1;
-  int mi = backprop_call_target(c, id);
+  int sup = nt_kind(nt, id) == NK_SuperNode;
+  if ((!sup && nt_kind(nt, id) != NK_CallNode) || (nm && strncmp(nm, "__enum_", 7) == 0)) return -1;
+  Scope *in = sup ? comp_scope_of(c, id) : NULL;
+  int mi = sup ? (in ? a_super_target(c, in) : -1) : backprop_call_target(c, id);
   if (mi < 0 || mi >= c->nscopes) return -1;
   const Scope *ms = &c->scopes[mi];
   const char *bpn = ms->blk_param;

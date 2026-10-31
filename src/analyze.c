@@ -10935,7 +10935,7 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     /* as many parameters as the call passes its block: the first receives
        the send, the rest are its arguments */
-    int npar = is_toproc || ty_k != NK_CallNode ? 1 : sym_block_values(c, id);
+    int npar = is_toproc ? 1 : sym_block_values(c, id);
     if (npar < 1) npar = 1;
     char pn[8][64];
     int preq[8], sa[9];
@@ -42879,7 +42879,9 @@ static void desugar_block_arg_order(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
+    /* a `super(a, &s)` too, where an argument rebinds s (below) */
+    int is_super = nt_kind(nt, id) == NK_SuperNode;
+    if (!is_super && nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
     int be = nt_ref(nt, blk, "expression");
@@ -42892,6 +42894,7 @@ static void desugar_block_arg_order(Compiler *c) {
        it read, so s is read in its turn */
     int lread = nt_kind(nt, be) == NK_LocalVariableReadNode;
     if (!seq && !lread && !bo_may_act(nt, be)) continue;
+    if (is_super && (seq || !lread || bo_may_act(nt, be))) continue;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av0 = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
