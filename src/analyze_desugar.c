@@ -9625,13 +9625,18 @@ int builtin_instance_method_known(const char *cls, const char *m);
    top level, or of an unrelated class, does not displace it. Any other name
    (Kernel's tap and then): for a program object, its class's chain; for a
    builtin, the program's reopening of it; for either, a method every object
-   answers. A receiver of no single class asks the whole program. */
+   answers. A receiver of no single class asks the whole program, and so
+   does one the optimistic rounds typed, for a name its builtin class
+   defines: the forward made now is not revisited, and a Mutex there may
+   still widen to a boxed value that holds a program class's synchronize,
+   whose yield would reach a block of the Mutex's count. */
 static int recv_may_reach_program_method(Compiler *c, int call, TyKind rt, const char *name) {
   int k = -1, own = 0;
   if (ty_is_object(rt)) k = ty_object_class(rt);
   else {
     int core = core_of_type(rt);
     own = core >= 0 && builtin_instance_method_known(core_class_name(core), name);
+    if (own && g_infer_optimistic) return program_defines_method_named(c, name);
     const char *bn = builtin_class_of_type(rt);
     if (own) k = comp_core_class(c, core);
     else if (!bn) return program_defines_method_named(c, name);
