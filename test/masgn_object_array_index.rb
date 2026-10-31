@@ -1,7 +1,8 @@
 # A multiple assignment stores into the elements of an Array of one class's
 # objects (`list[0], list[1] = list[1], list[0]`), which was refused at
-# compile time: a swap, a rotation, negative indices, an index past the end,
-# and the IndexError of an index below the start.
+# compile time: a swap, a rotation, indices read before the stores, negative
+# indices, an index past the end, and the IndexError of an index below the
+# start.
 
 class Node
   attr_reader :id, :links
@@ -33,6 +34,17 @@ a[i], a[j] = a[j], a[i]
 p ids(a)
 a[0], a[1], a[2] = a[1], a[2], a[0]
 p ids(a)
+
+# an index is read before any target is assigned, as CRuby reads it
+i = 0
+i, a[i] = 1, Node.new(13)
+p i, ids(a)
+j = 2
+a[j], j = Node.new(14), 0
+p j, ids(a)
+k = 0
+k, a[k], a[k + 1] = 2, a[2], a[0]
+p k, ids(a)
 
 # negative indices, and a store past the end that grows the Array
 a[-1], a[-3] = a[-3], a[-1]

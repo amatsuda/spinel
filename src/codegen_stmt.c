@@ -18346,17 +18346,18 @@ static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
     if (index && nt_int(nt, flat[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
     int k2 = index ? masgn_target_key2(nt, flat[i]) : -1;
     if (k2 >= 0) obj_ix = 0;   /* a user `[]=` takes one key here */
-    if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
+    int arr_ix = index && (ty_is_array(rt) || ty_is_obj_array(rt));
+    if (index && (k < 0 || !(poly_r || obj_ix || arr_ix || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
     /* an attribute's receiver is an object or a boxed value, whose store
        dispatches on its class */
     if (!index && !ty_is_object(rt) && rt != TY_POLY) continue;
     mt->recv[i] = masgn_hoist_part(c, r, poly_r || rr.kind == RK_BOXED ? TY_POLY : rt, hb);
     if (obj_ix) mt->key[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb);
-    else if (index) mt->key[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
+    else if (index) mt->key[i] = masgn_hoist_part(c, k, poly_r || arr_ix ? TY_INT : ty_hash_key(rt), hb);
     /* a Hash raises for two keys, so its second key is only evaluated */
     if (k2 >= 0 && !obj_ix) {
       TyKind k2t = repr_of(c, k2).as_ty;
-      mt->key2[i] = masgn_hoist_part(c, k2, poly_r || ty_is_array(rt) ? TY_INT : k2t == TY_NIL || k2t == TY_VOID || k2t == TY_UNKNOWN ? TY_POLY : k2t, hb);
+      mt->key2[i] = masgn_hoist_part(c, k2, poly_r || arr_ix ? TY_INT : k2t == TY_NIL || k2t == TY_VOID || k2t == TY_UNKNOWN ? TY_POLY : k2t, hb);
     }
   }
 }
