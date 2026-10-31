@@ -1,0 +1,5 @@
+[".", ".hidden", "a.txt", "sub"]
+["sub/.", "sub/b.html"]
+["a.txt", "sub"]
+[".", ".hidden", "a.txt", "sub"]
+["a.txt", "sub"]
