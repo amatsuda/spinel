@@ -13441,13 +13441,14 @@ static int program_defines_name(const NodeTable *nt, int n0, const char *name) {
   return 0;
 }
 
-/* is def a statement of a file's top level? */
+/* is def a statement of a file's top level (or one a visibility call
+   wraps, `private def m`)? */
 static int def_at_top_level(const NodeTable *nt, int n0, int def) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_ProgramNode) continue;
     int st = nt_ref(nt, id, "statements"), bn = 0;
     const int *bb = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
-    for (int k = 0; k < bn; k++) if (bb[k] == def) return 1;
+    for (int k = 0; k < bn; k++) if (bb[k] == def || fwd_body_def(nt, bb[k]) == def) return 1;
   }
   return 0;
 }
@@ -14933,6 +14934,15 @@ int desugar_builtin_enum_calls(Compiler *c) {
     if (chained && chained[id]) continue;
     TyKind rt = infer_type(c, recv);
     int ok = 0;
+    /* an Integer, a String or nil has no Enumerable at all: a call renamed
+       to the builtin's name (detect to find) takes back the name it was
+       written with, the one a top-level method a send reaches answers
+       (`42.send(:detect)`), or a reopening of the receiver's class */
+    if ((rt == TY_NIL || rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT || rt == TY_STRING ||
+         rt == TY_STRBUF || rt == TY_SYMBOL || rt == TY_BOOL) && enum_unrename(nt, id)) {
+      changed = 1;
+      continue;
+    }
     /* an Enumerator over a generator is driven lazily through #next by the
        typed emitter of these names, which is what lets a prefix be taken
        from an infinite one (or a search on one to terminate at all); the
