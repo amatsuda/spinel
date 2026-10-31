@@ -3180,31 +3180,36 @@ int desugar_compose_method_operand(Compiler *c) {
   return changed;
 }
 
-/* Array#+ - | & concat <=> with a program object whose class answers #to_ary
-   with an Array: CRuby converts such an operand through to_ary, so the call
-   takes `w.to_ary` at the AST, where the object operand raised NoMethodError
-   (#7407 converts a boxed one at run time). Only when to_ary is known to
-   answer an Array, which is when the conversion and the call agree. An
-   Array subclass instance is an Array already and keeps its own elements. */
+/* Array#+ - | & concat <=> replace union difference intersection with a
+   program object whose class answers #to_ary with an Array: CRuby converts
+   such an operand through to_ary, so the call takes `w.to_ary` at the AST,
+   where the object operand raised NoMethodError (#7407 converts a boxed one
+   at run time). Only when to_ary is known to answer an Array, which is when
+   the conversion and the call agree. An Array subclass instance is an Array
+   already and keeps its own elements. */
 int desugar_array_op_to_ary(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  static const char *const calls_of[] = { "+", "-", "|", "&", "concat", "<=>", NULL };
+  static const char *const calls_of[] = { "+", "-", "|", "&", "concat", "<=>", "replace", "union",
+                                          "difference", "intersection", NULL };
   int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
   for (int q = 0; q < ncalls; q++) {
     int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
+    int named = nm && (sp_streq(nm, "replace") || sp_streq(nm, "union") || sp_streq(nm, "difference") ||
+                       sp_streq(nm, "intersection"));
     if (!nm || !(sp_streq(nm, "+") || sp_streq(nm, "-") || sp_streq(nm, "|") || sp_streq(nm, "&") ||
-                 sp_streq(nm, "concat") || sp_streq(nm, "<=>"))) continue;
+                 sp_streq(nm, "concat") || sp_streq(nm, "<=>") || named)) continue;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (recv < 0 || an != 1 || !av || nt_ref(nt, id, "block") >= 0) continue;
     if (!ty_is_array(infer_type(c, recv))) continue;
-    /* A selected program concat receives the original argument. */
-    if (sp_streq(nm, "concat") && cplan_user_fresh(c, id)->dispatch != CP_NONE) continue;
+    /* A selected program concat (or replace, union, ...) receives the
+       original argument. */
+    if ((sp_streq(nm, "concat") || named) && cplan_user_fresh(c, id)->dispatch != CP_NONE) continue;
     TyKind at = infer_type(c, av[0]);
     if (!ty_is_object(at)) continue;
     int mi = comp_implicit_to_ary_mi(c, ty_object_class(at));
