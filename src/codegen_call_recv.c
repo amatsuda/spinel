@@ -15135,6 +15135,16 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     else emit_expr(c, recv, &rb);
   }
   const char *rs = box ? bx : rb.p ? rb.p : "sp_box_nil()";
+  /* concat converts operands at their turn on the original Array, rather
+     than a normalized copy whose writeback could lose callback changes. */
+  if (kind == PF_ARRAY && sp_streq(name, "concat")) {
+    int argc = 0, saved = g_n_argov;
+    const int *argv = call_args(nt, id, &argc);
+    view_bind(recv, "%s", rs);
+    int ok = emit_builtin_array_concat(c, id, recv, TY_POLY, argv, argc, 0, val);
+    view_unbind(saved);
+    if (ok) { free(rb.p); return TY_POLY; }
+  }
   if (kind == PF_ARRAY && face_fill_in_place(c, id)) {
     int argc = 0;
     const int *argv = call_args(nt, id, &argc);
@@ -15625,6 +15635,7 @@ int face_args_misfit(Compiler *c, int id, unsigned kind) {
   if (!nt_call_args_plain(nt, id)) return 0;
   unsigned fl = ty_poly_face_owner_flags(nt_str(nt, id, "name"), argc, nt_ref(nt, id, "block") >= 0, 1, kind);
   if (!(fl & PF_ARGS_OWN)) return 0;
+  if (kind == PF_ARRAY && sp_streq(nt_str(nt, id, "name"), "concat")) return 0;
   for (int i = 0; i < argc; i++)
     if (face_arg_misfit(c, kind, argv[i])) return 1;
   return 0;
@@ -15657,7 +15668,7 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
     if (!(own & kind)) continue;
     unsigned fl = ty_poly_face_owner_flags(name, argc, has_blk, plain, kind);
     int misfit = -1;
-    if ((fl & PF_ARGS_OWN) && plain)
+    if ((fl & PF_ARGS_OWN) && plain && !(kind == PF_ARRAY && sp_streq(name, "concat")))
       for (int i = 0; i < argc && misfit < 0; i++) if (face_arg_misfit(c, kind, argv[i])) misfit = i;
     Buf pre = {0, 0, 0}, val = {0, 0, 0};
     TyKind nat = TY_UNKNOWN;

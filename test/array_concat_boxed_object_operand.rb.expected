@@ -1,0 +1,8 @@
+[1, "s", 2, 3]
+[:convert]
+[1, "s", 2, 3]
+true
+[:convert]
+[1, 9, 2, 3]
+true
+[:convert]

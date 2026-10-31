@@ -1,0 +1,5 @@
+[0, 1, 3]
+TypeError
+"can't convert ConcatOptionalSource to Array (ConcatOptionalSource#to_ary gives NilClass)"
+[0]
+[:convert, :convert]
