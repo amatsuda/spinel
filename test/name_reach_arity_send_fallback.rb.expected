@@ -1,0 +1,4 @@
+ArgumentError: wrong number of arguments (given 1, expected 2)
+ArgumentError: wrong number of arguments (given 0, expected 2)
+A bar 3
+top bar 3

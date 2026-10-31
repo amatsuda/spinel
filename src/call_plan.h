@@ -157,7 +157,8 @@ int cplan_targets(Compiler *c, int id, int *out, int cap);
 /* cplan_targets, for a reader that wants the code the call's emission
    names (reachability): the same answer, but for a call on a boxed receiver
    the methods of the arms its dispatch has, which the receiver's class
-   facts bound, not every class's method of the name. */
+   facts bound, not every class's method of the name; and for a send on one,
+   the top-level method it falls back to (send_fallback). */
 int cplan_emitted_targets(Compiler *c, int id, int *out, int cap);
 /* Why cplan_targets answers CPT_UNKNOWN for call id: its members are more
    than cap (CPT_WHY_CAP), or its receiver is of a type the analysis did not
