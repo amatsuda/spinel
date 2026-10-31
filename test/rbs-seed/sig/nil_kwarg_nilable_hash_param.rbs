@@ -1,0 +1,3 @@
+module NilKwargHashSeed
+  def self.size_of: (?h: Hash[Symbol, untyped]?) -> String
+end

@@ -7959,7 +7959,10 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
                of its own, and its result was dropped. */
             int ht = ++g_tmp;
             Buf ab2; memset(&ab2, 0, sizeof ab2);
-            emit_expr(c, provided, &ab2);
+            /* a nil one boxes: as an expression a literal nil is the C
+               scalar 0, which no sp_RbVal initializer takes (#10677) */
+            if (at == TY_NIL) emit_boxed(c, provided, &ab2);
+            else emit_expr(c, provided, &ab2);
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", ht, ab2.p ? ab2.p : "sp_box_nil()");
             free(ab2.p);
