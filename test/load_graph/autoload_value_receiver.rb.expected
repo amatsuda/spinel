@@ -1,0 +1,4 @@
+user autoload X
+user autoload Z
+NoMethodError
+done
