@@ -1,4 +1,4 @@
-# spinel: reject-subclass: a define_method under a condition only the run time decides
+# spinel: reject-subclass: a method defined under a condition only the run time decides is not answered for
 S = Struct.new(:a) do
   if ENV["NOPE"]
     define_method(:x) { 1 }

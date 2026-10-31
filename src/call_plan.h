@@ -74,6 +74,9 @@ typedef struct {
 
 int cplan_accessor_classes(Compiler *c, int id, int *out, int cap);
 int cplan_super_chain_mi(Compiler *c, int id, Scope *s, int par, const char *name);
+/* ...and the method `super` in s reaches (its prepend chain's next, else
+   that), *at the class it is found from */
+int cplan_super_target(Compiler *c, int id, Scope *s, int *at);
 /* A conversion performed by a helper, separately from the enclosing call. */
 CallPlan cplan_conversion(Compiler *c, int ci, const char *name);
 CallPlan cplan_method_call(Compiler *c, int id);
@@ -123,9 +126,11 @@ void ver_prepend_cell_name(int cell, char out[32]);
 /* `cell = v` put in statement list `list` at its statement `at` (after it
    when after): the write, for the caller to record (elab_record_write) */
 int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int v);
-void ver_cells_write(Compiler *c);
+void ver_cells_write(Compiler *c, int from);
+int ver_entries_demand(Compiler *c);
 /* the methods entry scope e's arms call, its else arm's last: at most
-   VER_MAX_ARMS + 1 */
+   VER_MAX_ARMS + 1; an open history's else arm, which calls none, as its
+   last version (the method a Method object of it captured before) */
 enum { VER_MAX_ARMS = 64 };
 int ver_entry_targets(const Compiler *c, int e, int *out, int *tests);
 int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi);

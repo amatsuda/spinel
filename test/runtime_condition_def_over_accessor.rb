@@ -1,7 +1,6 @@
-# spinel: reject-subclass: a def under a condition only the run time decides, of a name another method answers
 # When the branch does not run, Child#foo is the reader Parent declares
-# (CRuby: :inherited); an accessor answers the name as a def would, so the
-# def is refused rather than raising NoMethodError then.
+# (CRuby: :inherited): the def under a condition only the run time decides
+# answers only once its branch ran.
 class Parent
   attr_reader :foo
   def initialize = @foo = :inherited

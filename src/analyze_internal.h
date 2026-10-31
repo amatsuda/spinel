@@ -150,6 +150,7 @@ int core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_c
 const char *core_class_ancestors(const char *cls);   /* codegen_call_class.c */
 int builtin_method_arity(const char *cls, const char *m, int *out);
 int builtin_cmethod_known(const char *cls, const char *name);
+int builtin_instance_method_known(const char *cls, const char *m);   /* codegen_call.c */
 int builtin_super_cmethod_known(const char *cls, const char *name);
 int builtin_method_names(const char *cls, const char **out, int cap);
 int builtin_name_arity_span(const char *name, int with_block, int *lo, int *hi);
@@ -948,7 +949,10 @@ typedef struct { const char *sel; int val; const char *callee; int hist; } DispA
 int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, int blk,
                    const DispArm *arm, int narm, int els);
 int disp_raise_no_method(NodeTable *nt, const char *msg);
+int disp_raise_no_method_self(NodeTable *nt, const char *head, int inst);
 int disp_forward_call(NodeTable *nt, const char *callee, int ar, int blk);
+int disp_super_call(NodeTable *nt, int ar, int blk);
+int disp_method_missing_call(NodeTable *nt, const char *name, int ar, int blk);
 int desugar_dynamic_respond_to(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);

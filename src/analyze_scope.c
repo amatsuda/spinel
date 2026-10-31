@@ -3547,19 +3547,20 @@ static void struct_block_cbody(Compiler *c, int node, int ci, const int *blk) {
 
 /* A define_method in a Struct block that the load phase does not apply
    whenever the block runs (elab_def_applied: under a run-time condition,
-   in a loop, a case, a rescue), or that is left without a class, defines
-   its method only when that code runs: the struct would answer it from
-   the start or not at all. It is refused, as a def there is
-   (cond_def_class_new). */
-static void struct_cond_dm_refuse(Compiler *c, int ci) {
+   in a loop, a case, a rescue) defines its method only when that code
+   runs. Its open history's entry answers a call (ver_named_one); it is
+   marked cond_lone, so that a question about the method by name is
+   refused (ver_refl_named). One left without a class is refused, as a def
+   there is. */
+static void struct_cond_dm_mark(Compiler *c, int ci) {
   NodeTable *nt = (NodeTable *)c->nt;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     int dn = sc->def_node;
     if (sc->is_cmethod || dn < 0 || c->node_cbody[dn] != ci) continue;
     if (nt_kind(nt, dn) != NK_CallNode || !is_define_method_name(nt_str(nt, dn, "name"))) continue;
-    if (sc->class_id >= 0 && elab_def_applied(c, dn)) continue;
-    if (nt_int(nt, dn, "dm_host", 0)) continue;  /* in a method's body */
+    if ((sc->class_id >= 0 && elab_def_applied(c, dn)) || nt_int(nt, dn, "dm_host", 0)) continue;   /* (dm_host: in a method's body) */
+    if (sc->class_id >= 0) { nt_node_set_int(nt, dn, "cond_lone", 1); continue; }
     nt_node_set_int(nt, dn, "struct_cond_dm", 1);
     nt_node_set_str(nt, dn, "name", "raise");
     nt_node_set_ref(nt, dn, "receiver", -1);
@@ -3570,10 +3571,10 @@ static void struct_cond_dm_refuse(Compiler *c, int ci) {
 
 /* What a Struct.new / Data.define block's class needs once register_structs
    has made it, beyond the classes its methods take from the load record
-   (lr_def_owners): its nodes' class body, and the refusal of a
+   (lr_def_owners): its nodes' class body, and the marks of a
    define_method left under a condition. The record names the class each
    block is a body of (elab_class_bodies); a node takes the innermost
-   struct block it is in, and the refusal reads that once every block is
+   struct block it is in, and the marks read that once every block is
    marked. */
 void fix_struct_block_scopes(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -3597,7 +3598,7 @@ void fix_struct_block_scopes(Compiler *c) {
     int nb = 0;
     const LrOpen *o = elab_class_bodies(c, ci, &nb);
     for (int i = 0; i < nb; i++)
-      if (struct_block_body(nt, &o[i]) >= 0) { struct_cond_dm_refuse(c, ci); break; }
+      if (struct_block_body(nt, &o[i]) >= 0) { struct_cond_dm_mark(c, ci); break; }
   }
   free(blk);
 }
@@ -6615,6 +6616,16 @@ static int scope_body_has_super(Compiler *c, int scope_idx) {
   return 0;
 }
 
+/* Does something reach the super of method scope mi, cls's method of
+   name: a super in its body, or the entry of cls's open history of the
+   name (call_plan.c, ver_named_kind), whose else arm, run before any
+   version has, is super when it reaches a method (elab_history_absent:
+   no version of it surely ran)? The include path keeps the module method
+   that would be that super target only then. */
+static int inc_super_reached(Compiler *c, int mi, int cls, const char *name) {
+  return scope_body_has_super(c, mi) || elab_history_absent(c, cls, 0, name);
+}
+
 /* True when the scope body reads or writes an instance variable. A module
    instance method that touches an ivar must be re-attributed (cloned) to the
    includer so the ivar types against the includer's slot, not a separate
@@ -6889,7 +6900,7 @@ static void include_module_methods(Compiler *c, int ci, int mod_id, int guard, i
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(inc_shadow);
       comp_scope_set_shadow(c, own, SHADOW_INC, src->name);
-      if (scope_body_has_super(c, ms)) comp_prep_chain_add(cif, src->name, inc_shadow);
+      if (inc_super_reached(c, ms, mod_id, src->name)) comp_prep_chain_add(cif, src->name, inc_shadow);
       /* (a guarded copy's entry runs the earlier copy until the include
          has run) */
       else if (!guarded) { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
@@ -6918,7 +6929,7 @@ static void include_module_methods(Compiler *c, int ci, int mod_id, int guard, i
          under a shadow name only, which the alias names
          (register_include_attrs). Otherwise the module method is simply
          shadowed -- nothing to emit. */
-      int super_reaches = scope_body_has_super(c, own);
+      int super_reaches = inc_super_reached(c, own, ci, src->name);
       if (!super_reaches && !module_aliases_name(&c->classes[mod_id], src->name) &&
           !class_aliases_name(&c->classes[ci], src->name)) {
         if (!src->is_module_function) src->is_transplanted_source = 1;

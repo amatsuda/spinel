@@ -1767,10 +1767,15 @@ static int lr_nested_part(void *ud, int ch, ElabPos *q) {
   if (q->kind == EP_LIST || q->kind == EP_NEW || (q->bits & LR_LATE) || q->defer) return 0;
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_BlockNode ||
       k == NK_LambdaNode || k == NK_DefinedNode) return 0;
-  lr_autoload(n->x, ch, n->fc, n->fs, q->may || q->partial);
-  lr_const_write(n->x->c, ch, q->e, n->fc, n->fs, q->may || q->partial);
-  if (k == NK_DefNode) { lr_def(n->x, ch, n->fc, n->fs, *n->vs, q->may); return 0; }
-  if (k == NK_CallNode && lr_nested_form(nt_str(nt, ch, "name"))) { lr_call(n->x, ch, n->fc, n->fs, n->vs, n->fnode, q->may, 1); return 0; }
+  /* q->may is a condition inside the statement (lr_record_stmt starts the
+     walk with none): a part that may not run where its statement runs (the
+     right side of `&&`) is a may version of LR_MAY_IN, which a later
+     statement of the list has not run for that (lr_may_dominates) */
+  int smay = n->x->r->st[q->e].may, may = q->may ? LR_MAY_IN : smay;
+  lr_autoload(n->x, ch, n->fc, n->fs, q->may || smay || q->partial);
+  lr_const_write(n->x->c, ch, q->e, n->fc, n->fs, q->may || smay || q->partial);
+  if (k == NK_DefNode) { lr_def(n->x, ch, n->fc, n->fs, *n->vs, may); return 0; }
+  if (k == NK_CallNode && lr_nested_form(nt_str(nt, ch, "name"))) { lr_call(n->x, ch, n->fc, n->fs, n->vs, n->fnode, may, 1); return 0; }
   return 1;
 }
 
@@ -1874,7 +1879,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
             k == NK_AliasMethodNode || k == NK_UndefNode || (k == NK_CallNode && lr_nested_form(nt_str(nt, node, "name")));
   if (!own) {
     ElabPos at = { .e = e, .file = s->file, .top = s->top, .frame = f, .depth = s->depth, .rep = s->rep, .list = -1,
-                   .may = s->may, .partial = s->partial, .fmay = s->fmay, .fpartial = s->fpartial, .kind = EP_SPINE };
+                   .may = 0, .partial = s->partial, .fmay = s->fmay, .fpartial = s->fpartial, .kind = EP_SPINE };
     LrNested n = { x, fc, fs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), vs };
     elab_parts(nt, node, &at, lr_nested_part, &n);
   }
@@ -2479,7 +2484,7 @@ enum { LR_STOP = 3, LR_ONCE = 2 };
    hold p's, as deep as p is nested. */
 static int lr_may_dominates(const LoadRecord *r, const LrDef *v, LoadPoint p) {
   const LrStmt *sv = lr_stmt_of(r, v->node);
-  if (!sv || sv->region < 0 || sv->list < 0 || p.region != sv->region || p.seq < 0 || p.seq >= r->nst) return 0;
+  if (v->may == LR_MAY_IN || !sv || sv->region < 0 || sv->list < 0 || p.region != sv->region || p.seq < 0 || p.seq >= r->nst) return 0;
   for (int x = p.seq; x >= 0; x = r->st[x].up)
     if (r->st[x].list == sv->list) return x > (int)(sv - r->st);
   return 0;
@@ -2743,18 +2748,27 @@ static int lr_chain_versions(Compiler *c, int cls, int sg, const char *name, Ela
   }
   return n;
 }
+/* the versions of history h, numbered from 1, onto out[n..cap): the new
+   count, -1 past cap */
+static int lr_hist_versions(const LoadRecord *r, const LrHist *h, ElabVersion *out, int n, int cap) {
+  for (int j = 0, m = 0; h && j < h->n; j++) {
+    if (!lr_is_version(&h->v[j])) continue;
+    if (n == cap) return -1;
+    out[n++] = (ElabVersion){ &h->v[j], (int)(h - r->hist), ++m };
+  }
+  return n;
+}
+int elab_history_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int cap) {
+  LoadRecord *r = c->lrec;
+  return r && r->recorded ? lr_hist_versions(r, lr_hist(r, cls, sg != 0, name, 0), out, 0, cap) : -1;
+}
 static int lr_chain_one(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int n, int cap, int depth) {
   LoadRecord *r = c->lrec;
   const LrClass *k = lr_class(r, cls);
   if (depth > 64 || !k) return -1;
   for (int pass = 0; pass < 3 && n >= 0; pass++) {   /* prepends, own, includes or extends, as lr_search */
     if (pass == 1) {
-      const LrHist *h = lr_hist(r, cls, sg, name, 0);
-      for (int j = 0, m = 0; h && j < h->n; j++) {
-        if (!lr_is_version(&h->v[j])) continue;
-        if (n == cap) return -1;
-        out[n++] = (ElabVersion){ &h->v[j], (int)(h - r->hist), ++m };
-      }
+      n = lr_hist_versions(r, lr_hist(r, cls, sg, name, 0), out, n, cap);
       continue;
     }
     for (int i = k->nmix - 1; i >= 0 && n >= 0; i--) {
@@ -4535,6 +4549,16 @@ int elab_history_open(Compiler *c, int cls, int sg, const char *name) {
   const LrHist *h = lr_hist(r, cls, sg != 0, name, 0);
   if (!h) return 0;
   lr_open_make(c);
+  return h->open;
+}
+
+int elab_history_absent(Compiler *c, int cls, int sg, const char *name) {
+  LoadRecord *r = c->lrec;
+  const LrHist *h = r && r->recorded ? lr_hist(r, cls, sg != 0, name, 0) : NULL;
+  if (!h) return 0;
+  lr_open_make(c);
+  for (int j = 0; h->open && j < h->n; j++)
+    if (lr_is_version(&h->v[j]) && lr_applied(c, &h->v[j]) == 1) return 0;
   return h->open;
 }
 

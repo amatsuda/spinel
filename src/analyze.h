@@ -202,12 +202,16 @@ extern int g_dump_load_record;   /* --dump-load-record */
    before p is UNKNOWN. A p with no point (a method body) asks as of the
    end of the load phase. */
 enum { ELAB_NO, ELAB_YES, ELAB_UNKNOWN };
+enum { LR_MAY_IN = 2 };   /* LrDef.may */
 typedef enum { LR_DEF, LR_DEFINE_METHOD, LR_READER, LR_WRITER, LR_ALIAS, LR_COPY, LR_UNDEF, LR_REMOVE, LR_VIS, LR_WRITE, LR_OPAQUE } LrKind;
 typedef struct {
   int node;
   unsigned char kind;   /* LrKind */
   unsigned char vis;    /* SP_VIS_*, for a method version; BVIS_*, for a bare visibility word */
-  unsigned char may;    /* recorded under a condition: may not have run */
+  unsigned char may;    /* recorded under a condition: may not have run;
+                           LR_MAY_IN when the condition is inside its
+                           statement (`[x && (def m = 1)]`), which a later
+                           statement of its list has not run it for */
   unsigned char nil;    /* a write of nil */
   const char *target;   /* an alias's or a copy's original name, an alias
                            forwarder def's (lr_def) */
@@ -256,6 +260,9 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
    only the run time knows? Made once for every history, as the record
    stands (a later entry asks it again). 0 before the record is made. */
 int elab_history_open(Compiler *c, int cls, int sg, const char *name);
+/* ...and open with no version applied for sure (all may not have run, or
+   are partial): the method may be absent wherever it is asked */
+int elab_history_absent(Compiler *c, int cls, int sg, const char *name);
 /* fn(arg, cls, sg, name) for each open history, in the order the record
    made them; fn does not change the record */
 void elab_open_histories(Compiler *c, void (*fn)(void *arg, int cls, int sg, const char *name), void *arg);
@@ -361,6 +368,9 @@ int elab_chain_settled(Compiler *c, int cls, int sg, const char *name, LoadPoint
    not hold, a mixin's module is not known, or past cap. */
 typedef struct { const LrDef *v; int hist, n; } ElabVersion;
 int elab_chain_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int cap);
+/* ...and the versions of cls's own history of `name` alone, numbered as
+   there */
+int elab_history_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int cap);
 /* The state of the record and the node table an answer of elab_chain_versions
    was read from: a kept answer holds while the stamp does (the table's
    version, and the record's made-ness, size and map). */

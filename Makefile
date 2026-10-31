@@ -5738,6 +5738,21 @@ ALIAS_RECEIVERS_LIMIT ?= 2.2
 # code (test/scale/alias_raise_targets.sh), at 400 and 800 sites: the same
 # ask-then-rename loop in rewrite_const_alias_raise_targets.
 ALIAS_RAISE_LIMIT ?= 2.2
+# Open method histories (test/scale/cond_defs.sh), compiled to C at K=200 and
+# K=400: K define_methods under a run-time condition and K defs in one
+# iterator's block of one class, and K classes with one of each. Each history
+# gets its entry and each version's statement its cell's write; the writes of
+# one statement list are placed in one rebuild of it, where one copy of the
+# list per write grew as K^2.
+COND_DEFS_LIMIT ?= 2.2
+# The same program at K=800 and K=3200, by CPU time (the best of three
+# compiles each): work the count does not see, as a parent map of the whole
+# program rebuilt per history was (13.5x, where it reads 5.8x to 6.7x; the
+# rest of the compiler grows faster than linearly in the K classes: a
+# compiler without the entries, which stops at the program's first such
+# def, reads 7.0x to 7.4x). A time ratio moves with the machine's load; only a
+# rise past the limit is a finding.
+COND_DEFS_CPU_LIMIT ?= 9.0
 # Splices into one class (test/scale/splices.sh), compiled to C at K=200 and
 # K=400: an included hook whose class_eval block runs K class_eval texts in
 # its includer, and K texts in the class's own body, K over a constant list
@@ -5834,11 +5849,22 @@ scale-test: $(SPINEL_WORK)
 	gen class_macros_one "2000 written" o1.rb; gen class_macros_one 2000 o2.rb; \
 	oa=$$(sw --load-model=graph -c -o "$$tmp/o1.c" "$$tmp/o1.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	ob=$$(sw --load-model=graph -c -o "$$tmp/o2.c" "$$tmp/o2.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	gen cond_defs 200 q2.rb; gen cond_defs 400 q4.rb; \
+	qa=$$(sw -c -o "$$tmp/q2.c" "$$tmp/q2.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	qb=$$(sw -c -o "$$tmp/q4.c" "$$tmp/q4.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	cpu () { b=; for i in 1 2 3; do \
+	  o=$$( ( $(SPINEL_WORK) -c -o "$$tmp/qt.c" "$$tmp/$$1" >/dev/null 2>&1 || exit 1; times ) ) || \
+	    { echo "scale-test: FAIL (spinel-work failed on $$1)" >&2; return 1; }; \
+	  t=$$(echo "$$o" | tail -1 | awk '{ split($$1, u, /[ms]/); split($$2, s, /[ms]/); print u[1] * 60 + u[2] + s[1] * 60 + s[2] }'); \
+	  b=$$(awk -v b="$$b" -v t="$$t" 'BEGIN { print (b == "" || t < b) ? t : b }'); done; echo "$$b"; }; \
+	gen cond_defs 800 q8.rb; gen cond_defs 3200 q32.rb; \
+	qta=$$(cpu q8.rb) || { rm -rf "$$tmp"; exit 1; }; \
+	qtb=$$(cpu q32.rb) || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || [ -z "$$pa" ] || [ -z "$$pb" ] || \
 	   [ -z "$$ha" ] || [ -z "$$hb" ] || [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ] || \
 	   [ -z "$$ka" ] || [ -z "$$kb" ] || [ -z "$$ea" ] || [ -z "$$eb" ] || [ -z "$$ra" ] || [ -z "$$rb" ] || [ -z "$$ta" ] || [ -z "$$tb" ] || \
-	   [ -z "$$xa" ] || [ -z "$$xb" ] || [ -z "$$ma" ] || [ -z "$$mb" ] || [ -z "$$oa" ] || [ -z "$$ob" ]; then \
+	   [ -z "$$xa" ] || [ -z "$$xb" ] || [ -z "$$ma" ] || [ -z "$$mb" ] || [ -z "$$oa" ] || [ -z "$$ob" ] || [ -z "$$qa" ] || [ -z "$$qb" ]; then \
 	  echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
 	awk -v a="$$ha" -v b="$$hb" 'BEGIN { r = b / a; \
 	  printf "scale-test: boxed Hash store work at 2x the methods is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
@@ -5878,7 +5904,13 @@ scale-test: $(SPINEL_WORK)
 	  { echo "scale-test: FAIL (a class-body macro's splice rebuilt a whole-program fact: see ct_macro_form and host_splice)"; exit 1; }; \
 	awk -v a="$$oa" -v b="$$ob" -v lim="$(CLASS_MACROS_ONE_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: one class of macro calls against its methods written out is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
-	  { echo "scale-test: FAIL (a row visited the whole class body per macro call: see lower_later and lower_span)"; exit 1; }
+	  { echo "scale-test: FAIL (a row visited the whole class body per macro call: see lower_later and lower_span)"; exit 1; }; \
+	awk -v a="$$qa" -v b="$$qb" -v lim="$(COND_DEFS_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: open method history work at 2x the histories is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (the open histories' entries or their cell writes grew superlinearly: see ver_named_one and ver_cells_write)"; exit 1; }; \
+	awk -v a="$$qta" -v b="$$qtb" -v lim="$(COND_DEFS_CPU_LIMIT)" 'BEGIN { if (a <= 0) a = 0.01; r = b / a; \
+	  printf "scale-test: open method history CPU time at 4x the histories is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (the open histories' asks or makes did work the count does not see once per history, such as a whole-program map: see ver_entries_build)"; exit 1; }
 
 .PHONY: bisect-test
 # `spinel bisect`, end to end. The search has its own corpus test

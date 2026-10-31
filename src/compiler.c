@@ -1341,9 +1341,10 @@ static int sm_owns(const Compiler *c, int s, int class_id, int is_cm) {
   return c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
          c->scopes[s].entry != ENTRY_DISPATCH && (!mv_n || !sm_moved(s));
 }
-/* the same for a top-level method */
+/* the same for a top-level method (a named entry is the method by name) */
 static int sm_toplevel(const Compiler *c, int s) {
-  return c->scopes[s].class_id < 0 && !c->scopes[s].entry && (!mv_n || !sm_moved(s));
+  return c->scopes[s].class_id < 0 && (!c->scopes[s].entry || c->scopes[s].entry == ENTRY_NAMED) &&
+         (!mv_n || !sm_moved(s));
 }
 
 /* (class_id, name, is_cmethod) -> scope index, cached per scope count. Both

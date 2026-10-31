@@ -1,0 +1,6 @@
+undefined method 'none' for an instance of Iter
+2
+undefined method 'five' for an instance of Branch
+0
+undefined method 'after_raise' for an instance of Raised
+undefined method 'after_fail' for an instance of Raised

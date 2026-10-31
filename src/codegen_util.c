@@ -6950,7 +6950,7 @@ static int mc_name_fixed(const char *nm) {
    an entry's or main's own method's with its number, in a buffer of its
    size the caller frees */
 static char *mc_version_name(const Scope *s) {
-  if (s->entry == ENTRY_TABLE) return strdup(s->name);   /* the table answer keeps the name fixed callbacks call */
+  if (s->entry == ENTRY_TABLE || s->entry == ENTRY_NAMED) return strdup(s->name);   /* the table answer keeps the name fixed callbacks call */
   const char *fmt = s->entry && !s->version_n ? (s->class_id < 0 ? "%s__entry" : "%s#entry")
                   : s->entry ? (s->class_id < 0 ? "%s__entry%d" : "%s#entry%d")
                   : s->main_n ? "%s__main%d"
@@ -7067,7 +7067,7 @@ void mc_number_versions(Compiler *c) {
   }
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    if (sc->entry && sc->reachable) mc_number_entry(c, &dn, s);
+    if (sc->entry && sc->entry != ENTRY_NAMED && sc->reachable) mc_number_entry(c, &dn, s);
     if (!sc->replaced || !sc->reachable || sc->version_n || sc->main_n) continue;
     if (sc->class_id < 0) sc->version_n = mc_number_top(c, &dn, sc, "%s__redef%d", &top);
     else sc->version_n = ++cls;
