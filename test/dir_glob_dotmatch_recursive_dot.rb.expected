@@ -1,0 +1,6 @@
+[".", ".hid", ".hid/d.txt", "a.txt", "sub", "sub/b.html", "sub/x", "sub/x/c.txt"]
+[".", ".hid", ".hid/d.txt", "a.txt", "sub", "sub/b.html", "sub/x", "sub/x/c.txt"]
+["/.", "/.hid", "/.hid/d.txt", "/a.txt", "/sub", "/sub/b.html", "/sub/x", "/sub/x/c.txt"]
+["sub/x/c.txt"]
+[".", ".hid"]
+["a.txt", "sub", "sub/b.html", "sub/x", "sub/x/c.txt"]

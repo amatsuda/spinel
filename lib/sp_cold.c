@@ -728,8 +728,11 @@ static const char *sp_glob_sep(const char *fsdir) {
 #define SP_GLOB_ROOT "/"
 #endif
 
-static void sp_glob_walk(const char *fsdir, const char *outprefix,
-                         char **comps, int ncomp, int ci, sp_StrArray *a) {
+/* `descended`: a ** has gone down at least one directory on the way here.
+   CRuby lists "." under FNM_DOTMATCH only above that: a recursive
+   star-star pattern answers "." but neither "sub/." nor "sub/x/.". */
+static void sp_glob_walk_at(const char *fsdir, const char *outprefix,
+                            char **comps, int ncomp, int ci, sp_StrArray *a, int descended) {
   if (ci >= ncomp) return;
   const char *comp = comps[ci];
   int last = (ci == ncomp - 1);
@@ -744,7 +747,7 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
   if (strcmp(comp, "**") == 0) {
     /* ** matches zero or more directories. Zero first: the rest of the pattern
        applies right here. */
-    if (!last) sp_glob_walk(fsdir, outprefix, comps, ncomp, ci + 1, a);
+    if (!last) sp_glob_walk_at(fsdir, outprefix, comps, ncomp, ci + 1, a, descended);
     DIR *d = opendir(fsdir[0] ? fsdir : ".");
     if (!d) return;
     struct dirent *e;
@@ -765,7 +768,7 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
           char sub[sizeof outpath + 1];   /* outpath and its trailing slash, whatever outpath holds */
           snprintf(sub, sizeof sub, "%s%s/", outprefix, name);
           /* stay on the same component: ** consumes any number of levels */
-          sp_glob_walk(fspath, sub, comps, ncomp, ci, a);
+          sp_glob_walk_at(fspath, sub, comps, ncomp, ci, a, 1);
         } }
     }
     closedir(d);
@@ -780,7 +783,7 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
     if (sp_glob_is_dir(fspath)) {
       char sub[sizeof outpath + 1];   /* outpath and its trailing slash, whatever outpath holds */
       snprintf(sub, sizeof sub, "%s/", outpath);
-      sp_glob_walk(fspath, sub, comps, ncomp, ci + 1, a);
+      sp_glob_walk_at(fspath, sub, comps, ncomp, ci + 1, a, descended);
     }
     return;
   }
@@ -793,7 +796,7 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
     /* "." is an answer under FNM_DOTMATCH -- CRuby lists it for `*` there --
        while ".." never is. Both stay hidden without the flag. */
     if (name[0] == '.' && name[1] == '.' && name[2] == 0) continue;
-    if (name[0] == '.' && name[1] == 0 && !sp_glob_dotmatch) continue;
+    if (name[0] == '.' && name[1] == 0 && (!sp_glob_dotmatch || descended)) continue;
     if (!sp_glob_comp_match(comp, name)) continue;
     if (sp_glob_bad) break;
     snprintf(fspath, sizeof fspath, "%s%s%s", fsdir, SP_GLOB_SEP(fsdir), name);
@@ -802,10 +805,15 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
     if (sp_glob_is_dir(fspath)) {
       char sub[sizeof outpath + 1];   /* outpath and its trailing slash, whatever outpath holds */
       snprintf(sub, sizeof sub, "%s/", outpath);
-      sp_glob_walk(fspath, sub, comps, ncomp, ci + 1, a);
+      sp_glob_walk_at(fspath, sub, comps, ncomp, ci + 1, a, descended);
     }
   }
   closedir(d);
+}
+
+static void sp_glob_walk(const char *fsdir, const char *outprefix,
+                         char **comps, int ncomp, int ci, sp_StrArray *a) {
+  sp_glob_walk_at(fsdir, outprefix, comps, ncomp, ci, a, 0);
 }
 
 static void sp_glob_start(void) { sp_glob_defer = 1; sp_glob_bad = 0; }
