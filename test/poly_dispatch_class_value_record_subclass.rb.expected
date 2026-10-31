@@ -1,0 +1,6 @@
+Q1
+R2
+NoMethodError: undefined method 'tag' for class Q
+E3
+R4
+NoMethodError: undefined method 'tag' for class E

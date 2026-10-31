@@ -3436,6 +3436,13 @@ static void cv_mark_tree(Compiler *c, unsigned char *v, int k) {
     for (int e = 0; e < c->classes[j].nextended_mods; e++)
       if (c->classes[j].extended_mods[e] == k) v[j] = 1;
 }
+/* cv_mark_tree for every class whose name's last segment is nm */
+static void cv_mark_name_tree(Compiler *c, unsigned char *v, const char *nm) {
+  for (int k = 0; nm && k < c->nclasses; k++) {
+    const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
+    if (kn && sp_streq(seg ? seg + 1 : kn, nm)) cv_mark_tree(c, v, k);
+  }
+}
 /* Is there a `self` in subtree n not marked as no value (nonval), outside
    instance methods (`def m`, with module 1 inside them too) and nested
    class or module bodies? */
@@ -3674,32 +3681,23 @@ static void cv_build(Compiler *c) {
     if (cv_self_value(nt, nonval, nt_ref(nt, dn, "body"), nt_kind(nt, dn) == NK_ModuleNode)) cv_mark_tree(c, v, k);
   }
   /* a named Struct.new / Data.define block is a class body: `self` read as a
-     value in it, or in its `def self.x`, names the class */
+     value in it, or in its `def self.x`, names the class, and a subclass
+     that inherits the class method (`Q < P`, `Q.me`) */
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     int blk = nt_ref(nt, n, "block"), recv = nt_ref(nt, n, "receiver"), w = par[n];
     if (blk < 0 || recv < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_kind(nt, recv) != NK_ConstantReadNode ||
         !is_record_class_builder(nt_str(nt, recv, "name"), nt_str(nt, n, "name")) ||
         w < 0 || nt_kind(nt, w) != NK_ConstantWriteNode) continue;
-    if (cv_self_value(nt, nonval, nt_ref(nt, blk, "body"), 0)) cv_mark_name(c, v, nt_str(nt, w, "name"));
+    if (cv_self_value(nt, nonval, nt_ref(nt, blk, "body"), 0)) cv_mark_name_tree(c, v, nt_str(nt, w, "name"));
   }
   /* (a reopened class's other bodies, and methods defined on a constant) */
   NT_FOREACH_KIND(nt, NK_ClassNode, n) {
     int p = nt_ref(nt, n, "constant_path");
-    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 0)) {
-      for (int k = 0; k < nk; k++) {
-        const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
-        if (kn && sp_streq(seg ? seg + 1 : kn, nt_str(nt, p, "name"))) cv_mark_tree(c, v, k);
-      }
-    }
+    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 0)) cv_mark_name_tree(c, v, nt_str(nt, p, "name"));
   }
   NT_FOREACH_KIND(nt, NK_ModuleNode, n) {
     int p = nt_ref(nt, n, "constant_path");
-    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1)) {
-      for (int k = 0; k < nk; k++) {
-        const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
-        if (kn && sp_streq(seg ? seg + 1 : kn, nt_str(nt, p, "name"))) cv_mark_tree(c, v, k);
-      }
-    }
+    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1)) cv_mark_name_tree(c, v, nt_str(nt, p, "name"));
   }
   NT_FOREACH_KIND(nt, NK_DefNode, n) {
     int r = nt_ref(nt, n, "receiver");
