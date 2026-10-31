@@ -2593,7 +2593,7 @@ else {
   }
   if (sp_streq(name, "concat")) {
     /* The ordinary typed call passed the Array-reopening route. */
-    *out = emit_builtin_array_concat(c, id, recv, rt, argv, argc, 0, b);
+    *out = emit_builtin_array_concat(c, id, recv, rt, argv, argc, 1, b);
     return *out;
   }
   if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
