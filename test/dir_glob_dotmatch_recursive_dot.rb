@@ -11,9 +11,9 @@ begin
   File.write(File.join(dir, ".hid", "d.txt"), "d")
   # "." only where the pattern begins, none below a **
   p Dir.glob("**/*", base: dir, flags: File::FNM_DOTMATCH).sort
-  p Dir.glob("**/*", base: dir, flags: File::FNM_DOTMATCH).sort
+  p Dir.glob("**/*", File::FNM_DOTMATCH, base: dir).sort
   p Dir.glob(File.join(dir, "**", "*"), File::FNM_DOTMATCH).map { |f| f.delete_prefix(dir) }.sort
-  # a literal directory after ** lists its own "."
+  # nor below a literal directory after a **
   p Dir.glob("**/x/*", base: dir, flags: File::FNM_DOTMATCH).sort
   p Dir.glob("**/.*", base: dir, flags: File::FNM_DOTMATCH).sort
   # without the flag nothing hidden appears
