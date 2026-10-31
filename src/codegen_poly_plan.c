@@ -81,7 +81,7 @@ void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv) {
 }
 
 static const char *pa_kind_name(int k) {
-  static const char *const nm[] = { "user", "proc-form", "reader", "native", "arity", "synth-enum",
+  static const char *const nm[] = { "user", "proc-form", "reader", "native", "arity", "visibility", "synth-enum",
                                     "struct-set", "builtin", "trial" };
   return k >= 0 && k < (int)(sizeof nm / sizeof nm[0]) ? nm[k] : "?";
 }
@@ -4693,17 +4693,26 @@ int poly_num_arm(const char *name, int argc) {
 }
 
 /* The generic `default:` tail the plan gives a poly dispatch with
-   arguments (cpoly_obj_default_n): the Object reopening's arity refusal.
-   1 when written; the builtin surface's trial is the tail otherwise. */
-static int emit_poly_plan_default_n(Compiler *c, int id, int kwh, int pos_argc, int splat_a, Buf *b) {
+   arguments (cpoly_obj_default_n): the Object reopening's arity refusal,
+   or its visibility's NoMethodError for the receiver _t<tv>. 1 when
+   written; the builtin surface's trial is the tail otherwise. */
+static int emit_poly_plan_default_n(Compiler *c, int id, const char *name, int kwh, int pos_argc, int splat_a,
+                                    int tv, Buf *b) {
   const PolyPlan *p = cplan_poly(c, id);
   for (int i = 0; i < p->n; i++) {
     const PolyArm *a = &p->arm[i];
-    if (a->key != PA_KEY_DEFAULT || a->kind != PA_ARITY) continue;
-    char exp[600];
-    poly_arm_count(c, &c->scopes[a->mi], kwh, pos_argc, splat_a, exp, sizeof exp);
-    buf_puts(b, " "); emit_poly_arity_raise(b, exp); buf_puts(b, " break;");
-    if (g_plan_check) pa_observe(PA_ARITY, PA_KEY_DEFAULT, a->mi, TY_UNKNOWN, PC_VOID);
+    if (a->key != PA_KEY_DEFAULT || (a->kind != PA_ARITY && a->kind != PA_VIS)) continue;
+    if (a->kind == PA_VIS) {
+      buf_puts(b, " ");
+      emit_vis_raise_boxed(a->vis, name, tv, b);
+      buf_puts(b, "; break;");
+    }
+    else {
+      char exp[600];
+      poly_arm_count(c, &c->scopes[a->mi], kwh, pos_argc, splat_a, exp, sizeof exp);
+      buf_puts(b, " "); emit_poly_arity_raise(b, exp); buf_puts(b, " break;");
+    }
+    if (g_plan_check) pa_observe(a->kind, PA_KEY_DEFAULT, a->mi, TY_UNKNOWN, PC_VOID);
     return 1;
   }
   return 0;
@@ -4938,7 +4947,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
        whole body (`gcd`'s ends `break;`) leaves what follows unreachable,
        and a builtin answer there was not even of the slot's type. */
     int dl_open = b->len == dl_pos || (b->len > 0 && b->p[b->len - 1] == '}');
-    int obj_arity = dl_open && emit_poly_plan_default_n(c, id, kw->kwh, pos_argc, splat_a, b);
+    int obj_arity = dl_open && emit_poly_plan_default_n(c, id, name, kw->kwh, pos_argc, splat_a, tv, b);
     int sum_done = !obj_arity && dl_open && ret == TY_POLY &&
                    emit_poly_default_blk_arm(c, id, name, argc, argv, atmp, atmp_ty, tv, tr, blk_tmp2, b);
     int answer = sum_done ? 1 : 0;

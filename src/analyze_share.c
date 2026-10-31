@@ -996,7 +996,7 @@ int share_builtin_fresh(Compiler *c, int call) {
   int generic_raises = !builtin_object_method_known(name) && !builtin_instance_name_known(name);
   for (int i = 0; i < p->n; i++) {
     const PolyArm *a = &p->arm[i];
-    if (a->kind == PA_USER || a->kind == PA_ARITY || sh_arm_io_read_fresh(c, call, a)) continue;
+    if (a->kind == PA_USER || a->kind == PA_ARITY || a->kind == PA_VIS || sh_arm_io_read_fresh(c, call, a)) continue;
     if (a->kind == PA_TRIAL && (a->key == PA_KEY_TRIAL + PT_DEFAULT0 ||
                                a->key == PA_KEY_TRIAL + PT_DEFAULT_N)) continue;
     if (generic_raises && ((a->kind == PA_BUILTIN && a->key == PA_KEY_BUILTIN + PB_ND_GENERIC) ||

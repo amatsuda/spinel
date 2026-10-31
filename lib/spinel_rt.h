@@ -5509,14 +5509,19 @@ static int sp_nomethod_kernel_private(const char *m) {
   for (int i = 0; k[i]; i++) if (!strcmp(m, k[i])) return 1;
   return 0;
 }
+/* How a NoMethodError's text names its receiver v: nil, true, false, "class
+   X" / "module X", or "an instance of X". */
+SP_COLD static const char *sp_nomethod_recv_desc(sp_RbVal v) {
+  return (v.tag == SP_TAG_NIL) ? "nil"
+       : (v.tag == SP_TAG_BOOL) ? (v.v.i ? "true" : "false")
+       : (v.tag == SP_TAG_CLASS)
+         ? sp_sprintf("%s %s", strcmp(sp_poly_class_name(v), "Module") ? "class" : "module",
+                      sp_class_val_name(v))
+       : sp_sprintf("an instance of %s", sp_poly_class_name(v));
+}
 SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
   sp_exc_stage_recv(v);
-  const char *d = (v.tag == SP_TAG_NIL) ? "nil"
-                : (v.tag == SP_TAG_BOOL) ? (v.v.i ? "true" : "false")
-                : (v.tag == SP_TAG_CLASS)
-                  ? sp_sprintf("%s %s", strcmp(sp_poly_class_name(v), "Module") ? "class" : "module",
-                               sp_class_val_name(v))
-                : sp_sprintf("an instance of %s", sp_poly_class_name(v));
+  const char *d = sp_nomethod_recv_desc(v);
   if (sp_nomethod_kernel_private(m)) return sp_sprintf("private method '%s' called for %s", m, d);
   return sp_sprintf("undefined method '%s' for %s", m, d);
 }

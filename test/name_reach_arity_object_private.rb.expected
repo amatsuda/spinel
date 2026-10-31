@@ -1,0 +1,56 @@
+A 1
+A 2
+A 3
+A bar 4
+A bar 5
+A baz 6
+NoMethodError: private method 'foo' called for an instance of B
+NoMethodError: private method 'foo' called for an instance of B
+ArgumentError: wrong number of arguments (given 1, expected 2)
+ArgumentError: wrong number of arguments (given 1, expected 2)
+NoMethodError: protected method 'bar' called for an instance of B
+NoMethodError: private method 'baz' called for an instance of B
+NoMethodError: private method 'foo' called for an instance of Integer
+NoMethodError: private method 'foo' called for an instance of Integer
+ArgumentError: wrong number of arguments (given 1, expected 2)
+ArgumentError: wrong number of arguments (given 1, expected 2)
+NoMethodError: protected method 'bar' called for an instance of Integer
+NoMethodError: private method 'baz' called for an instance of Integer
+NoMethodError: private method 'foo' called for nil
+NoMethodError: private method 'foo' called for nil
+ArgumentError: wrong number of arguments (given 1, expected 2)
+ArgumentError: wrong number of arguments (given 1, expected 2)
+NoMethodError: protected method 'bar' called for nil
+NoMethodError: private method 'baz' called for nil
+NoMethodError: private method 'foo' called for true
+NoMethodError: private method 'foo' called for true
+ArgumentError: wrong number of arguments (given 1, expected 2)
+ArgumentError: wrong number of arguments (given 1, expected 2)
+NoMethodError: protected method 'bar' called for true
+NoMethodError: private method 'baz' called for true
+NoMethodError: private method 'foo' called for class Integer
+NoMethodError: private method 'foo' called for class Integer
+ArgumentError: wrong number of arguments (given 1, expected 2)
+ArgumentError: wrong number of arguments (given 1, expected 2)
+NoMethodError: protected method 'bar' called for class Integer
+NoMethodError: private method 'baz' called for class Integer
+A syscall 1
+A syscall 2
+NoMethodError: private method 'syscall' called for an instance of B
+ArgumentError: wrong number of arguments (given 1, expected 3)
+NoMethodError: private method 'syscall' called for an instance of Integer
+ArgumentError: wrong number of arguments (given 1, expected 3)
+NoMethodError: private method 'syscall' called for nil
+ArgumentError: wrong number of arguments (given 1, expected 3)
+NoMethodError: private method 'syscall' called for class Integer
+ArgumentError: wrong number of arguments (given 1, expected 3)
+NoMethodError: private method 'test' called for an instance of B
+kernel name 2
+NoMethodError: private method 'test' called for an instance of Integer
+kernel name 2
+NoMethodError: private method 'test' called for nil
+kernel name 2
+NoMethodError: private method 'test' called for true
+kernel name 2
+NoMethodError: private method 'test' called for class Integer
+kernel name 2

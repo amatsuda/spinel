@@ -2712,7 +2712,7 @@ static void cpoly_add(PolyPlan *p, int *cap, int kind, int key, int mi, TyKind v
   }
   PolyArm *a = &p->arm[p->n++];
   a->kind = (unsigned char)kind; a->key = (short)key; a->mi = mi;
-  a->vty = (unsigned char)vty; a->conv = (unsigned char)conv; a->def = -1;
+  a->vty = (unsigned char)vty; a->conv = (unsigned char)conv; a->def = -1; a->vis = 0;
 }
 
 /* The classes a dispatch of name can take an arm for, ascending: the ones
@@ -2986,24 +2986,42 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
    class-side arms, a callable value's call. */
 /* The generic `default:` tail of a poly dispatch with arguments when the
    Object (or Kernel) reopening's method of the name refuses the call's
-   count and no builtin class has the name: the arity raise, for any
-   receiver no class arm took, in place of the builtin surface's trial.
-   As an arm it is one of the targets reachability keeps. 1 when added. */
+   count and no builtin class has the name, for any receiver no class arm
+   took, in place of the builtin surface's trial: the arity raise (as an
+   arm, one of the targets reachability keeps), or, where its visibility
+   refuses the call first, CRuby's NoMethodError (PA_VIS). 1 when added. */
 static int cpoly_obj_default_n(Compiler *c, int id, const char *name, int kwh, int pos_argc, int splat_a,
                                PolyPlan *p, int *cap) {
   if (builtin_object_method_known(name) || builtin_instance_name_known(name)) return 0;
   int obj_cls = comp_core_class(c, CORE_OBJECT), obj_def = -1;
   int obj_mi = obj_cls >= 0 ? call_target(c, id, obj_cls, name, 0, &obj_def) : -1;
   char exp[600];
-  /* a private or protected one is a NoMethodError for an explicit
-     receiver, whose raise this arm is not; send reaches any */
-  int blind = !nt_str(c->nt, id, "vis_enforce") &&
-              (nt_str(c->nt, id, "send_blind") || nt_ignore_visibility(c->nt, id));
   if (obj_mi < 0 || obj_def != obj_cls ||
-      (!blind && comp_method_vis_declared(c, obj_cls, name, NULL) != SP_VIS_PUBLIC) ||
       poly_arm_count(c, &c->scopes[obj_mi], kwh, pos_argc, splat_a, exp, sizeof exp) >= 0)
     return 0;
-  cpoly_add(p, cap, PA_ARITY, PA_KEY_DEFAULT, obj_mi, TY_UNKNOWN, PC_VOID);
+  /* send reaches a private one; an explicit receiver does not, and every
+     caller's self is an Object, so a protected one refuses only
+     public_send */
+  const NodeTable *nt = c->nt;
+  int enforce = nt_str(nt, id, "vis_enforce") != NULL;
+  int blind = !enforce && (nt_str(nt, id, "send_blind") || nt_ignore_visibility(nt, id));
+  int vis = blind ? SP_VIS_PUBLIC : comp_method_vis_declared(c, obj_cls, name, NULL);
+  if (vis == SP_VIS_PROTECTED && !enforce) vis = SP_VIS_PUBLIC;
+  /* ... as the method has it from the first point the call can run (its
+     statement's, or that of the def holding it) to the end of the load
+     phase: a visibility change at or after that point leaves a call that
+     runs before it reaching the method, which the visibility at the end of
+     the load phase does not tell apart, so that call keeps the count's
+     raise */
+  LoadPoint from = elab_point_from(c, id);
+  if (vis != SP_VIS_PUBLIC &&
+      (from.region < 0 || elab_method_vis_held_from(c, c->scopes[obj_mi].class_id, name, 0, from) != vis))
+    vis = SP_VIS_PUBLIC;
+  if (vis == SP_VIS_PUBLIC) cpoly_add(p, cap, PA_ARITY, PA_KEY_DEFAULT, obj_mi, TY_UNKNOWN, PC_VOID);
+  else {
+    cpoly_add(p, cap, PA_VIS, PA_KEY_DEFAULT, -1, TY_UNKNOWN, PC_VOID);
+    p->arm[p->n - 1].vis = (unsigned char)vis;
+  }
   return 1;
 }
 

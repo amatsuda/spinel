@@ -4476,6 +4476,38 @@ int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint
   return lr_ready(c, p) ? lr_vis_at(c, cls, name, sg, p) : -1;
 }
 
+int elab_method_vis_held_from(Compiler *c, int cls, const char *name, int sg, LoadPoint p) {
+  int vis = elab_method_vis_at(c, cls, name, sg, p);
+  for (int k = cls, n = 0; vis >= 0 && k >= LR_MAIN && n < 64; k = lr_super(c, k), n++) {
+    const LrHist *h = lr_hist(c->lrec, k, sg != 0, name, 0);
+    for (int i = 0; h && i < h->n; i++) {
+      const LrDef *v = &h->v[i];
+      if (v->kind > LR_VIS || v->kind == LR_UNDEF || v->kind == LR_REMOVE) continue;
+      /* an unplaced entry (a visibility call in a method body) runs at a
+         point the record does not know */
+      if (v->vis != vis && (v->unplaced || elab_cmp(elab_point_of(c, v->node), p) != PROG_BEFORE)) return -1;
+    }
+  }
+  /* ... and a call of a program's method that may define something (its
+     body may change the name's visibility, `def unhide = public(:foo)`)
+     on the class at or after p. A send or an eval is passed over: in Ruby
+     it can change a visibility too, but the forms that do are raised or
+     refused today (`send(:public, :foo)` raises NoMethodError; class_eval,
+     instance_eval and eval of a visibility word do not compile), and
+     keeping the ones that name nothing of the kind (`x.send(:foo, 3)`)
+     would turn the arm off for every program that sends. The record
+     holds a send as opaque whatever it names (lr_opaque_call): reading a
+     literal one as the call it names belongs there, not here */
+  const LrHist *oh = vis >= 0 ? lr_hist(c->lrec, LR_KEY_OPAQUE, lr_const_owner(cls), "", 0) : NULL;
+  for (int i = 0; oh && i < oh->n; i++) {
+    const char *nm = oh->v[i].kind == LR_OPAQUE ? nt_str(c->nt, oh->v[i].node, "name") : NULL;
+    if (nm && !is_send_family(nm) && !is_eval_exec_family(nm) &&
+        (oh->v[i].unplaced || elab_cmp(elab_point_of(c, oh->v[i].node), p) != PROG_BEFORE))
+      return -1;
+  }
+  return vis;
+}
+
 /* Does the registration apply entry v as the load phase ends
    (lr_stmt_applied, at v's point now) */
 static int lr_applied(Compiler *c, const LrDef *v) {
