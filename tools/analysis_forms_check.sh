@@ -29,7 +29,9 @@
 #   --load-model=graph too, the switch unset;
 # - every other test/class_macro_*.rb and test/define_method_*.rb is refused,
 #   or answers its .expected and exits 0;
-# - test/reject/*macro*.rb stays refused;
+# - test/reject/*macro*.rb stays refused, unless test/analysis-forms/
+#   holds it as class_<name>: one the text pass refuses and the form
+#   answers;
 # - test/analysis-forms/declines/*.rb, one program per reason the form
 #   leaves a call as written, is refused, under the switch and under
 #   --load-model=graph (each .expected is CRuby's answer, for the day the
@@ -110,6 +112,7 @@ done
 
 for t in test/reject/*macro*.rb; do
   [ -f "$t" ] || continue
+  [ -f "test/analysis-forms/class_$(basename "$t")" ] && continue
   n=$((n + 1))
   if "$SP" "$t" -c --no-line-map -o "$tmp/r.c" >"$tmp/r.out" 2>&1; then
     echo "analysis-forms-test: FAIL ($t: compiled under SPINEL_CLASS_MACROS=analysis)"; ok=0

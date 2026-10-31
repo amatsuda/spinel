@@ -503,6 +503,10 @@ int is_load_how_native(const char *how);
 int is_native_lib_at_boot(const char *path);
 int is_comparable_module_name(const char *n);
 int is_enumerable_module_name(const char *n);
+/* the index of n among the methods `extend Enumerable` sends to an
+   instance-side twin (desugar_extend_enumerable), or -1 */
+enum { EXTEND_ENUMERABLE_NNAMES = 63 };
+int extend_enumerable_name_index(const char *n);
 int is_comparable_builtin_name(const char *n);
 typedef enum { BDC_BUILTIN, BDC_IDENTITY, BDC_EQUAL } BuiltinDefaultCmp;
 BuiltinDefaultCmp builtin_default_cmp(int family);   /* asks builtin_class_id */
@@ -575,6 +579,8 @@ int is_untabled_native_class_name(const char *n);
 int is_define_method_name(const char *n); /* define_method */
 int is_define_singleton_method_name(const char *n); /* define_singleton_method */
 int is_singleton_class_name(const char *n); /* singleton_class */
+int is_ffi_decl_name(const char *n);        /* ffi_lib attach_function attach_variable callback native_func ...: declarations made methods before the walk */
+int is_method_defined_query(const char *n); /* method_defined? public_/private_/protected_method_defined? */
 int is_undef_method_name(const char *n);  /* undef_method */
 int is_remove_method_name(const char *n); /* remove_method */
 int is_check_funcall_name(const char *n);   /* respond_to? respond_to_missing? method_missing: what rb_check_funcall asks */

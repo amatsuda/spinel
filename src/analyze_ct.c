@@ -1143,6 +1143,76 @@ static int ct_fx_stmt(CtBind *b, Compiler *c, int list, int call, const CtFx *f)
   return dm;
 }
 
+/* The statements text effect f's code becomes in class body frame's (class
+   cls's, at p), grafted as a class_eval of that text at f's call is
+   (sce_graft_text), into *ids (*n): 0 where it may not run there. Only a
+   class's body: desugar_extend_self and desugar_module_function_aliases
+   read a module's defs. Only defs of self's methods, each unasked by a
+   folded definition query and none a hook (desugar_included_hooks,
+   desugar_inherited_hooks read those), nor a class method `extend
+   Enumerable` routes (desugar_extend_enumerable reads those), nor one
+   singleton_method_added would see. In their bodies: no class, module,
+   singleton class, nested def, alias or undef; no constant
+   (qualify_colliding_consts and refuse_unreachable_bare_constants read
+   every reference, the steps before them its other shapes); no operator
+   write (desugar_reopened_op_write); no call that loads, defines, reflects
+   or opens a singleton class; and none of the other shapes a step before
+   the walk reads (host_prewalk_shape). */
+static int ct_text_stmts(Compiler *c, HostStep *h, int frame, int cls, LoadPoint p, const CtFx *f, int **ids, int *n) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  *ids = NULL; *n = 0;
+  if (nt_kind(nt, frame) != NK_ClassNode || sce_graft_text(c, h, frame, f->name, f->site, ids, n) < 0) return 0;
+  int ok = 1, nn = 0;
+  for (int i = 0; i < *n && ok; i++) {
+    int d = (*ids)[i], rv = nt_ref(nt, d, "receiver");
+    const char *dn = nt_str(nt, d, "name");
+    ok = nt_kind(nt, d) == NK_DefNode && dn && (rv < 0 || nt_kind(nt, rv) == NK_SelfNode) &&
+         ct_name_unasked(c, dn) && !is_definition_hook_name(dn) &&
+         (rv < 0 || (extend_enumerable_name_index(dn) < 0 && elab_method_at(c, cls, "singleton_method_added", 1, p, NULL) == ELAB_NO));
+  }
+  int *all = ok ? nt_subtree_ids(nt, *ids, *n, &nn) : NULL;
+  for (int i = 0; i < nn && ok; i++) {
+    int id = all[i], top = 0;
+    const char *nm = nt_str(nt, id, "name");
+    for (int t = 0; t < *n && !top; t++) top = (*ids)[t] == id;
+    switch (nt_kind(nt, id)) {
+    case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode: case NK_AliasMethodNode:
+    case NK_AliasGlobalVariableNode: case NK_UndefNode:
+    case NK_ConstantReadNode: case NK_ConstantPathNode: case NK_ConstantWriteNode: case NK_ConstantOperatorWriteNode:
+    case NK_ConstantOrWriteNode: case NK_ConstantAndWriteNode: case NK_ConstantTargetNode:
+      ok = 0;
+      break;
+    case NK_DefNode: ok = top; break;
+    case NK_CallNode:
+      ok = !is_load_effect_call(nm) && !is_reflective_access(nm) && !is_definition_hook_name(nm) &&
+           !is_singleton_class_name(nm);
+      break;
+    default: break;
+    }
+    if (nt_str(nt, id, "binary_operator")) ok = 0;
+  }
+  free(all);
+  /* the precondition rule: none of the shapes the steps before the walk read */
+  if (ok) ok = host_prewalk_shape(nt, *ids, *n) < 0;
+  if (!ok) {
+    for (int i = 0; i < *n; i++) nt_subtree_blank(nt, (*ids)[i]);
+    free(*ids); *ids = NULL; *n = 0;
+  }
+  return ok;
+}
+
+/* The form's state, freed; unless placed, the text's grafted statements
+   are taken out */
+static void ct_macro_drop(NodeTable *nt, CtBind *b, CtEnv *e, int **tid, int *tn, int placed) {
+  for (int f = 0; f < e->nfx; f++) {
+    for (int i = 0; !placed && e->fx[f].k == CT_FX_EVAL && i < tn[f]; i++) nt_subtree_blank(nt, tid[f][i]);
+    free(tid[f]);
+  }
+  free(tid); free(tn);
+  ct_bind_free(b);
+  ct_env_free(e);
+}
+
 /* The macro call `call`, statement j of class body list `list`, run: the
    first statement now in its place, or -1 where it stays as written */
 int ct_macro_form(Compiler *c, int call, int list, int j) {
@@ -1168,10 +1238,16 @@ int ct_macro_form(Compiler *c, int call, int list, int j) {
   CtEnv e; memset(&e, 0, sizeof e);
   e.self_name = class_ruby_name(c, cls); e.self_core = ct_macro_core; e.self_macro = ct_macro_def; e.host = &mh;
   int ok = ct_macro_call(nt, &e, call), defs = 0;
+  /* a text effect's statements, grafted now (tid[f], tn[f]): each effect
+     carries tn[f] statements, the others one */
+  int **tid = calloc((size_t)e.nfx + 1, sizeof *tid), *tn = calloc((size_t)e.nfx + 1, sizeof *tn);
+  if (!tid || !tn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int f = 0; f < e.nfx && ok; f++) {
     CtFxKind k = e.fx[f].k;
-    defs += k == CT_FX_DEFINE_METHOD || k == CT_FX_ATTR;
-    ok = k == CT_FX_DEFINE_METHOD || k == CT_FX_ATTR || k == CT_FX_LOCAL || k == CT_FX_RESIDUAL;
+    tn[f] = k != CT_FX_EVAL;
+    if (k == CT_FX_EVAL) ok = ct_text_stmts(c, h, frame, cls, p, &e.fx[f], &tid[f], &tn[f]);
+    defs += k == CT_FX_DEFINE_METHOD || k == CT_FX_ATTR || (k == CT_FX_EVAL && tn[f] > 0);
+    ok = ok && (k == CT_FX_DEFINE_METHOD || k == CT_FX_ATTR || k == CT_FX_LOCAL || k == CT_FX_RESIDUAL || k == CT_FX_EVAL);
     if (ok) ok = ct_fx_each_name(&e.fx[f], ct_name_unasked, c);
   }
   if (ok) ok = defs > 0 && !ct_macro_core_changed(c, h, e.ran, e.nran);
@@ -1179,7 +1255,8 @@ int ct_macro_form(Compiler *c, int call, int list, int j) {
      a promoted local's value reads may need promoting too */
   CtBind b = { nt, &e, 0, 0, 0, 0, 0, NULL, NULL, 0, 0 };
   for (int f = 0; f < e.nfx && ok; f++)
-    if (e.fx[f].k != CT_FX_LOCAL && e.fx[f].k != CT_FX_ATTR) ok = ct_bind_fx(&b, c, list, &e.fx[f], ct_fx_code(&e.fx[f], nt));
+    if (e.fx[f].k != CT_FX_LOCAL && e.fx[f].k != CT_FX_ATTR && e.fx[f].k != CT_FX_EVAL)
+      ok = ct_bind_fx(&b, c, list, &e.fx[f], ct_fx_code(&e.fx[f], nt));
   unsigned char *bound = calloc((size_t)e.nfx + 1, 1);
   if (!bound) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int more = 1; ok && more; ) {
@@ -1193,16 +1270,17 @@ int ct_macro_form(Compiler *c, int call, int list, int j) {
   free(bound);
   /* the call's value is the macro's: the class body's, when it is last */
   int last = -1, nout = 0;
-  for (int f = 0; f < e.nfx; f++) if (ct_fx_kept(&b, &e.fx[f])) { last = f; nout++; }
+  for (int f = 0; f < e.nfx; f++) if (ct_fx_kept(&b, &e.fx[f]) && tn[f]) { last = f; nout += tn[f]; }
   if (ok && j == bn - 1) ok = last >= 0 && ct_fx_answers(nt, &e, &e.fx[last]);
-  if (!ok) { ct_bind_free(&b); ct_env_free(&e); return -1; }
+  if (!ok) { ct_macro_drop(nt, &b, &e, tid, tn, 0); return -1; }
   /* each statement, bound, where the call stood */
   int *out = malloc(sizeof(int) * (size_t)(bn + nout));
   if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(out, bb, sizeof(int) * (size_t)j);
   b.apply = 1;
   for (int f = 0, o = j; f < e.nfx; f++)
-    if (ct_fx_kept(&b, &e.fx[f])) out[o++] = ct_fx_stmt(&b, c, list, call, &e.fx[f]);
+    if (e.fx[f].k == CT_FX_EVAL) for (int i = 0; i < tn[f]; i++) out[o++] = tid[f][i];
+    else if (ct_fx_kept(&b, &e.fx[f])) out[o++] = ct_fx_stmt(&b, c, list, call, &e.fx[f]);
   bb = nt_arr(nt, list, "body", &bn);
   memcpy(out + j + nout, bb + j + 1, sizeof(int) * (size_t)(bn - j - 1));
   nt_node_set_arr(nt, list, "body", out, bn - 1 + nout);
@@ -1212,8 +1290,9 @@ int ct_macro_form(Compiler *c, int call, int list, int j) {
   comp_grow_node_arrays(c);
   /* what the walk defined since the facts' map (ct_macro_core_changed) */
   for (int f = 0; f < e.nfx; f++) ct_fx_each_name(&e.fx[f], ct_name_made, h->ct);
-  ct_bind_free(&b);
-  ct_env_free(&e);
+  for (int f = 0; f < e.nfx; f++)
+    for (int i = 0; i < (e.fx[f].k == CT_FX_EVAL ? tn[f] : 0); i++) ct_name_made(h->ct, nt_str(nt, tid[f][i], "name"));
+  ct_macro_drop(nt, &b, &e, tid, tn, 1);
   /* the call leaves the program; its statement is the first one's */
   bb = nt_arr(nt, list, "body", &bn);
   int first = bb[j];

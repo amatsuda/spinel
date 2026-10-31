@@ -563,6 +563,15 @@ static int ct_exec_call(const NodeTable *nt, CtEnv *e, int call) {
     f->sg = sg;
     return 1;
   }
+  /* self's body's code, as text the frame computes; the caller parses it
+     with the call's file and line */
+  if (e->self_macro && name && argc >= 1 && argc <= 3 && blk < 0 && is_class_eval_text_name(name) &&
+      ct_self_core(nt, e, call, name)) {
+    Mv t;
+    if (!ct_value(nt, e, av[0], &t) || t.k != MV_STR) return 0;
+    ct_fx(e, CT_FX_EVAL, call)->name = ct_strdup(t.s);
+    return 1;
+  }
   if (!name || argc < 0 || blk >= 0) return 0;
   int self_recv = rv < 0 || nt_kind(nt, rv) == NK_SelfNode;
   if (self_recv && argc == 2 && is_const_set_name(name)) {

@@ -405,7 +405,7 @@ static int lower_pass(Compiler *c, LowerCtx *lc, const Lowering *w) {
 
 /* ---- SPINEL_LOWER_CHECK ---- */
 
-static void lower_say(LowerCtx *lc, const char *row, const char *what) {
+void lower_say(LowerCtx *lc, const char *row, const char *what) {
   lc->findings++;
   fprintf(stderr, "spinel: lower check: %s: %s\n", row, what);
 }

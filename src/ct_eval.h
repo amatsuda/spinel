@@ -31,10 +31,11 @@
  * also self's `name`, `to_s` and `inspect`; as statements,
  * `define_method(name) { ... }` and `define_singleton_method`, effects
  * whose block the caller takes as written, `attr_reader` / `attr_writer` /
- * `attr_accessor` on self or on its singleton class, and a call of another
- * macro, run in a frame of its own; and a statement it does not follow is
- * an effect too, left for the caller to run as written. Anything else
- * answers 0. */
+ * `attr_accessor` on self or on its singleton class, `class_eval(text)` /
+ * `module_eval(text, file, line)` on self with text it computes, and a call
+ * of another macro, run in a frame of its own; and a statement it does not
+ * follow is an effect too, left for the caller to run as written. Anything
+ * else answers 0. */
 #ifndef SPINEL_CT_EVAL_H
 #define SPINEL_CT_EVAL_H
 
@@ -64,7 +65,8 @@ typedef enum {
   CT_FX_DEFINE_METHOD,  /* self's method name (sg: its singleton method), its body block (the call at site's) */
   CT_FX_ATTR,        /* the attr_* method name, of self (sg: of its singleton class), for attrs[0..nattrs) */
   CT_FX_LOCAL,       /* site wrote the frame's local name = val */
-  CT_FX_RESIDUAL     /* statement site, not followed: it runs as written */
+  CT_FX_RESIDUAL,    /* statement site, not followed: it runs as written */
+  CT_FX_EVAL         /* site, a class_eval / module_eval on self, runs text name as self's body's code */
 } CtFxKind;
 /* a local: its value, the statement that last wrote it (-1: a parameter)
    and how many writes ran */
