@@ -4618,7 +4618,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
                               vk == NK_ForwardingSuperNode || vk == NK_YieldNode);
       if (vty && value >= 0 && !multi_src) {
         TyKind st = infer_type(c, value);
-        if (st != TY_UNKNOWN && st != TY_NIL && !ty_is_array(st) && !ty_is_hash(st)) {
+        if (st != TY_UNKNOWN && st != TY_NIL && !ty_is_array(st) && !ty_is_obj_array(st) && !ty_is_hash(st)) {
           for (int i = 0; i < ln; i++) {
             const char *lty_s = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
             if (sp_streq(lty_s, "GlobalVariableTargetNode") || sp_streq(lty_s, "ClassVariableTargetNode"))
@@ -4714,7 +4714,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
           if (rin_u >= 0 && nt_kind(nt, rin_u) == NK_LocalVariableTargetNode)
             changed |= masgn_poly_local(c, comp_scope_of(c, id), rin_u, TY_POLY_ARRAY, value);
         }
-        if (ty_is_array(st)) {
+        if (ty_is_array(st) || ty_is_obj_array(st)) {
           TyKind elem = ty_array_elem(st);
           int rn2 = 0;
           const int *rights2 = nt_arr(nt, id, "rights", &rn2);
