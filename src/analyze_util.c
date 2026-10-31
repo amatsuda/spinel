@@ -1160,8 +1160,8 @@ int class_var_static_ci(Compiler *c, int node) {
     /* k = Struct.new(:a, :b): resolve to the anonymous struct class that
        register_structs synthesized for this write (keyed by def_node) */
     if (ci < 0 && is_struct_call(c, val)) {
-      for (int k = 0; k < c->nclasses; k++)
-        if (c->classes[k].is_anon_struct && c->classes[k].def_node == w) { ci = k; break; }
+      for (int k = comp_class_of_def(c, w); k >= 0; k = comp_class_def_next(c, k))
+        if (c->classes[k].is_anon_struct) { ci = k; break; }
     }
     if (ci < 0) return -1;                   /* a non-class write: dynamic */
     if (found >= 0 && found != ci) return -1; /* two classes: dynamic */

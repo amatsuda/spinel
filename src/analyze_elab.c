@@ -178,6 +178,8 @@ static void lr_fit(LoadRecord *r, int n) {
 
 static void lr_record_upto(LoadRecord *r, int n);
 static void lr_check_map(Compiler *c, const int *was, const unsigned char *wbits);
+static void lr_check_class_ref(Compiler *c, int node, int ci);
+static int lr_class_ref_at(Compiler *c, int node, int *core);
 
 /* Statement `node` joins the record where the walk stands, *pos; pos then
    stands on its path (EP_SPINE), as statement e. Under the registration's
@@ -1027,8 +1029,8 @@ static int lr_builder_class(Compiler *c, int node) {
     int ci = const_node_class_index(c, node);
     return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
   }
-  for (int ci = 0; ci < c->nclasses; ci++) if (c->classes[ci].def_node == node) return ci;
-  return LR_UNKNOWN_CLASS;
+  int ci = comp_class_of_def(c, node);
+  return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
 }
 
 /* The class a constant's write or definition holds: a class or module
@@ -1046,7 +1048,7 @@ static int lr_class_of(Compiler *c, const LrDef *d) {
   LoadRecord *r = c->lrec;
   if ((vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) || r->follow >= 16) return LR_UNKNOWN_CLASS;
   r->follow++;
-  int ci = elab_class_ref_at(c, v);
+  int ci = lr_class_ref_at(c, v, NULL);
   r->follow--;
   return ci == LR_LATER ? LR_UNKNOWN_CLASS : ci;   /* a later reference keeps the name it is written with, not the alias's */
 }
@@ -1089,10 +1091,11 @@ static int lr_root_read(const NodeTable *nt, int node) {
   return nt_kind(nt, node) == NK_ConstantReadNode && nt_int(nt, node, "root_anchored", 0);
 }
 
-int elab_class_ref_at(Compiler *c, int node) {
+static int lr_class_ref_at(Compiler *c, int node, int *core) {
   const NodeTable *nt = c->nt;
   const LrDef *d = NULL;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NilNode;
+  if (core) *core = -1;
   if (k != NK_ConstantPathNode && k != NK_ConstantReadNode) return LR_UNKNOWN_CLASS;
   const char *nm = lr_written_name(nt, node);
   int o, ci, pc = LR_MAIN;
@@ -1100,17 +1103,36 @@ int elab_class_ref_at(Compiler *c, int node) {
   else {
     int par = k == NK_ConstantPathNode ? nt_ref(nt, node, "parent") : -1;
     LoadPoint p = elab_point_of(c, node);
-    if (par >= 0) pc = elab_class_ref_at(c, par);
+    if (par >= 0) pc = lr_class_ref_at(c, par, NULL);
     if (pc < LR_MAIN) return LR_UNKNOWN_CLASS;
     o = lr_const_in(c, pc, nm, p, p.region < 0, pc == LR_MAIN, &d, 0, LR_KEY_CONST);
   }
   if (o == ELAB_YES) return lr_class_of(c, d);
   /* a name Object does not hold from the program: a core class's or module's */
   if (o == ELAB_NO && pc == LR_MAIN && (is_builtin_class_name(nm) || is_builtin_module_const_name(nm))) {
-    if ((ci = comp_core_class(c, builtin_core_class_slot(nm))) >= 0) return ci;
+    int slot = builtin_core_class_slot(nm);
+    if (core) *core = slot;
+    if ((ci = comp_core_class(c, slot)) >= 0) return ci;
     if (lr_reopened(c->lrec, nm)) return LR_LATER;
   }
   return LR_UNKNOWN_CLASS;
+}
+/* Asked once the record is made, outside the call plan's frame: answered
+   in a frame of its own (elab_plan_enter), so that a pass that moved or
+   appended the node since gets the answer at its source position, and the
+   map is not rebuilt per ask. A node the frame cannot place answers not
+   known. SPINEL_ELAB_CHECK asks the map as it is too. */
+int elab_class_ref_at(Compiler *c, int node, int *core) {
+  LoadRecord *r = lr_get(c);
+  if (!r->recorded || r->walk || r->plan_depth) return lr_class_ref_at(c, node, core);
+  int framed = elab_plan_enter(c, node), ci = LR_UNKNOWN_CLASS;
+  if (core) *core = -1;
+  if (framed) {
+    ci = lr_class_ref_at(c, node, core);
+    elab_plan_leave(c);
+  }
+  if (r->check) lr_check_class_ref(c, node, ci);
+  return ci;
 }
 
 /* The classes the constant a read names may hold where the record cannot
@@ -1134,7 +1156,7 @@ static void lr_cls_add(LrClassSet *s, int ci) {
 static int lr_value_leaf(const VpLeaf *leaf, void *ud) {
   LrClassSet *s = ud;
   NodeKind k = leaf->kind == VPK_EXPR ? nt_kind(s->c->nt, leaf->node) : NK_NONE;
-  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) lr_cls_add(s, elab_class_ref_at(s->c, leaf->node));
+  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) lr_cls_add(s, lr_class_ref_at(s->c, leaf->node, NULL));
   else s->bad = 1;
   return s->bad;
 }
@@ -1169,7 +1191,7 @@ static int lr_receiver(ElabRec *x, int recv, int fc, int fs, int *sg) {
   NodeKind k = recv >= 0 ? nt_kind(x->c->nt, recv) : NK_SelfNode;
   *sg = k == NK_SelfNode && (fs == LR_FS_SCLASS || fs == LR_FS_IEVAL_SCLASS);
   if (k == NK_SelfNode) return fc;
-  return elab_class_ref_at(x->c, recv);
+  return lr_class_ref_at(x->c, recv, NULL);
 }
 
 
@@ -1199,7 +1221,7 @@ static void lr_frame(ElabRec *x, int e) {
   if (k == NK_ClassNode || k == NK_ModuleNode) { cls = elab_header_class(x->c, node, NULL, NULL); sg = 0; }
   else if (k == NK_SingletonClassNode) {
     int ex = nt_ref(nt, node, "expression");
-    cls = nt_kind(nt, ex) == NK_SelfNode ? cls : elab_class_ref_at(x->c, ex);
+    cls = nt_kind(nt, ex) == NK_SelfNode ? cls : lr_class_ref_at(x->c, ex, NULL);
     sg = LR_FS_SCLASS;
   }
   else if ((k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) && class_def_body(x->c, node) >= 0) {
@@ -1300,7 +1322,7 @@ static int lr_sg_const_owner(int cls) { return cls >= LR_MAIN ? -cls - 2 : 0; }
    the class's. A singleton of an arbitrary object remains unknown. */
 static int lr_singleton_owner(Compiler *c, int f) {
   int ex = nt_ref(c->nt, c->lrec->st[f].node, "expression");
-  int cls = nt_kind(c->nt, ex) == NK_SelfNode ? lr_cref(c, f) : elab_class_ref_at(c, ex);
+  int cls = nt_kind(c->nt, ex) == NK_SelfNode ? lr_cref(c, f) : lr_class_ref_at(c, ex, NULL);
   return lr_sg_const_owner(cls);
 }
 
@@ -1367,7 +1389,7 @@ static void lr_const_write(Compiler *c, int node, int e, int fc, int fs, int may
       if (!nm || !is_const_set_name(nm) || an < 2 || !(name = vis_arg_name(nt, av[0]))) return;
       int rv = nt_ref(nt, node, "receiver");
       owner = rv < 0 || nt_kind(nt, rv) == NK_SelfNode ?
-        (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(elab_class_ref_at(c, rv));
+        (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(lr_class_ref_at(c, rv, NULL));
       lr_write(c->lrec, ELAB_CONST, owner, name, node, lr_nil_value(nt, av[1]), may);
       return;
     }
@@ -1377,7 +1399,7 @@ static void lr_const_write(Compiler *c, int node, int e, int fc, int fs, int may
   if (target >= 0) {
     int par = nt_ref(nt, target, "parent");
     owner = par < 0 ? lr_const_owner(LR_MAIN) : nt_kind(nt, par) == NK_SelfNode ?
-      (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(elab_class_ref_at(c, par));
+      (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(lr_class_ref_at(c, par, NULL));
   }
   may |= k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
          k == NK_ConstantPathOrWriteNode || k == NK_ConstantPathAndWriteNode;
@@ -1724,7 +1746,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
     }
     else if (mix) {
       LrClass *k = lr_class(x->r, cls);
-      int mod = elab_class_ref_at(x->c, av[i]);
+      int mod = lr_class_ref_at(x->c, av[i], NULL);
       opaque |= mod < 0 && mod != LR_LATER;
       if (!k) continue;
       k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
@@ -1833,7 +1855,7 @@ static void lr_autoload(ElabRec *x, int node, int fc, int fs, int may) {
   if (!n) return;
   int recv = nt_ref(nt, node, "receiver");
   int owner = recv < 0 || nt_kind(nt, recv) == NK_SelfNode ?
-    (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(elab_class_ref_at(x->c, recv));
+    (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(lr_class_ref_at(x->c, recv, NULL));
   for (int k = 0; k < n; k++) {
     if (!owner) continue;
     LrHist *h = lr_hist(x->r, LR_KEY_AUTO, owner, a[k].name, 1);
@@ -1870,7 +1892,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
       lr_write(r, ELAB_CONST, owner, lr_written_name(nt, cp), node, 0, may);
     }
     int sc = k == NK_ClassNode ? nt_ref(nt, node, "superclass") : -1;
-    if (kc && sc >= 0 && !kc->has_sup) { kc->sup = elab_class_ref_at(x->c, sc); kc->sup_ref = sc; kc->has_sup = 1; }
+    if (kc && sc >= 0 && !kc->has_sup) { kc->sup = lr_class_ref_at(x->c, sc, NULL); kc->sup_ref = sc; kc->has_sup = 1; }
     if (kc) { kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open); kc->open[kc->nopen++] = (LrOpen){ node, body }; }
   }
   switch (k) {
@@ -2296,12 +2318,12 @@ static void lr_settle_regions(Compiler *c) {
   for (int i = 0; i < r->ncls; i++) {
     LrClass *k = &r->cls[i];
     for (int j = 0; j < k->nmix; j++) {
-      int mod = elab_class_ref_at(c, k->mix[j].ref), was = k->mix[j].mod;
+      int mod = lr_class_ref_at(c, k->mix[j].ref, NULL), was = k->mix[j].mod;
       k->mix[j].mod = mod;
       if (mod < 0 && mod != LR_LATER && !(was < 0 && was != LR_LATER) && i >= 1)
         lr_version(r, LR_KEY_OPAQUE, lr_const_owner(i - 1), "", (LrDef){ k->mix[j].node, LR_OPAQUE, 0, (unsigned char)elab_point_may(c, k->mix[j].node), 0, NULL });
     }
-    if (k->has_sup) k->sup = elab_class_ref_at(c, k->sup_ref);
+    if (k->has_sup) k->sup = lr_class_ref_at(c, k->sup_ref, NULL);
   }
   for (int i = 0; i < r->nset; i++) {
     const LrSettle *t = &r->set[i];
@@ -3248,7 +3270,7 @@ static void lr_rta_any(LrRta *t) {
 static int lr_rta_const(LrRta *t, int node) {
   const NodeTable *nt = t->c->nt;
   const LrDef *d = NULL;
-  int k = elab_class_ref_at(t->c, node), lo = 0, hi = t->ncname;
+  int k = lr_class_ref_at(t->c, node, NULL), lo = 0, hi = t->ncname;
   const char *nm = lr_written_name(nt, node);
   if (k >= LR_MAIN) return k;
   if (nt_kind(nt, node) == NK_ConstantReadNode && lr_const_at(t->c, node, nm, elab_point_of(t->c, node), &d, LR_KEY_CONST) == ELAB_YES && d && (k = lr_rta_builder(t->c, d->node)) != LR_UNKNOWN_CLASS) return k;
@@ -3806,7 +3828,7 @@ int elab_value_not_module(Compiler *c, int node) {
   const char *cn = nt_str(nt, r, "name"), *mn = nt_str(nt, node, "name");
   if (is_value_constructor(cn, mn))
     return lr_const_at(c, r, cn, elab_point_of(c, r), &d, LR_KEY_CONST) == ELAB_NO;
-  return is_new_name(mn) && lr_new_makes_object(c, elab_class_ref_at(c, r), mn);
+  return is_new_name(mn) && lr_new_makes_object(c, lr_class_ref_at(c, r, NULL), mn);
 }
 
 int elab_call_method(Compiler *c, int id, int cls, const char *name, int sg) {
@@ -3909,7 +3931,7 @@ static int lr_form_answer(Compiler *c, int node, int cls, int sg) {
   int o = lr_runs(c, cls, nm, p);
   for (int i = 0; i < nh; i++)
     for (int j = 0; j < (mix ? ac : 1); j++)
-      o = lr_either(o, lr_runs(c, mix ? elab_class_ref_at(c, av[j]) : cls, hook[i], p));
+      o = lr_either(o, lr_runs(c, mix ? lr_class_ref_at(c, av[j], NULL) : cls, hook[i], p));
   return o;
 }
 /* ...kept for elab_form_runs */
@@ -4248,7 +4270,7 @@ int elab_header_entity(Compiler *c, int node, const ElabPos *pos) {
   int par = k == NK_ConstantPathNode ? nt_ref(nt, cp, "parent") : -1;
   free(h->leaf);
   if (!(h->leaf = strdup(lr_written_name(nt, cp)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  h->owner = k == NK_ConstantReadNode ? lr_cref(c, r->at[node]) : par < 0 ? LR_MAIN : elab_class_ref_at(c, par);
+  h->owner = k == NK_ConstantReadNode ? lr_cref(c, r->at[node]) : par < 0 ? LR_MAIN : lr_class_ref_at(c, par, NULL);
   if (h->owner < LR_MAIN) h->owner = LR_UNKNOWN_CLASS;
   const LrDef *d = NULL;
   h->verdict = elab_const_own_at(c, h->owner, h->leaf, elab_point_of(c, node), &d);
@@ -4853,6 +4875,22 @@ void elab_check_version(Compiler *c, int id, int vi, int dc, int now, int ndc) {
           c->nt->pass ? c->nt->pass : "-", d, vi, now, dc, ndc);
 }
 
+/* The class elab_class_ref_at answered in its frame for reference node
+   (ci) against the one the map as it is answers */
+static void lr_check_class_ref(Compiler *c, int node, int ci) {
+  LoadRecord *r = c->lrec;
+  LrCheck *f = lr_family(r, "class references in the frame");
+  int now = lr_class_ref_at(c, node, NULL);
+  f->asked++;
+  if (ci == now) return;
+  f->differ++;
+  if (r->shown++ >= LR_CHECK_SHOW) return;
+  char d[96];
+  lr_node_desc(c, node, d, sizeof d);
+  fprintf(stderr, "spinel-elab-check: class-ref pass=%s node=%s class=%d/%d (frame/now)\n",
+          c->nt->pass ? c->nt->pass : "-", d, ci, now);
+}
+
 /* The record as --dump-load-record prints it */
 static char *lr_dump_text(Compiler *c) {
   FILE *f = tmpfile();
@@ -5331,7 +5369,7 @@ int elab_autoload_read(Compiler *c, int id) {
   LoadPoint p = elab_point_from(c, id), at = elab_point_of(c, id);
   int par = k == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
   int lexical = k == NK_ConstantReadNode && !lr_root_read(nt, id), owner = LR_MAIN, found;
-  if (!lexical && par >= 0 && (owner = elab_class_ref_at(c, par)) < LR_MAIN) return 0;
+  if (!lexical && par >= 0 && (owner = lr_class_ref_at(c, par, NULL)) < LR_MAIN) return 0;
   /* a constant of the name proves no file is left to run, unless a
      registration comes first on the lookup's way (an inner scope's, or the
      scope's own ahead of an ancestor's constant) */
@@ -5368,7 +5406,7 @@ int elab_autoload_read(Compiler *c, int id) {
 int elab_autoload_scope_open(Compiler *c, int id) {
   int par = nt_ref(c->nt, id, "parent"), open = 0;
   if (!c->nautoloads || par < 0) return 0;
-  int owner = elab_class_ref_at(c, par);
+  int owner = lr_class_ref_at(c, par, NULL);
   LoadPoint at = elab_point_of(c, id);
   const LrDef *d = NULL;
   if (owner >= LR_MAIN) lr_autoload_via_object(c, owner, lr_written_name(c->nt, id), at, &d, &open);

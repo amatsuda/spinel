@@ -840,7 +840,7 @@ static const char *resolve_alias_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NONE;
   if (vk == NK_ConstantReadNode || vk == NK_ConstantPathNode) {
-    int ci = elab_class_ref_at(c, v);
+    int ci = elab_class_ref_at(c, v, NULL);
     if (ci >= 0) return c->classes[ci].name;
     const char *vn = nt_str(nt, v, "name");
     return vn && (comp_class_index(c, vn) >= 0 || is_builtin_class_name(vn)) ? vn : NULL;
@@ -1665,7 +1665,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       if (child_class >= 0 && nt_ref(c->nt, id, "superclass") >= 0 &&
           c->classes[child_class].def_node >= 0 &&
           nt_ref(c->nt, c->classes[child_class].def_node, "superclass") < 0) {
-        { c->classes[child_class].def_node = id; comp_touch_class(c->classes[child_class].idx); }
+        comp_class_set_def(c, child_class, id);
       }
     }
     elab_header_opened(c, id, cname ? child_class : -1, made);
@@ -2003,7 +2003,8 @@ static int mf_chain_covers(const NodeTable *nt, int node, const char *base, int 
 
 /* The module ModuleNode `dn` opens, or -1. */
 static int mf_module_of(Compiler *c, int dn) {
-  for (int k = 0; k < c->nclasses; k++) if (c->classes[k].def_node == dn) return k;
+  int k = comp_class_of_def(c, dn);
+  if (k >= 0) return k;
   /* a ModuleNode names its module through constant_path, not a "name" */
   int ci = elab_header_class(c, dn, NULL, NULL);
   return ci >= 0 ? ci : -1;
