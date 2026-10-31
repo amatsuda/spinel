@@ -15596,6 +15596,8 @@ int face_arg_misfit(Compiler *c, unsigned kind, int arg) {
   if (at == TY_POLY || at == TY_UNKNOWN) return 0;
   if (kind == PF_STRING && (at == TY_STRING || at == TY_STRBUF || at == TY_INT)) return 0;  /* a codepoint concatenates too */
   if (kind == PF_ARRAY && (ty_is_array(at) || at == TY_POLY_ARRAY)) return 0;
+  /* an object whose to_ary may answer an Array: the arm converts it */
+  if (kind == PF_ARRAY && ty_is_object(at) && !obj_to_ary_misfit(c, at)) return 0;
   /* a Hash, or an object whose to_hash may answer one */
   if (kind == PF_HASH && (ty_is_hash(at) || ty_is_object(at))) return 0;
   return 1;

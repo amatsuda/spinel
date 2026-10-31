@@ -1941,6 +1941,8 @@ static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v);
 static sp_PolyArray *sp_zip_arg(sp_RbVal v);
 static sp_PolyArray *sp_PolyArray_intersect(sp_PolyArray *a, sp_PolyArray *b);
 static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b);
+static inline int sp_poly_is_user_obj(sp_RbVal v);
+static sp_RbVal sp_poly_ary_operand(sp_RbVal v);
 static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ */
   /* a user class's own &/|/^ comes first: coercing the object to an integer
      answered a builtin result for a method the class had written (#3501) */
@@ -1952,7 +1954,10 @@ static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ 
   }
   /* Two ARRAYS: `&` and `|` are Array's set operations, as `+` and `-` already
      are on this path. Read as integer arithmetic they answered 0, so a fold
-     over an array of arrays lost its result silently (#3966). */
+     over an array of arrays lost its result silently (#3966). An object
+     operand converts through its #to_ary first, as sp_poly_add's does. */
+  if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id) && sp_poly_is_user_obj(b) && op != 2)
+    b = sp_poly_ary_operand(b);
   if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id) &&
       b.tag == SP_TAG_OBJ && sp_poly_is_array_kind(b.cls_id) && op != 2) {
     SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);

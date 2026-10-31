@@ -1,0 +1,18 @@
+concat2: [1, 2, 3]
+concat1: [1, 2]
+plus: [1, 2]
+minus: [1]
+or: [1, 2]
+and: []
+replace: [2]
+product: [[1, 2]]
+union: [1, 2]
+difference: [1]
+intersection: []
+zip: [[1, 2]]
+product hash: TypeError no implicit conversion of Hash into Array
+product range: TypeError no implicit conversion of Range into Array
+product nil: TypeError no implicit conversion of nil into Array
+or hash: TypeError no implicit conversion of Hash into Array
+or bad: TypeError can't convert OpBadSource to Array (OpBadSource#to_ary gives Integer)
+product bad: TypeError can't convert OpBadSource to Array (OpBadSource#to_ary gives Integer)

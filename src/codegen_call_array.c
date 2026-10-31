@@ -1591,12 +1591,15 @@ int emit_op_array_product(Compiler *c, const BopCtx *x, Buf *b) {
   if (rt == TY_POLY_ARRAY) {
     if (sp_streq(name, "product") && argc == 1 && nt_ref(nt, id, "block") < 0) {
       /* poly product with one list: all [x, y] pairs (an empty receiver or
-         argument yields []) */
+         argument yields []). The operand converts as CRuby's to_ary: an
+         object answering #to_ary is that Array, and anything else no Array
+         is CRuby's TypeError (a Hash read as its pairs, an object with no
+         elements as none, answered pairs or []). */
       int pta = ++g_tmp, ptb = ++g_tmp, ptr = ++g_tmp, pti = ++g_tmp, ptj = ++g_tmp, pte = ++g_tmp;
       Buf pra = expr_buf(c, recv);
       buf_printf(b, "({ sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);", pta, pra.p ? pra.p : "NULL", pta);
       free(pra.p);
-      buf_printf(b, " sp_PolyArray *_t%d = sp_enum_items_from(", ptb);
+      buf_printf(b, " sp_PolyArray *_t%d = sp_poly_set_operand(", ptb);
       emit_boxed(c, argv[0], b);
       buf_printf(b, "); SP_GC_ROOT(_t%d);", ptb);
       buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ptr, ptr);
