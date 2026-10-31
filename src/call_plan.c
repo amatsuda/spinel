@@ -4190,17 +4190,26 @@ void ver_entries_build(Compiler *c) {
   free(gc);
   c->ver_built = 1;
 }
+/* `cell = v`, in at's scope and on its line (ver_cell_put places it) */
+static int ver_cell_node(Compiler *c, const char *cell, int at, int v) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int line = (int)nt_int(nt, at, "node_line", 0), tv = nt_new_int(nt, v), g = nt_new_node(nt, "GlobalVariableWriteNode");
+  nt_node_set_str(nt, g, "name", cell);
+  nt_node_set_ref(nt, g, "value", tv);
+  nt_node_set_int(nt, tv, "node_line", line);
+  nt_node_set_int(nt, g, "node_line", line);
+  /* (the cell holds an Integer from the entry file's first statement on, and nothing can read it before: its seed) */
+  comp_gvar_intern(c, cell + 1)->gvar_seeded = 2;
+  comp_grow_node_arrays(c);
+  c->nscope[g] = c->nscope[tv] = c->nscope[at];
+  return g;
+}
 /* `cell = v` put in statement list `list` at its statement `at` (after it
    when after), in at's scope: the write, for the caller to record as the
    load record records a write (elab_record_write) */
 int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int v) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n = 0, j = 0, line = (int)nt_int(nt, at, "node_line", 0);
-  int tv = nt_new_int(nt, v), g = nt_new_node(nt, "GlobalVariableWriteNode");
-  nt_node_set_str(nt, g, "name", cell);
-  nt_node_set_ref(nt, g, "value", tv);
-  nt_node_set_int(nt, tv, "node_line", line);
-  nt_node_set_int(nt, g, "node_line", line);
+  int n = 0, j = 0, g = ver_cell_node(c, cell, at, v);
   const int *st = nt_arr(nt, list, "body", &n);
   while (j < n && st[j] != at) j++;
   if (j == n) { fprintf(stderr, "spinel: internal: a cell write's statement is not in its statement list\n"); exit(1); }
@@ -4212,10 +4221,6 @@ int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int
   memcpy(ns + j + 1, st + j, sizeof(int) * (size_t)(n - j));
   nt_node_set_arr(nt, list, "body", ns, n + 1);
   free(ns);
-  /* (the cell holds an Integer from the entry file's first statement on, and nothing can read it before: its seed) */
-  comp_gvar_intern(c, cell + 1)->gvar_seeded = 2;
-  comp_grow_node_arrays(c);
-  c->nscope[g] = c->nscope[tv] = c->nscope[at];
   return g;
 }
 /* ...and the cells' writes: after each statement that makes a version an
@@ -4225,14 +4230,25 @@ int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int
    the entry file's first statement (unless that statement makes one of the
    cell's versions), so that the cell holds an Integer wherever an entry
    reads it. Each recorded as the load record records a
-   write (elab_record_write). */
-typedef struct { int stmt, node, n, hist; } VerWrite;
+   write (elab_record_write). The writes are placed list by list, one rebuild
+   of each list's statements: ahead of a statement in the order made, after
+   it in the reverse order, as one insertion at a time placed them. */
+typedef struct { int list, stmt, node, n, hist, after, k, g; } VerWrite;
+static int ver_write_cmp(const void *a, const void *b) {
+  const VerWrite *x = a, *y = b;
+  if (x->list != y->list) return x->list < y->list ? -1 : 1;
+  if (x->stmt != y->stmt) return x->stmt < y->stmt ? -1 : 1;
+  if (x->after != y->after) return x->after - y->after;
+  return x->after ? y->k - x->k : x->k - y->k;
+}
 void ver_cells_write(Compiler *c) {
-  const NodeTable *nt = c->nt;
+  NodeTable *nt = (NodeTable *)c->nt;
   ElabVersion vs[VER_MAX_ARMS];
   VerWrite *w = NULL;
-  int nw = 0, nz = 0, top = prog_root_stmts(c, 0), ntop = 0;
+  int nw = 0, top = prog_root_stmts(c, 0), ntop = 0, nh = 0;
   const int *par = c->nver_entries ? comp_parent_map(c) : NULL, *first = top >= 0 ? nt_arr(nt, top, "body", &ntop) : NULL;
+  unsigned char *seen = c->nver_entries ? calloc((size_t)nt->count + 1, 1) : NULL;
+  if (c->nver_entries && !seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < c->nver_entries; i++) {
     const struct VerEntry *e = &c->ver_entries[i];
     /* (not only the entries reached now: a send's arms, made in the fixpoint, reach methods whose calls bind entries this first pass leaves unreached) */
@@ -4247,29 +4263,62 @@ void ver_cells_write(Compiler *c) {
           reads |= nt_int(nt, tests[k], "ver_hist", 0) == vs[j].hist + 1;
         if (!reads) continue;   /* prepend cells are written at their statements */
       }
-      int node = vs[j].v->node, st = node, dup = 0;
+      int node = vs[j].v->node, st = node;
       while (st >= 0 && par[st] >= 0 && nt_kind(nt, par[st]) != NK_StatementsNode) st = par[st];
-      for (int k = 0; k < nw && !dup; k++) dup = w[k].node == node;
-      if (dup || st < 0 || par[st] < 0) continue;
+      if (seen[node] || st < 0 || par[st] < 0) continue;
+      seen[node] = 1;
       if (!(nw & (nw - 1)) && !(w = realloc(w, sizeof *w * (size_t)(nw ? 2 * nw : 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      w[nw++] = (VerWrite){ st, node, vs[j].v->kind == LR_REMOVE ? 0 : vs[j].n, vs[j].hist };
+      NodeKind sk = nt_kind(nt, st);
+      /* (ahead of a def, an alias or an undef, which runs no program code: after one that ends a branch, the write would be the branch's value) */
+      w[nw++] = (VerWrite){ par[st], st, node, vs[j].v->kind == LR_REMOVE ? 0 : vs[j].n, vs[j].hist,
+                            sk != NK_DefNode && sk != NK_AliasMethodNode && sk != NK_UndefNode, 0, -1 };
+      if (vs[j].hist >= nh) nh = vs[j].hist + 1;
     }
   }
-  int *made = malloc(sizeof(int) * (size_t)(2 * nw + 1)), at0 = ntop ? first[0] : -1;
-  for (int k = 0; k < nw; k++) {
+  free(seen);
+  /* the zero writes: one per cell, at its first write, none where the first statement writes it */
+  unsigned char *hz = calloc((size_t)nh + 1, 1);
+  int at0 = ntop ? first[0] : -1, nz = 0;
+  VerWrite *all = malloc(sizeof *all * (size_t)(2 * nw + 1));
+  if (!hz || !all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nw; k++) if (w[k].stmt == at0) hz[w[k].hist] = 1;
+  for (int k = 0; k < nw; k++) {   /* (made in the order one insertion at a time made them) */
     char cell[32];
-    int z = at0 >= 0;
     ver_cell_name(w[k].hist, cell);
-    for (int j = 0; j < nw && z; j++)   /* (one per cell; none where the first statement writes it) */
-      z = w[j].hist != w[k].hist || (j >= k && w[j].stmt != at0);
-    if (z) made[nw + nz++] = ver_cell_put(c, cell, top, at0, 0, 0);
-    NodeKind sk = nt_kind(nt, w[k].stmt);
-    /* (ahead of a def, an alias or an undef, which runs no program code: after one that ends a branch, the write would be the branch's value) */
-    int after = sk != NK_DefNode && sk != NK_AliasMethodNode && sk != NK_UndefNode;
-    made[k] = ver_cell_put(c, cell, par[w[k].stmt], w[k].stmt, after, w[k].n);
+    if (at0 >= 0 && !hz[w[k].hist]) {
+      hz[w[k].hist] = 1;
+      all[nz] = (VerWrite){ top, at0, -1, 0, w[k].hist, 0, nz, ver_cell_node(c, cell, at0, 0) };
+      nz++;
+    }
+    all[nz] = w[k];
+    all[nz].k = nz;
+    all[nz].g = ver_cell_node(c, cell, w[k].stmt, w[k].n);
+    nz++;
   }
-  for (int k = 0; k < nw + nz; k++) elab_record_write(c, made[k]);
-  free(made); free(w);
+  int *made = malloc(sizeof(int) * (size_t)(nz + 1)), nm = 0;   /* (recorded once placed: the version writes, then the zero writes) */
+  if (!made) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nz; k++) if (all[k].node >= 0) made[nm++] = all[k].g;
+  for (int k = 0; k < nz; k++) if (all[k].node < 0) made[nm++] = all[k].g;
+  qsort(all, (size_t)nz, sizeof *all, ver_write_cmp);
+  for (int k = 0, e; k < nz; k = e) {   /* each list once */
+    int n = 0, o = 0;
+    for (e = k; e < nz && all[e].list == all[k].list; e++) {}
+    const int *st = nt_arr(nt, all[k].list, "body", &n);
+    int *ns = malloc(sizeof(int) * (size_t)(n + e - k));
+    if (!ns) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int j = 0; j < n; j++) {
+      int lo = k, hi = e;   /* (the first write of st[j], by node) */
+      while (lo < hi) { int mid = (lo + hi) / 2; if (all[mid].stmt < st[j]) lo = mid + 1; else hi = mid; }
+      for (; lo < e && all[lo].stmt == st[j] && !all[lo].after; lo++) ns[o++] = all[lo].g;
+      ns[o++] = st[j];
+      for (; lo < e && all[lo].stmt == st[j]; lo++) ns[o++] = all[lo].g;
+    }
+    if (o != n + e - k) { fprintf(stderr, "spinel: internal: a cell write's statement is not in its statement list\n"); exit(1); }
+    nt_node_set_arr(nt, all[k].list, "body", ns, o);
+    free(ns);
+  }
+  for (int k = 0; k < nm; k++) elab_record_write(c, made[k]);
+  free(made); free(all); free(hz); free(w);
   /* (the versions kept before the writes are asked again) */
   free(c->ver_memo);
   c->ver_memo = NULL;
