@@ -1,5 +1,5 @@
-# The class-body macro form declines: a block that answers a frozen String a
-# method made (the class's name), which is not the literal of its bytes.
+# A class-body macro whose block answers a frozen String a method made (the
+# class's name): the call's statements read the name again, the same object.
 class Base
   def self.label(n)
     s = self.name

@@ -1,4 +1,4 @@
-# The class-body macro form declines: a block that answers a String the macro made.
+# A class-body macro whose block answers a String the macro made: one object, which every call answers.
 class Base
   def self.mk(n)
     s = n.to_s

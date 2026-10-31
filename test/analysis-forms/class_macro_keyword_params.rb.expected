@@ -1,0 +1,8 @@
+"title_string/12/true"
+"count_integer/13/true"
+"body_string/11/false"
+"x/9/true"
+:string
+:integer
+:symbol
+[false, true]
