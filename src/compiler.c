@@ -117,12 +117,30 @@ static void comp_ver_grow(unsigned long **ver, int *cap, int need) {
 
 static void comp_node_ords(Compiler *c);
 
+AutoloadRegistration *comp_autoloads(const Compiler *c, int node, int *count) {
+  *count = 0;
+  if (!c->nautoloads) return NULL;
+  char how; int a, k; unsigned pass;
+  while (node >= c->auto_nodes) node = nt_origin(c->nt, node, &how, &a, &pass, &k);
+  int first = node >= 0 ? c->auto_at[node] - 1 : -1;
+  if (first < 0) return NULL;
+  while (first + *count < c->nautoloads && c->autoloads[first + *count].node == node) ++*count;
+  return c->autoloads + first;
+}
+
 Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
   if (!c) return NULL;
   c->nt = nt;
   c->toplevel_class = -1;
   int n = nt->count > 0 ? nt->count : 1;
+  if ((c->nautoloads = nt->nautoloads)) {
+    c->autoloads = malloc((size_t)c->nautoloads * sizeof *c->autoloads);
+    c->auto_at = calloc((size_t)(c->auto_nodes = n), sizeof(int));
+    if (!c->autoloads || !c->auto_at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(c->autoloads, nt->autoloads, (size_t)c->nautoloads * sizeof *c->autoloads);
+    for (int i = c->nautoloads - 1; i >= 0; i--) c->auto_at[c->autoloads[i].node] = i + 1;
+  }
   c->ntype = calloc((size_t)n, sizeof(TyKind));
   c->norigin = malloc((size_t)n * sizeof(int));
   for (int i = 0; i < n; i++) c->norigin[i] = -1;
@@ -626,6 +644,7 @@ void comp_free(Compiler *c) {
   free((TyKind *)c->ntype);
   free(c->norigin);
   free(c->node_cbody);
+  free(c->autoloads); free(c->auto_at);
   free((char *)c->empty_arr_recv);
   free((char *)c->empty_hash_recv);
   free(c->store_misfit_arg);
@@ -2315,6 +2334,16 @@ int const_seg_resolves(Compiler *c, int seg) {
          const_path_class(c, seg) >= 0;
 }
 
+/* Does a segment of constant (path) node v have an autoload registration
+   that may still be pending there? defined? then answers at run time: a
+   registered leaf is "constant" until its file runs, whatever the file
+   defines, and a registered parent runs its file (emit_defined_expr). */
+static int defined_path_registered(Compiler *c, int v) {
+  for (int seg = v; seg >= 0 && nt_kind_is_constant(nt_kind(c->nt, seg)); seg = nt_ref(c->nt, seg, "parent"))
+    if (elab_autoload_read(c, seg)) return 1;
+  return 0;
+}
+
 /* Statically-false `defined?(Const)` guard: the predicate is a DefinedNode
    (or a `defined?(Const) && ...` AndNode, whose left arm short-circuits the
    whole conjunction to nil) over a constant / constant path that resolves to
@@ -2337,7 +2366,8 @@ int comp_defined_guard_false(Compiler *c, int pred) {
   if (pk == NK_AndNode)
     return comp_defined_guard_false(c, nt_ref(nt, pred, "left"));
   if (pk != NK_DefinedNode) return 0;
-  return comp_const_undefined(c, nt_ref(nt, pred, "value"));
+  int v = nt_ref(nt, pred, "value");
+  return comp_const_undefined(c, v) && !defined_path_registered(c, v);
 }
 
 /* See compiler.h. */
@@ -2372,7 +2402,7 @@ int comp_const_undefined(Compiler *c, int v) {
    it has run) have their keys put in early (at most cap), in the order the
    path is walked, and are counted in the answer; -1 when a segment does not
    resolve, more have a flag than fit, or the path is no plain one. */
-static int defined_path_keys(Compiler *c, int pred, const char **early, int cap) {
+static int defined_path_keys(Compiler *c, int pred, const char **early, int cap, int *reads) {
   const NodeTable *nt = c->nt;
   int ne = 0;
   if (pred < 0 || nt_kind(nt, pred) != NK_DefinedNode) return -1;
@@ -2382,25 +2412,38 @@ static int defined_path_keys(Compiler *c, int pred, const char **early, int cap)
   if (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) return -1;
   /* each leaf must be a member of what its parent names, not only resolve
      by its own name somewhere in the program */
-  if (vk == NK_ConstantPathNode && const_path_misses_member(c, v)) return -1;
+  if (vk == NK_ConstantPathNode && !elab_autoload_read(c, v) && const_path_misses_member(c, v)) return -1;
   for (int seg = v; ; ) {
     const char *nm = nt_str(nt, seg, "name");
-    if (!const_seg_resolves(c, seg)) return -1;
+    ConstReadEffect ce = an_const_read_effect(c, seg);
+    /* (a registered segment may name a constant though no write defines it) */
+    if (!const_seg_resolves(c, seg) && !ce.autoload) return -1;
     LocalVar *lv = comp_const(c, nm);
-    if (lv && lv->const_early && ne < cap) early[ne++] = lv->name;
-    else if (lv && lv->const_early) return -1;
+    int check = (lv && lv->const_early) || ce.autoload || ce.class_presence;
+    if (check && ne < cap) {
+      if (early) early[ne] = lv ? lv->name : nm;
+      if (reads) reads[ne] = seg;
+      ne++;
+    }
+    else if (check) return -1;
     if (vk != NK_ConstantPathNode) return ne;
     int par = nt_ref(nt, seg, "parent");
     /* `::Root` anchor: the root must be defined at the TOP level, not
        through a same-named nested module (#3320) */
-    if (par < 0) return const_name_resolves_top_level(c, nm) || const_seg_builtin(c, seg) ? ne : -1;
+    if (par < 0) return const_name_resolves_top_level(c, nm) || const_seg_builtin(c, seg) || ce.autoload ? ne : -1;
     if (nt_kind(nt, par) == NK_ConstantPathNode) { seg = par; continue; }
     if (nt_kind(nt, par) == NK_ConstantReadNode) {
       const char *pn = nt_str(nt, par, "name");
-      if (!const_seg_resolves(c, par)) return -1;
+      ConstReadEffect pe = an_const_read_effect(c, par);
+      if (!const_seg_resolves(c, par) && !pe.autoload) return -1;
       LocalVar *plv = comp_const(c, pn);
-      if (plv && plv->const_early && ne < cap) early[ne++] = plv->name;
-      else if (plv && plv->const_early) return -1;
+      int check = (plv && plv->const_early) || pe.autoload || pe.class_presence;
+      if (check && ne < cap) {
+        if (early) early[ne] = plv ? plv->name : pn;
+        if (reads) reads[ne] = par;
+        ne++;
+      }
+      else if (check) return -1;
       return ne;
     }
     return -1;                                  /* dynamic parent: no fold */
@@ -2417,14 +2460,17 @@ static int defined_path_keys(Compiler *c, int pred, const char **early, int cap)
    is static. */
 int comp_defined_guard_true(Compiler *c, int pred) {
   const char *early[1];
-  return defined_path_keys(c, pred, early, 0) == 0;
+  return defined_path_keys(c, pred, early, 0, NULL) == 0;
 }
 
 /* The constants a statically resolved defined? path holds a presence flag
    for, whose flags say whether it is defined now (the count, their keys in
    early); -1 when the path is not one that resolves at compile time. */
 int comp_defined_early(Compiler *c, int pred, const char **early, int cap) {
-  return defined_path_keys(c, pred, early, cap);
+  return defined_path_keys(c, pred, early, cap, NULL);
+}
+int comp_defined_reads(Compiler *c, int pred, int *reads, int cap) {
+  return defined_path_keys(c, pred, NULL, cap, reads);
 }
 
 /* A literal ArrayNode that is built as an sp_IntArray: one element at least,

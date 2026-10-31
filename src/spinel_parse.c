@@ -364,6 +364,7 @@ static size_t prism_kind_to_pascal(const char *raw, char *out, size_t out_size) 
 static int flatten(pm_node_t *node);
 static void sp_lower_rows_note(const pm_node_t *node, int id);   /* SPINEL_LOWER_ROWS_CHECK */
 static int sp_load_call(const pm_call_node_t *n);
+static int sp_pm_name_is(const pm_parser_t *parser, pm_constant_id_t id, const char *word);
 static int sp_flatten_call_as(int id, pm_call_node_t *n);
 static int sp_graph_site_take(int id, const pm_node_t *call);   /* 1: its path is computed when it runs */
 /* inline RBS (inline_rbs.c): the facts of a node, written by flatten */
@@ -2507,6 +2508,10 @@ static int sp_flatten_call_as(int id, pm_call_node_t *n) {
     return 1;
   }
   if (!g_load_model_graph || !sp_load_call(n)) return 0;
+  if (sp_pm_name_is(g_parser, n->name, "autoload")) {
+    sp_graph_site_take(id, node);
+    return 0;   /* the registration belongs to the ordinary CallNode */
+  }
   pm_node_t *arg = n->arguments->arguments.nodes[0];
   nt_put_type(out_nt, id, "LoadNode");
   char *m = cstr(n->name);
@@ -4955,6 +4960,7 @@ typedef struct {
   int node;               /* --load-model=graph: its LoadNode, once flattened (-1 before) */
   int ncand, *cand;       /* SP_LOAD_SET: the files a path computed when it runs may name, ... */
   int open;               /* ... or (open) any file of the program */
+  char **autoload, **auto_path; int *auto_file, nauto;
 } SpLoadEdge;
 
 /* --load-model=graph: a require of a file's tree: its edge, the call node it
@@ -5152,6 +5158,9 @@ static int sp_req_not_path(const pm_node_t *arg) {
    receiverless or on Kernel, with one argument that can name a path and no
    block? */
 static int sp_load_call(const pm_call_node_t *n) {
+  if (sp_pm_name_is(g_parser, n->name, "autoload"))
+    return !n->block && n->arguments && n->arguments->arguments.size == 2 &&
+           PM_NODE_TYPE(n->arguments->arguments.nodes[1]) != PM_SPLAT_NODE;
   if (!sp_pm_name_is(g_parser, n->name, "require") && !sp_pm_name_is(g_parser, n->name, "require_relative"))
     return 0;
   if (n->receiver && (!sp_call_receiver_is_kernel(g_parser, n->receiver) ||
@@ -5211,6 +5220,8 @@ static void sp_load_graph_free(SpLoadGraph *g) {
   for (int i = 0; i < g->nfile; i++) free(g->file[i]);
   for (int i = 0; i < g->nedge; i++) {
     free(g->edge[i].name);
+    for (int k = 0; k < g->edge[i].nauto; k++) { free(g->edge[i].autoload[k]); free(g->edge[i].auto_path[k]); }
+    free(g->edge[i].autoload); free(g->edge[i].auto_path); free(g->edge[i].auto_file);
     free(g->edge[i].cand);
   }
   for (int i = 0; i < g->nspl; i++) free(g->spl[i].name);
@@ -7208,7 +7219,8 @@ static SpGraphFile *sp_graph_rec(SpLoadGraph *g, int f) {
  * candidates). A path not known is a set too, an open one: it may name any
  * file of the program. */
 #define SP_REQ_MAX 16
-typedef struct { char *v[SP_REQ_MAX]; int n, open; } SpPaths;
+/* called: a local the path reads may be changed by a call on it (sp_local_scan) */
+typedef struct { char *v[SP_REQ_MAX]; int n, open, called; } SpPaths;
 typedef struct { const pm_parser_t *pp; const pm_node_t *const *stack; int depth; const char *dir; } SpReqCtx;
 
 static void sp_paths_free(SpPaths *k) {
@@ -7270,8 +7282,10 @@ static bool sp_param_binds(const pm_node_t *n, void *data) {
 
 /* The writes of one local of a scope: `lvl` soft scopes below it, a write
    names it by that depth. A plain write is counted (its value kept); any
-   other form that assigns it (a target, an operator write) is `other`. */
-typedef struct { pm_constant_id_t name; int lvl, nwrite, other; const pm_node_t *val; } SpLocalScan;
+   other form that assigns it (a target, an operator write) is `other`; a
+   call on it that may change the String it holds (`path << "x"`, any but a
+   reader of String's) is `called`. */
+typedef struct { pm_constant_id_t name; int lvl, nwrite, other, called; const pm_node_t *val; } SpLocalScan;
 static bool sp_local_scan(const pm_node_t *n, void *data) {
   SpLocalScan *s = data;
   switch (PM_NODE_TYPE(n)) {
@@ -7292,6 +7306,22 @@ static bool sp_local_scan(const pm_node_t *n, void *data) {
     SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_OR_WRITE_NODE, pm_local_variable_or_write_node_t)
     SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_AND_WRITE_NODE, pm_local_variable_and_write_node_t)
 #undef SP_LOCAL_OTHER
+    case PM_CALL_NODE: {
+      const pm_call_node_t *c = (const pm_call_node_t *)n;
+      const pm_local_variable_read_node_t *r = c->receiver && PM_NODE_TYPE(c->receiver) == PM_LOCAL_VARIABLE_READ_NODE ?
+                                               (const pm_local_variable_read_node_t *)c->receiver : NULL;
+      if (r && r->name == s->name && (int)r->depth == s->lvl) {
+        const pm_constant_t *m = pm_constant_pool_id_to_constant(&g_parser->constant_pool, c->name);
+        char name[32];
+        if (m->length >= sizeof name) s->called = 1;
+        else {
+          memcpy(name, m->start, m->length);
+          name[m->length] = '\0';
+          if (!is_string_read_only_method(name)) s->called = 1;
+        }
+      }
+      return true;
+    }
     default: return true;
   }
 }
@@ -7351,7 +7381,7 @@ static bool sp_reads_visit(const pm_node_t *n, void *data) {
    one expression in its scope, that expression's), or the words of the loop
    it is the parameter of. 0 when it is neither: any value. */
 static int sp_req_bind(const SpReqCtx *x, PevCtx *ev, const pm_local_variable_read_node_t *rd,
-                       const pm_node_list_t **words, pm_constant_id_t *wid) {
+                       const pm_node_list_t **words, pm_constant_id_t *wid, int *called) {
   int si = -1, hop = 0;
   for (int i = x->depth - 1; i >= 0 && si < 0; i--) {
     pm_node_type_t t = PM_NODE_TYPE(x->stack[i]);
@@ -7368,8 +7398,9 @@ static int sp_req_bind(const SpReqCtx *x, PevCtx *ev, const pm_local_variable_re
     pm_visit_node(params, sp_param_binds, &ps);
     if (ps.found) return 0;
   }
-  SpLocalScan sc = { rd->name, 0, 0, 0, NULL };
+  SpLocalScan sc = { rd->name, 0, 0, 0, 0, NULL };
   if (body) pm_visit_node(body, sp_local_scan, &sc);
+  *called |= sc.called;
   if (sc.other || (word ? sc.nwrite != 0 : sc.nwrite != 1)) return 0;
   if (word) { *wid = pid; return 1; }
   PevCtx sub;   /* (the expression's own locals are not looked into) */
@@ -7398,7 +7429,7 @@ static void sp_req_paths(const SpReqCtx *x, const pm_node_t *arg, SpPaths *out) 
   for (int i = 0; ok && i < rs.n; i++) {
     const pm_node_list_t *w = NULL;
     pm_constant_id_t id = 0;
-    ok = sp_req_bind(x, &ev, rs.rd[i], &w, &id);
+    ok = sp_req_bind(x, &ev, rs.rd[i], &w, &id, &out->called);
     if (ok && w) { ok = !words; words = w; wid = id; }
   }
   char *wname = words ? cstr(wid) : NULL;
@@ -7428,7 +7459,7 @@ static void sp_req_beside(const SpReqCtx *x, const pm_node_t *arg, SpPaths *out)
   pm_constant_id_t pid = 0;
   for (int i = x->depth - 1; i >= 0 && !words; i--)
     if (PM_NODE_TYPE(x->stack[i]) == PM_BLOCK_NODE && sp_each_words(x, i, 0, &words, &pid)) {
-      SpLocalScan sc = { pid, 0, 0, 0, NULL };   /* (a word the block assigns anew is not the loop's) */
+      SpLocalScan sc = { pid, 0, 0, 0, 0, NULL };   /* (a word the block assigns anew is not the loop's) */
       pm_visit_node(sp_scope_body(x->stack[i]), sp_local_scan, &sc);
       if (sc.nwrite || sc.other) { sp_paths_open(out); return; }
     }
@@ -7536,9 +7567,10 @@ static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char 
   if (!dir) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   if (sl) *sl = 0;
   SpReqCtx x = { g_parser, w->stack, w->depth, dir };
-  const pm_node_t *arg = n->arguments->arguments.nodes[0];
+  int auto_load = sp_pm_name_is(g_parser, n->name, "autoload");
+  const pm_node_t *arg = n->arguments->arguments.nodes[auto_load ? 1 : 0];
   SpPaths kv = { { NULL }, 0, 0 };
-  int plain = strcmp(method, "require") == 0, beside = 0, e;
+  int plain = auto_load || strcmp(method, "require") == 0, beside = 0, e;
   sp_req_paths(&x, arg, &kv);
   if (kv.open && plain) {
     sp_paths_free(&kv); kv.open = 0; beside = 1;
@@ -7561,7 +7593,7 @@ static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char 
     if (!dup) to[nfile++] = f;
   }
   if (!bad && !(beside && !nfile) && !beside && kv.n == 1) {   /* one path is known: that literal */
-    e = sp_load_resolve(g, w->f, method, one, line, rel);
+    e = sp_load_resolve(g, w->f, auto_load ? "require" : method, one, line, rel);
   }
   else {
     sp_load_edge(&g->edge, &g->nedge, &g->edgecap, w->f, line, plain, "(computed)", SP_LOAD_SET, -1);
@@ -7572,6 +7604,33 @@ static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char 
     for (int k = 0; k < g->edge[e].ncand; k++) g->edge[e].cand[k] = to[k];
     sp_load_resolved(g, w->f);
   }
+  if (auto_load) {
+    SpPaths names = { { NULL }, 0, 0 };
+    const pm_node_t *name = n->arguments->arguments.nodes[0];
+    if (PM_NODE_TYPE(name) == PM_SYMBOL_NODE) {
+      const pm_string_t *u = &((const pm_symbol_node_t *)name)->unescaped;
+      sp_paths_add(&names, (const char *)pm_string_source(u), pm_string_length(u));
+    }
+    else sp_req_paths(&x, name, &names);
+    SpLoadEdge *edge = &g->edge[e];
+    /* (a call on a local the path or the name reads may change its String:
+       the registration takes the value the call leaves, so it stays open) */
+    edge->nauto = names.open || bad || beside || kv.n != 1 || nfile != 1 || kv.called || names.called ? 0 : names.n;
+    edge->autoload = edge->nauto ? calloc((size_t)edge->nauto, sizeof(char *)) : NULL;
+    edge->auto_path = edge->nauto ? calloc((size_t)edge->nauto, sizeof(char *)) : NULL;
+    edge->auto_file = edge->nauto ? calloc((size_t)edge->nauto, sizeof(int)) : NULL;
+    if (edge->nauto && (!edge->autoload || !edge->auto_path || !edge->auto_file)) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    for (int k = 0; k < edge->nauto; k++) {
+      edge->autoload[k] = names.v[k];
+      names.v[k] = NULL;
+      const char *path = kv.v[0];   /* (one path is known, or there is no registration) */
+      edge->auto_file[k] = -1;
+      sp_load_target(g, w->f, path[0] == '/', path, &edge->auto_file[k]);
+      edge->auto_path[k] = strdup(path);
+      if (!edge->auto_path[k]) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    }
+    sp_paths_free(&names);
+  }
   sp_paths_free(&kv);
   return e;
 }
@@ -7580,10 +7639,11 @@ static bool sp_graph_site_visit(const pm_node_t *node, void *data) {
   SpSiteWalk *w = data;
   if (PM_NODE_TYPE(node) == PM_CALL_NODE && sp_load_call((const pm_call_node_t *)node)) {
     const pm_call_node_t *n = (const pm_call_node_t *)node;
-    const pm_node_t *arg = n->arguments->arguments.nodes[0];
+    int auto_load = sp_pm_name_is(g_parser, n->name, "autoload");
+    const pm_node_t *arg = n->arguments->arguments.nodes[auto_load ? 1 : 0];
     char *method = cstr(n->name), *path = NULL;
     int line = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line), e;
-    if (PM_NODE_TYPE(arg) == PM_STRING_NODE) {
+    if (!auto_load && PM_NODE_TYPE(arg) == PM_STRING_NODE) {
       const pm_string_t *u = &((const pm_string_node_t *)arg)->unescaped;
       path = strndup((const char *)pm_string_source(u), pm_string_length(u));
       if (!path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
@@ -7591,7 +7651,7 @@ static bool sp_graph_site_visit(const pm_node_t *node, void *data) {
     }
     else e = sp_graph_computed(w, n, method, line);
     w->g->edge[e].stmt = w->stmt;
-    w->g->edge[e].top = node == w->top;
+    w->g->edge[e].top = !auto_load && node == w->top;
     SpGraphFile *r = sp_graph_rec(w->g, w->f);
     if (r->nsite == r->sitecap) {
       r->sitecap = r->sitecap ? r->sitecap * 2 : 8;
@@ -7714,6 +7774,9 @@ static int sp_graph_site_take(int id, const pm_node_t *call) {
     g_flat_sites.next = k + 1;
     SpLoadEdge *e = &g_flat_sites.g->edge[r->site[k].edge];
     e->node = id;
+    for (int k = 0; k < e->nauto; k++)
+      nt_add_autoload(out_nt, id, e->auto_file[k], e->autoload[k], e->auto_path[k]);
+    if (sp_pm_name_is(g_parser, ((const pm_call_node_t *)call)->name, "autoload")) return 0;
     emit_str(id, "how", how_name[e->how]);
     if (e->to >= 0) emit_int(id, "target_file", e->to);
     /* the path a computed expression names, when it names one */
@@ -7808,6 +7871,8 @@ static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
   /* each site made one LoadNode, and each LoadNode took a site */
   int loads = 0, once = 1;
   for (int id = start; id < node_counter; id++) loads += nt_kind(out_nt, id) == NK_LoadNode;
+  for (int i = 0; i < r->nsite; i++)
+    loads += sp_pm_name_is(g_parser, ((const pm_call_node_t *)r->site[i].call)->name, "autoload");
   for (int i = 0; i < r->nsite; i++) once &= r->site[i].taken == 1;
   if (!once || loads != r->nsite) {
     fprintf(stderr, "spinel_parse: internal error: the requires of '%s' and its LoadNodes do not pair one to one\n",
