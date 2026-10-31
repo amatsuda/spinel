@@ -16964,6 +16964,21 @@ static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const 
     if (argc == 2) return masgn_store_slice(c, id, mt, tgt, recv, argv, val, vt, recv_tmp, key_tmp, indent, b);
     Repr rr = repr_of(c, recv);
     TyKind rt = rr.as_ty;
+    /* an object Array holds the class's own pointers: the single store's
+       sp_PtrArray_set_grow, which grows past the end and refuses a frozen
+       Array (`list[0], list[1] = list[1], list[0]` was refused) */
+    if (ty_is_obj_array(rt)) {
+      if (comp_ntype(c, argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array index target"); return 1; }
+      masgn_recv_guard(c, recv, recv_tmp, "[]=", indent, b);
+      emit_indent(b, indent);
+      buf_puts(b, "sp_PtrArray_set_grow(");
+      emit_node_or_tmp(c, recv, recv_tmp, b); buf_puts(b, ", ");
+      if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp); else emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", ");
+      masgn_conv(c, id, ty_array_elem(rt), vt, val, b);
+      buf_puts(b, ");\n");
+      return 1;
+    }
     if (ty_is_array(rt)) {
       const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
       if (!k || comp_ntype(c, argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array index target"); return 1; }
@@ -18920,8 +18935,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       if (recv_id < 0 || idx_argc < 1 || idx_argc > 2) { unsupported(c, id, "multiple assignment index target"); continue; }
       Repr recv_tr = repr_of(c, recv_id);
       TyKind recv_t = recv_tr.as_ty;
-      /* two keys (`a[i, n], x = ...`) store a slice, which masgn_store takes */
-      if (ty_is_object(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0) || idx_argc == 2) {
+      /* two keys (`a[i, n], x = ...`) store a slice, which masgn_store
+         takes, as it takes an object Array's element */
+      if (ty_is_object(recv_t) || ty_is_obj_array(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0) || idx_argc == 2) {
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
         masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
