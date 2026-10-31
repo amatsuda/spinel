@@ -9583,6 +9583,16 @@ static int fwd_subtree_calls(const NodeTable *nt, int e) {
     for (int k = 0; k < nd->a[j].n; k++) if (fwd_subtree_calls(nt, nd->a[j].ids[k])) return 1;
   return 0;
 }
+/* Is the call e a `method(name)` lookup whose receiver and name call
+   nothing (a literal, self, a local, an instance variable, a constant), so
+   evaluating it again where the block runs answers the same Method and
+   runs nothing? */
+static int fwd_inert_method_lookup(const NodeTable *nt, int e) {
+  if (!is_method_ref_name(nt_str(nt, e, "name"))) return 0;
+  int args = nt_ref(nt, e, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  return an == 1 && av && !fwd_subtree_calls(nt, nt_ref(nt, e, "receiver")) && !fwd_subtree_calls(nt, av[0]);
+}
 /* May evaluating e change what the read cx (a local or an instance
    variable) answers? By a write to it; for an instance variable by any
    call, which may run a method that writes it; for a local by any call
@@ -9715,9 +9725,12 @@ int desugar_value_callable_forwards(Compiler *c) {
                      exk == NK_InstanceVariableReadNode ||
                      exk == NK_ConstantReadNode ||
                      exk == NK_ConstantPathNode;
-    /* `&method(:m)`: a deterministic method-object lookup, safe to re-evaluate */
-    int method_obj = exk == NK_CallNode && nt_str(nt, ex, "name") &&
-                     sp_streq(nt_str(nt, ex, "name"), "method");
+    /* `&method(:m)`, `&obj.method(:m)`: a deterministic method-object
+       lookup, safe to re-evaluate where the block runs while its receiver
+       and its name call nothing (fwd_inert_method_lookup); one whose
+       operand calls something is hoisted like any other expression, or
+       `M.synchronize(&worker.method(:work))` ran worker under the lock */
+    int method_obj = exk == NK_CallNode && fwd_inert_method_lookup(nt, ex);
     /* `&->(x){...}`: an inline lambda literal, equivalent to the block itself;
        building it per element has no observable side effect */
     int inline_lambda = exk == NK_LambdaNode;
