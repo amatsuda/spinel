@@ -22339,6 +22339,14 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_unbox_nilable_text(c, slot_t, ex, &ux);
         buf_printf(b, "%s;\n", ux.p ? ux.p : "0"); free(ux.p);
       }
+      /* a typed Array begin value into a general Array slot (an --rbs
+         `Array[untyped]` return answering an `Array[String]` parameter) is
+         rebuilt with its elements boxed, as a plain tail's is
+         (emit_ret_poly_array_conv): handed back as it was, the C build
+         stopped (#10680) */
+      else if (slot_t == TY_POLY_ARRAY && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY))
+        buf_printf(b, "sp_PolyArray_from_%s_array(_t%d);\n",
+                   rt == TY_INT_ARRAY ? "int" : rt == TY_STR_ARRAY ? "str" : "float", t);
       else buf_printf(b, "_t%d;\n", t);
       return;
     }

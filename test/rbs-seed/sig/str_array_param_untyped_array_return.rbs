@@ -1,0 +1,3 @@
+module StrArrayUntypedReturnSeed
+  def self.as_array: (Array[String] value) -> Array[untyped]
+end
