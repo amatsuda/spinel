@@ -677,6 +677,15 @@ void prog_refuse_loads(Compiler *c) {
         unsupported_feature(c, id, "--load-model=graph loads an autoload's file at its constant's first reference only later, for now");
       continue;
     }
+    /* on a value no module can be (`Object.new.autoload`, a constant
+       holding one), there is no registration (lr_autoload_values): the call
+       stays the run-time call, which raises. Any other value may be a
+       module, whose registration the parse did not take. */
+    int rv = nt_ref(nt, id, "receiver");
+    NodeKind rk = rv >= 0 ? nt_kind(nt, rv) : NK_SelfNode;
+    if (rk != NK_SelfNode && elab_value_not_module(c, rv)) continue;
+    if (rk != NK_SelfNode && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode)
+      unsupported_feature(c, id, "--load-model=graph: unresolved autoload owner");
     int n; const AutoloadRegistration *a = comp_autoloads(c, id, &n);
     if (!n) unsupported_feature(c, id, "--load-model=graph: unresolved autoload registration");
     /* These body emitters do not dispatch an implicit rescue/ensure body.

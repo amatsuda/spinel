@@ -489,6 +489,14 @@ printf 'path = File.join(__dir__, "lib")\npath.replace(File.join(__dir__, "other
 refused autoload "unresolved autoload registration"
 printf 'path = File.join(__dir__, "lib")\n[1].each { path << "" }\nautoload :Lib, path\np Lib\n' > "$tmp/autoload/main.rb"
 refused autoload "unresolved autoload registration"
+# ...through another name for its String or a method it is passed to, and a
+# write that may not run leaves it nil
+printf 'path = File.join(__dir__, "lib")\nother = path\nother.replace(File.join(__dir__, "x"))\nautoload :Lib, path\np Lib\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload registration"
+printf 'def retarget(s) = s.replace(File.join(__dir__, "x"))\npath = File.join(__dir__, "lib")\nretarget(path)\nautoload :Lib, path\np Lib\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload registration"
+printf 'path = File.join(__dir__, "lib") if ARGV.size > 5\nautoload :Lib, path\np Lib\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload registration"
 # a header whose scope an autoload defines runs the file before it opens the
 # class, after the scope walk registered it; an explicit-receiver mixin
 # becomes such a header
@@ -528,7 +536,35 @@ refused entry "a computed require may load the program's own entry file"
 printf 'puts "lib"\n' > "$tmp/entry/lib.rb"
 printf '%%w[lib main].each { |v| require File.join(__dir__, v) } if ARGV.size > 5\n' > "$tmp/entry/main.rb"
 refused entry "a computed require may load the program's own entry file"
-printf 'Object.new.autoload(:Lib, File.join(__dir__, "lib"))\n' > "$tmp/autoload/main.rb"
+# on a value no module can be, autoload is the run-time call master makes,
+# and its file is not part of the program (one that does not parse included)
+printf 'module Lib; end\n' > "$tmp/autoload/lib.rb"
+printf 'begin\n  Object.new.autoload(:Lib, File.join(__dir__, "lib"))\nrescue NoMethodError => e\n  p e.class\nend\n' > "$tmp/autoload/main.rb"
+if "$SPINEL" --load-model=graph "$tmp/autoload/main.rb" -o "$tmp/autoload/bin" >"$tmp/autoload/cc" 2>&1; then
+  [ "$("$tmp/autoload/bin")" = "NoMethodError" ] || fail "autoload on Object.new did not raise NoMethodError"
+else fail "autoload on Object.new refused"; sed -n 1,3p "$tmp/autoload/cc"; fi
+printf 'this is not ruby (\n' > "$tmp/autoload/data.rb"
+printf 'class UserAuto\n  def autoload(name, path) = puts("user #{name}")\nend\nUserAuto.new.autoload(:X, File.join(__dir__, "data"))\n' > "$tmp/autoload/main.rb"
+if "$SPINEL" --load-model=graph "$tmp/autoload/main.rb" -o "$tmp/autoload/bin" >"$tmp/autoload/cc" 2>&1; then
+  [ "$("$tmp/autoload/bin")" = "user X" ] || fail "a program's own autoload on an object did not run"
+else fail "a program's own autoload on an object parsed its argument's file"; sed -n 1,3p "$tmp/autoload/cc"; fi
+# the same on a constant holding the value: no registration, no parse
+printf 'INST = Object.new\nbegin\n  INST.autoload(:X, File.join(__dir__, "data"))\nrescue NoMethodError => e\n  p e.class\nend\n' > "$tmp/autoload/main.rb"
+if "$SPINEL" --load-model=graph "$tmp/autoload/main.rb" -o "$tmp/autoload/bin" >"$tmp/autoload/cc" 2>&1; then
+  [ "$("$tmp/autoload/bin")" = "NoMethodError" ] || fail "autoload on a constant holding Object.new did not raise NoMethodError"
+else fail "autoload on a constant holding Object.new refused"; sed -n 1,3p "$tmp/autoload/cc"; fi
+printf 'class UserAuto\n  def autoload(name, path) = puts("user #{name}")\nend\nINST = UserAuto.new\nINST.autoload(:X, File.join(__dir__, "data"))\n' > "$tmp/autoload/main.rb"
+if "$SPINEL" --load-model=graph "$tmp/autoload/main.rb" -o "$tmp/autoload/bin" >"$tmp/autoload/cc" 2>&1; then
+  [ "$("$tmp/autoload/bin")" = "user X" ] || fail "a program's own autoload on a constant did not run"
+else fail "a program's own autoload on a constant parsed its argument's file"; sed -n 1,3p "$tmp/autoload/cc"; fi
+# a value that may be a module (CRuby registers on it) stays refused
+printf 'module Holder; end\nM = [Holder].first\nM.autoload(:X, File.join(__dir__, "lib"))\np Holder::X\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload owner"
+printf 'module Holder; end\n[Holder].first.autoload(:X, File.join(__dir__, "lib"))\np Holder::X\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload owner"
+printf 'class K < Module; end\nK.new.autoload(:X, File.join(__dir__, "lib"))\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload owner"
+printf 'class Holder; end\nclass Maker\n  def self.new = Holder\nend\nMaker.new.autoload(:X, File.join(__dir__, "lib"))\n' > "$tmp/autoload/main.rb"
 refused autoload "unresolved autoload owner"
 printf 'END { puts "lib END" }\nputs "lib"\n' > "$tmp/end/lib.rb"
 printf 'require_relative "lib"\nputs "main"\n' > "$tmp/end/main.rb"

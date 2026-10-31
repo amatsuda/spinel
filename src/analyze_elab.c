@@ -889,7 +889,8 @@ static int lr_core(const LoadRecord *r, int k) {
    answer, lr_form_runs); whether a def's body defines or writes anything
    when it runs, keyed by the def (vis: the answer, lr_body_defines) */
 enum { LR_KEY_VIS = -5, LR_KEY_OPAQUE = -6, LR_KEY_RUNS = -7, LR_KEY_DEFINES = -8, LR_KEY_AUTO = -9,
-       LR_KEY_CONST = -2 - ELAB_CONST };   /* a constant's history, keyed as the variables' (ElabVar) are */
+       LR_KEY_CONST = -2 - ELAB_CONST,   /* a constant's history, keyed as the variables' (ElabVar) are */
+       LR_KEY_EITHER = -10 };   /* a lookup's only: an owner's constant, else its registration, as CRuby's table holds both */
 
 static void *lr_grow(void *v, int *cap, int n, size_t sz) {
   if (n < *cap) return v;
@@ -1810,6 +1811,22 @@ static void lr_alias_undef(ElabRec *x, int node, int cls, int sg, int bvis, int 
   for (int i = 0; i < n; i++) lr_method(x, cls, sg, vis_arg_name(nt, v[i]), node, LR_UNDEF, bvis, may, NULL);
 }
 
+/* A registration on a constant holding a value no module can be (`INST =
+   Object.new; INST.autoload(...)`) is none: the call stays the run-time
+   call, which raises. Asked once the record is made. */
+static void lr_autoload_values(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int m = 0;
+  for (int k = 0; k < c->nautoloads; k++) {
+    const AutoloadRegistration *a = &c->autoloads[k];
+    int recv = nt_ref(nt, a->node, "receiver");
+    c->auto_at[a->node] = 0;
+    if (a->slot || recv < 0 || nt_kind(nt, recv) == NK_SelfNode || !elab_value_not_module(c, recv)) c->autoloads[m++] = *a;
+  }
+  c->nautoloads = m;
+  for (int i = m - 1; i >= 0; i--) c->auto_at[c->autoloads[i].node] = i + 1;
+}
+
 static void lr_autoload(ElabRec *x, int node, int fc, int fs, int may) {
   const NodeTable *nt = x->c->nt;
   int n; AutoloadRegistration *a = comp_autoloads(x->c, node, &n);
@@ -2081,6 +2098,7 @@ void elab_program(Compiler *c, struct HostStep *h) {
     lr_check_walked(c, walked);
     free(walked);
   }
+  lr_autoload_values(c);
   r->rec = NULL;
   free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
   /* a mixin's duplicate answer asked while the record was made saw only
@@ -3755,6 +3773,42 @@ static int lr_chain_open(Compiler *c, int cls) {
   }
   return 0;
 }
+/* Is every instance cls's new makes a plain object: cls a class of the
+   program whose chain, as the record knows it, reaches Object through
+   classes of the program alone (not Module, Class or Struct), in a program
+   that defines no method of new's name? */
+static int lr_new_makes_object(Compiler *c, int cls, const char *new_name) {
+  if (cls < 0 || lr_named(c, new_name) || lr_chain_open(c, cls)) return 0;
+  for (int a = cls, g = 0; g < 64; g++, a = lr_super(c, a)) {
+    if (a == LR_MAIN || (a >= 0 && a == comp_core_class(c, CORE_OBJECT))) return 1;
+    int dn = a >= 0 && a < c->nclasses ? c->classes[a].def_node : -1;
+    if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) return 0;
+  }
+  return 0;
+}
+
+/* Is node a value no module can be where it stands: a builtin's own
+   constructor on the core class (`Object.new`, `Hash.new`), a program
+   class's new whose instances are plain objects (lr_new_makes_object), or
+   a constant whose write the record finds there is one? */
+int elab_value_not_module(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const LrDef *d = NULL;
+  NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NilNode;
+  if (k == NK_ConstantReadNode && !lr_root_read(nt, node)) {
+    if (lr_const_at(c, node, lr_written_name(nt, node), elab_point_of(c, node), &d, LR_KEY_CONST) != ELAB_YES ||
+        nt_kind(nt, d->node) != NK_ConstantWriteNode) return 0;
+    node = nt_ref(nt, d->node, "value");
+    k = node >= 0 ? nt_kind(nt, node) : NK_NilNode;
+  }
+  int r = k == NK_CallNode && nt_ref(nt, node, "block") < 0 ? nt_ref(nt, node, "receiver") : -1;
+  if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode || lr_root_read(nt, r)) return 0;
+  const char *cn = nt_str(nt, r, "name"), *mn = nt_str(nt, node, "name");
+  if (is_value_constructor(cn, mn))
+    return lr_const_at(c, r, cn, elab_point_of(c, r), &d, LR_KEY_CONST) == ELAB_NO;
+  return is_new_name(mn) && lr_new_makes_object(c, elab_class_ref_at(c, r), mn);
+}
+
 int elab_call_method(Compiler *c, int id, int cls, const char *name, int sg) {
   LoadRecord *r = elab_fresh(c);
   LoadPoint p = elab_point_of(c, id);
@@ -4007,6 +4061,14 @@ int elab_const_first_write(Compiler *c, const char *name, int *early) {
   return s ? s->first : -1;
 }
 
+/* What owner holds of name at p under key: for LR_KEY_EITHER its constant,
+   else its autoload registration */
+static int lr_owner_last(Compiler *c, int key, int owner, const char *name, LoadPoint p, int late, const LrDef **out) {
+  LoadRecord *r = c->lrec;
+  int o = lr_last_before(c, lr_hist(r, key == LR_KEY_EITHER ? LR_KEY_CONST : key, owner, name, 0), p, late, 0, out);
+  return o != ELAB_NO || key != LR_KEY_EITHER ? o : lr_last_before(c, lr_hist(r, LR_KEY_AUTO, owner, name, 0), p, late, 0, out);
+}
+
 /* The constants of cls and its ancestors at p: its own, its mixins' (the
    last first), then its superclass's, and with top Object's after a
    class's. A scoped read (`A::B`) leaves Object's out, as CRuby does. */
@@ -4021,7 +4083,7 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
     }
     return ELAB_UNKNOWN;
   }
-  int o = lr_last_before(c, lr_hist(r, key, lr_const_owner(cls), name, 0), p, late, 0, out), unsure = 0;
+  int o = lr_owner_last(c, key, lr_const_owner(cls), name, p, late, out), unsure = 0;
   if (o != ELAB_NO) return o;
   if (cls >= 0 && builtin_mixin_module_id(c->classes[cls].name) &&
       !is_constless_builtin_name(c->classes[cls].name)) return ELAB_UNKNOWN;
@@ -4086,7 +4148,7 @@ static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, con
       int owner = lr_singleton_owner(c, g);
       if (!owner && lr_singleton_const_written(c, name, 1)) return ELAB_UNKNOWN;
       if (first == LR_MAIN && !singleton) { singleton = 1; sgowner = owner; }
-      int o = owner ? lr_last_before(c, lr_hist(r, key, owner, name, 0), p, late, 0, out) : ELAB_NO;
+      int o = owner ? lr_owner_last(c, key, owner, name, p, late, out) : ELAB_NO;
       if (o != ELAB_NO) return o;
       continue;
     }
@@ -4094,14 +4156,14 @@ static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, con
     int ci = elab_header_class(c, r->st[g].node, NULL, NULL);
     if (ci < 0) return ELAB_UNKNOWN;
     if (first == LR_MAIN && !singleton) first = ci;
-    int o = lr_last_before(c, lr_hist(r, key, lr_const_owner(ci), name, 0), p, late, 0, out);
+    int o = lr_owner_last(c, key, lr_const_owner(ci), name, p, late, out);
     if (o != ELAB_NO) return o;
   }
   /* then the innermost scope's ancestors, and Object's for a module too:
      a lexical read falls back to Object */
   for (int cls = sgowner ? lr_super(c, -sgowner - 2) : LR_UNKNOWN_CLASS, depth = 0;
        singleton && cls >= 0 && depth < 64; cls = lr_super(c, cls), depth++) {
-    int o = lr_last_before(c, lr_hist(r, key, lr_sg_const_owner(cls), name, 0), p, late, 0, out);
+    int o = lr_owner_last(c, key, lr_sg_const_owner(cls), name, p, late, out);
     if (o != ELAB_NO) return o;
   }
   int o = lr_const_in(c, first, name, p, late, 1, out, 0, key);
@@ -5194,6 +5256,13 @@ static int lr_autoload_via_object(Compiler *c, int owner, const char *name, Load
   return reach == ELAB_YES ? found : ELAB_NO;
 }
 
+/* Is version d an autoload registration (not a constant's write)? */
+static int lr_registration(const Compiler *c, const LrDef *d) {
+  int n = 0;
+  if (d) comp_autoloads(c, d->node, &n);
+  return n > 0;
+}
+
 /* The registered file a read may trigger. Presence of the file's ordinary
    constant write proves that no autoload call is left to run here. */
 int elab_autoload_read(Compiler *c, int id) {
@@ -5202,21 +5271,25 @@ int elab_autoload_read(Compiler *c, int id) {
   NodeKind k = nt_kind(nt, id);
   if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return 0;
   const char *name = lr_written_name(nt, id);
-  LoadPoint p = elab_point_from(c, id);
-  if (elab_const_slot_present_at(c, nt_str(nt, id, "name"), p) == ELAB_YES) return 0;
-  LoadPoint at = elab_point_of(c, id);
-  const LrDef *d = NULL;
+  LoadPoint p = elab_point_from(c, id), at = elab_point_of(c, id);
   int par = k == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
-  int found;
-  if (k == NK_ConstantReadNode && !lr_root_read(nt, id)) {
-    if (lr_const_at(c, id, name, p, &d, LR_KEY_CONST) == ELAB_YES) return 0;
+  int lexical = k == NK_ConstantReadNode && !lr_root_read(nt, id), owner = LR_MAIN, found;
+  if (!lexical && par >= 0 && (owner = elab_class_ref_at(c, par)) < LR_MAIN) return 0;
+  /* a constant of the name proves no file is left to run, unless a
+     registration comes first on the lookup's way (an inner scope's, or the
+     scope's own ahead of an ancestor's constant) */
+  const LrDef *d = NULL, *e = NULL;
+  int first = (lexical ? lr_const_at(c, id, name, at, &e, LR_KEY_EITHER)
+                       : lr_const_in(c, owner, name, at, at.region < 0, 0, &e, 0, LR_KEY_EITHER)) != ELAB_NO &&
+              lr_registration(c, e);
+  if (!first && elab_const_slot_present_at(c, nt_str(nt, id, "name"), p) == ELAB_YES) return 0;
+  if (lexical) {
+    if (!first && lr_const_at(c, id, name, p, &d, LR_KEY_CONST) == ELAB_YES) return 0;
     d = NULL;
     found = lr_const_at(c, id, name, at, &d, LR_KEY_AUTO);
   }
   else {
-    int owner = par < 0 ? LR_MAIN : elab_class_ref_at(c, par);
-    if (owner < LR_MAIN) return 0;
-    if (lr_const_in(c, owner, name, p, p.region < 0, 0, &d, 0, LR_KEY_CONST) == ELAB_YES) return 0;
+    if (!first && lr_const_in(c, owner, name, p, p.region < 0, 0, &d, 0, LR_KEY_CONST) == ELAB_YES) return 0;
     d = NULL;
     found = lr_const_in(c, owner, name, at, at.region < 0, 0, &d, 0, LR_KEY_AUTO);
     if (found == ELAB_NO) found = lr_autoload_via_object(c, owner, name, at, &d, &(int){ 0 });

@@ -5354,6 +5354,19 @@ static int engine_def_mixed_in_only(NodeTable *nt, int id, int in) {
   return 0;
 }
 
+/* Is a registration of x one a `defined?(x)` may find pending? Any of the
+   name, unless the query is a top-level one, which looks in Object alone:
+   then only a registration Object owns, a receiverless call outside every
+   class body (`module A; autoload :X, ...; end` registers A::X). */
+static int engine_autoload_reaches(NodeTable *nt, const char *x, int top) {
+  for (int k = 0; x && k < nt->nautoloads; k++) {
+    int rn = nt->autoloads[k].node;
+    if (sp_streq(nt->autoloads[k].name, x) &&
+        (!top || (nt_ref(nt, rn, "receiver") < 0 && !engine_lexically_nested(nt, rn)))) return 1;
+  }
+  return 0;
+}
+
 static int engine_absent(Compiler *c, int e, int in) {
   NodeTable *nt = (NodeTable *)c->nt;
   const char *x = NULL;
@@ -5439,15 +5452,15 @@ static int engine_absent(Compiler *c, int e, int in) {
     if (ac >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode) x = nt_str(nt, av[0], "value");
     if (ac >= 1 && nt_kind(nt, av[0]) == NK_StringNode) x = nt_str(nt, av[0], "content");
   }
-  /* (an autoload's name is defined while its registration is pending,
-     whatever the file defines: the run time answers) */
-  if (!x || comp_is_wellknown_const(x) || is_builtin_class_name(x) || is_builtin_module_name(x) ||
-      is_builtin_exception_name(x) || nt_autoload_named(nt, x)) return -1;
   /* A top-level `defined?(X)` looks X up in Object alone, so a same-named
      constant some module or class owns (ffi-yajl's FFI_Yajl::FFI beside the
      `require "ffi" unless defined?(FFI)` guard) is not the one it asks about. */
   int top = nt_kind(nt, e) == NK_DefinedNode && !engine_lexically_nested(nt, e) &&
             !engine_object_mixes_in(nt);
+  /* (an autoload's name is defined while its registration is pending,
+     whatever the file defines: the run time answers) */
+  if (!x || comp_is_wellknown_const(x) || is_builtin_class_name(x) || is_builtin_module_name(x) ||
+      is_builtin_exception_name(x) || engine_autoload_reaches(nt, x, top)) return -1;
   for (int id = 0; id < nt->count; id++)
     if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !engine_inside(nt, in, id, 0) &&
         !(top && engine_writer_qualified(nt, id)) && !engine_exclusive_arms(nt, in, id)) return -1;

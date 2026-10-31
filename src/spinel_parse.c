@@ -5156,11 +5156,17 @@ static int sp_req_not_path(const pm_node_t *arg) {
 
 /* Is `n` a require the load model loads: `require` or `require_relative`,
    receiverless or on Kernel, with one argument that can name a path and no
-   block? */
+   block? Or an autoload with two arguments and no block, receiverless or on
+   self or a constant, the receivers that can be a module: on any other
+   value it is a method of the program's own or a NoMethodError, which
+   loads nothing. */
 static int sp_load_call(const pm_call_node_t *n) {
-  if (sp_pm_name_is(g_parser, n->name, "autoload"))
+  if (sp_pm_name_is(g_parser, n->name, "autoload")) {
+    pm_node_type_t rt = n->receiver ? PM_NODE_TYPE(n->receiver) : PM_SELF_NODE;
     return !n->block && n->arguments && n->arguments->arguments.size == 2 &&
-           PM_NODE_TYPE(n->arguments->arguments.nodes[1]) != PM_SPLAT_NODE;
+           PM_NODE_TYPE(n->arguments->arguments.nodes[1]) != PM_SPLAT_NODE &&
+           (rt == PM_SELF_NODE || rt == PM_CONSTANT_READ_NODE || rt == PM_CONSTANT_PATH_NODE);
+  }
   if (!sp_pm_name_is(g_parser, n->name, "require") && !sp_pm_name_is(g_parser, n->name, "require_relative"))
     return 0;
   if (n->receiver && (!sp_call_receiver_is_kernel(g_parser, n->receiver) ||
@@ -6640,17 +6646,32 @@ static void sp_load_rel_path(const SpLoadGraph *g, int from, const char *path, c
 
 static void sp_graph_inherit(SpLoadGraph *g, int f);
 
+/* The program's file a require of `path` (relative to the file when `rel`)
+   from file `from` names, in found[cap]: 1 when there is one, its tier in
+   *tier (0 for a relative one). */
+static int sp_load_find(SpLoadGraph *g, int from, int rel, const char *path, char *found, size_t cap, int *tier) {
+  *tier = 0;
+  if (rel) {
+    sp_load_rel_path(g, from, path, found, cap);
+    size_t fl = strlen(found);
+    if (fl < cap - 4 && (fl < 3 || strcmp(found + fl - 3, ".rb") != 0)) strcat(found, ".rb");
+    return sp_lib_file(found);
+  }
+  char lib_name[256];
+  snprintf(lib_name, sizeof lib_name, "%s", path);
+  size_t ln = strlen(lib_name);
+  if (ln > 3 && strcmp(lib_name + ln - 3, ".rb") == 0) lib_name[ln - 3] = '\0';
+  return (*tier = sp_lib_lookup(g->lib_dir, lib_name, found, cap)) != 0;
+}
+
 /* What a require of `path` (relative to the file when `rel`) from file
    `from` names: SP_LOAD_*, the target file in `to` for SP_LOAD_FILE (-1
    otherwise). The features it names and enables are noted. */
 static int sp_load_target(SpLoadGraph *g, int from, int rel, const char *path, int *to) {
-  int how = SP_LOAD_NONE, tier = 0;
+  int tier;
   char found[1024];
+  int how = sp_load_find(g, from, rel, path, found, sizeof found, &tier) ? SP_LOAD_FILE : SP_LOAD_NONE;
   if (rel) {
-    sp_load_rel_path(g, from, path, found, sizeof found);
-    size_t fl = strlen(found);
-    if (fl < sizeof found - 4 && (fl < 3 || strcmp(found + fl - 3, ".rb") != 0)) strcat(found, ".rb");
-    if (sp_lib_file(found)) how = SP_LOAD_FILE;
     char rn[512];
     snprintf(rn, sizeof rn, "%s", path);
     size_t rl = strlen(rn);
@@ -6662,10 +6683,8 @@ static int sp_load_target(SpLoadGraph *g, int from, int rel, const char *path, i
     snprintf(lib_name, sizeof lib_name, "%s", path);
     size_t ln = strlen(lib_name);
     if (ln > 3 && strcmp(lib_name + ln - 3, ".rb") == 0) lib_name[ln - 3] = '\0';
-    tier = sp_lib_lookup(g->lib_dir, lib_name, found, sizeof found);
-    if (tier) how = SP_LOAD_FILE;
-    else if (sp_lib_is_native(lib_name)) how = SP_LOAD_NATIVE;
-    else if (sp_require_tolerated(lib_name)) how = SP_LOAD_CORE;
+    if (how == SP_LOAD_NONE && sp_lib_is_native(lib_name)) how = SP_LOAD_NATIVE;
+    else if (how == SP_LOAD_NONE && sp_require_tolerated(lib_name)) how = SP_LOAD_CORE;
     /* the features a require enables (strict require) and the ones it
        names, as the inline model's plain pass records them */
     if (how == SP_LOAD_FILE || how == SP_LOAD_NATIVE) sp_feature_mark(lib_name);
@@ -7219,8 +7238,10 @@ static SpGraphFile *sp_graph_rec(SpLoadGraph *g, int f) {
  * candidates). A path not known is a set too, an open one: it may name any
  * file of the program. */
 #define SP_REQ_MAX 16
-/* called: a local the path reads may be changed by a call on it (sp_local_scan) */
-typedef struct { char *v[SP_REQ_MAX]; int n, open, called; } SpPaths;
+/* unsure: a local the path reads may not hold its one value where the path
+   is read: it escapes or is changed (sp_local_scan), or its write is not a
+   plain statement of its scope */
+typedef struct { char *v[SP_REQ_MAX]; int n, open, unsure; } SpPaths;
 typedef struct { const pm_parser_t *pp; const pm_node_t *const *stack; int depth; const char *dir; } SpReqCtx;
 
 static void sp_paths_free(SpPaths *k) {
@@ -7281,11 +7302,15 @@ static bool sp_param_binds(const pm_node_t *n, void *data) {
 }
 
 /* The writes of one local of a scope: `lvl` soft scopes below it, a write
-   names it by that depth. A plain write is counted (its value kept); any
-   other form that assigns it (a target, an operator write) is `other`; a
-   call on it that may change the String it holds (`path << "x"`, any but a
-   reader of String's) is `called`. */
-typedef struct { pm_constant_id_t name; int lvl, nwrite, other, called; const pm_node_t *val; } SpLocalScan;
+   names it by that depth. A plain write is counted (its value and the write
+   kept); any other form that assigns it (a target, an operator write) is
+   `other`. It `escapes` where the String it holds may change: a call on it
+   but a reader of String's (`path << "x"`), and any read but such a
+   receiver and `self`, the read being resolved (`alias = path`, `m(path)`). */
+typedef struct {
+  pm_constant_id_t name; int lvl, nwrite, other, escapes;
+  const pm_node_t *val, *write, *self, *reader;
+} SpLocalScan;
 static bool sp_local_scan(const pm_node_t *n, void *data) {
   SpLocalScan *s = data;
   switch (PM_NODE_TYPE(n)) {
@@ -7295,7 +7320,12 @@ static bool sp_local_scan(const pm_node_t *n, void *data) {
       return false;
     case PM_LOCAL_VARIABLE_WRITE_NODE: {
       const pm_local_variable_write_node_t *w = (const pm_local_variable_write_node_t *)n;
-      if (w->name == s->name && (int)w->depth == s->lvl) { s->nwrite++; s->val = w->value; }
+      if (w->name == s->name && (int)w->depth == s->lvl) { s->nwrite++; s->val = w->value; s->write = n; }
+      return true;
+    }
+    case PM_LOCAL_VARIABLE_READ_NODE: {
+      const pm_local_variable_read_node_t *r = (const pm_local_variable_read_node_t *)n;
+      if (r->name == s->name && (int)r->depth == s->lvl && n != s->self && n != s->reader) s->escapes = 1;
       return true;
     }
 #define SP_LOCAL_OTHER(T, t) case T: \
@@ -7313,11 +7343,12 @@ static bool sp_local_scan(const pm_node_t *n, void *data) {
       if (r && r->name == s->name && (int)r->depth == s->lvl) {
         const pm_constant_t *m = pm_constant_pool_id_to_constant(&g_parser->constant_pool, c->name);
         char name[32];
-        if (m->length >= sizeof name) s->called = 1;
+        if (m->length >= sizeof name) s->escapes = 1;
         else {
           memcpy(name, m->start, m->length);
           name[m->length] = '\0';
-          if (!is_string_read_only_method(name)) s->called = 1;
+          if (!is_string_read_only_method(name)) s->escapes = 1;
+          else s->reader = c->receiver;   /* (visited next) */
         }
       }
       return true;
@@ -7377,11 +7408,20 @@ static bool sp_reads_visit(const pm_node_t *n, void *data) {
   return true;
 }
 
+/* Is `w` a statement of scope body `body` itself (not under a condition, a
+   loop or a block)? */
+static int sp_plain_stmt(const pm_node_t *body, const pm_node_t *w) {
+  if (!body || !w || PM_NODE_TYPE(body) != PM_STATEMENTS_NODE) return 0;
+  const pm_node_list_t *l = &((const pm_statements_node_t *)body)->body;
+  for (size_t i = 0; i < l->size; i++) if (l->nodes[i] == w) return 1;
+  return 0;
+}
+
 /* Local `rd` of the require at `x`: its value bound in `ev` (a local assigned
    one expression in its scope, that expression's), or the words of the loop
    it is the parameter of. 0 when it is neither: any value. */
 static int sp_req_bind(const SpReqCtx *x, PevCtx *ev, const pm_local_variable_read_node_t *rd,
-                       const pm_node_list_t **words, pm_constant_id_t *wid, int *called) {
+                       const pm_node_list_t **words, pm_constant_id_t *wid, int *unsure) {
   int si = -1, hop = 0;
   for (int i = x->depth - 1; i >= 0 && si < 0; i--) {
     pm_node_type_t t = PM_NODE_TYPE(x->stack[i]);
@@ -7398,11 +7438,12 @@ static int sp_req_bind(const SpReqCtx *x, PevCtx *ev, const pm_local_variable_re
     pm_visit_node(params, sp_param_binds, &ps);
     if (ps.found) return 0;
   }
-  SpLocalScan sc = { rd->name, 0, 0, 0, 0, NULL };
+  SpLocalScan sc = { rd->name, 0, 0, 0, 0, NULL, NULL, (const pm_node_t *)rd, NULL };
   if (body) pm_visit_node(body, sp_local_scan, &sc);
-  *called |= sc.called;
+  *unsure |= sc.escapes;
   if (sc.other || (word ? sc.nwrite != 0 : sc.nwrite != 1)) return 0;
   if (word) { *wid = pid; return 1; }
+  *unsure |= !sp_plain_stmt(body, sc.write);
   PevCtx sub;   /* (the expression's own locals are not looked into) */
   memset(&sub, 0, sizeof sub);
   sub.dir = x->dir;
@@ -7429,7 +7470,7 @@ static void sp_req_paths(const SpReqCtx *x, const pm_node_t *arg, SpPaths *out) 
   for (int i = 0; ok && i < rs.n; i++) {
     const pm_node_list_t *w = NULL;
     pm_constant_id_t id = 0;
-    ok = sp_req_bind(x, &ev, rs.rd[i], &w, &id, &out->called);
+    ok = sp_req_bind(x, &ev, rs.rd[i], &w, &id, &out->unsure);
     if (ok && w) { ok = !words; words = w; wid = id; }
   }
   char *wname = words ? cstr(wid) : NULL;
@@ -7561,6 +7602,21 @@ typedef struct { SpLoadGraph *g; int f, stmt; const pm_node_t *top; const pm_nod
    names, as that literal does; the files a known set or the files beside
    this one name (SP_LOAD_SET); or open (SP_LOAD_SET too, `open`: any file
    of the program). */
+/* Does the file an autoload of `path` from file `from` names parse? 1 when
+   it names none, which the require edge reports as a require would. */
+static int sp_load_parses(SpLoadGraph *g, int from, const char *path) {
+  char found[1024];
+  int tier;
+  char *text = sp_load_find(g, from, path[0] == '/', path, found, sizeof found, &tier) ? read_file(found) : NULL;
+  if (!text) return 1;
+  SpSrcFile s;
+  sp_src_file_parse(&s, text, found);
+  int ok = s.parser.error_list.size == 0;
+  sp_src_file_free(&s);
+  free(text);
+  return ok;
+}
+
 static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char *method, int line) {
   SpLoadGraph *g = w->g;
   char *dir = strdup(g->file[w->f]), *sl = dir ? strrchr(dir, '/') : NULL;
@@ -7577,7 +7633,10 @@ static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char 
     sp_req_beside(&x, arg, &kv);
   }
   free(dir);
-  int nfile = 0, to[SP_REQ_MAX], rel = 0, bad = kv.open;
+  /* an autoload's file runs only at its constant's first reference: one
+     that does not parse is no file of the graph, and the call makes no
+     registration (the program layer decides what it is) */
+  int nfile = 0, to[SP_REQ_MAX], rel = 0, bad = kv.open || (auto_load && !beside && kv.n == 1 && !sp_load_parses(g, w->f, kv.v[0]));
   const char *one = NULL;
   for (int i = 0; i < kv.n && !bad; i++) {
     const char *p = kv.v[i];
@@ -7613,9 +7672,10 @@ static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char 
     }
     else sp_req_paths(&x, name, &names);
     SpLoadEdge *edge = &g->edge[e];
-    /* (a call on a local the path or the name reads may change its String:
-       the registration takes the value the call leaves, so it stays open) */
-    edge->nauto = names.open || bad || beside || kv.n != 1 || nfile != 1 || kv.called || names.called ? 0 : names.n;
+    /* (a local the path or the name reads may hold another value where the
+       registration runs: nil past a write that did not run, the String a
+       call left; the registration stays open) */
+    edge->nauto = names.open || bad || beside || kv.n != 1 || nfile != 1 || kv.unsure || names.unsure ? 0 : names.n;
     edge->autoload = edge->nauto ? calloc((size_t)edge->nauto, sizeof(char *)) : NULL;
     edge->auto_path = edge->nauto ? calloc((size_t)edge->nauto, sizeof(char *)) : NULL;
     edge->auto_file = edge->nauto ? calloc((size_t)edge->nauto, sizeof(int)) : NULL;
