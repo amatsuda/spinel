@@ -1752,16 +1752,18 @@ static const char *cvo_body_key(const NodeTable *nt, const char *clsname, const 
   return key;
 }
 /* The key of value constant CONSTNAME written directly in the body of class
-   or module CLSNAME, or NULL when it holds none. */
-static const char *const_value_owned_key(Compiler *c, const char *clsname, const char *constname) {
+   or module RK (CG_OBJECT: Object, not reopened), or NULL when it holds none. */
+static const char *const_value_owned_key(Compiler *c, int rk, const char *constname) {
   const NodeTable *nt = c->nt;
+  const char *clsname = rk >= 0 ? c->classes[rk].name : rk == CG_OBJECT ? "Object" : NULL;
+  if (!clsname) return NULL;
   const char *key = cvo_body_key(nt, clsname, constname);
   if (key) return key;
   /* ... or a path write through it (`Base::N = v`, or through an alias of
      it), under the key the constant qualifier gave it. The qualifier
      resolved the whole path (qc_owner): `Left::Base` is not a top-level
      Base. */
-  const char *rn = class_ruby_name(c, comp_class_index(c, clsname));
+  const char *rn = class_ruby_name(c, rk);
   if (!rn) return NULL;
   static const NodeKind pw[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
                                  NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
@@ -1775,8 +1777,8 @@ static const char *const_value_owned_key(Compiler *c, const char *clsname, const
     }
   return NULL;
 }
-static int const_value_owned(Compiler *c, const char *clsname, const char *constname) {
-  return const_value_owned_key(c, clsname, constname) != NULL;
+static int const_value_owned(Compiler *c, int rk, const char *constname) {
+  return const_value_owned_key(c, rk, constname) != NULL;
 }
 /* The classes of each name's leaf, ascending, while a caller asks const_get
    of every class in turn (const_get_leaves_begin .. _end): the class table
@@ -1842,25 +1844,35 @@ static int class_leaf_any(Compiler *c, const char *leaf) {
   }
   return 0;
 }
-/* Does class or module CLSNAME hold constant CONSTNAME itself -- a value
-   written in its body, or a class or module nested in it? */
-int const_owned_by_class(Compiler *c, const char *clsname, const char *constname) {
-  if (!clsname || !constname) return 0;
-  if (sp_streq(clsname, "Object") && const_name_resolves_top_level(c, constname)) return 1;
-  if (const_value_owned(c, clsname, constname)) return 1;
-  return class_nested_leaf(c, comp_class_index(c, clsname), constname) >= 0;
+/* Does class or module RK hold constant CONSTNAME itself -- a value
+   written in its body, or a class or module nested in it? A receiver the
+   class table lacks (CG_UNTABLED) holds none: its header would have made
+   it a class. */
+int const_owned_by_class(Compiler *c, int rk, const char *constname) {
+  if (rk == CG_NONE || rk == CG_UNTABLED || !constname) return 0;
+  if ((rk == CG_OBJECT || rk == comp_core_class(c, CORE_OBJECT)) && const_name_resolves_top_level(c, constname)) return 1;
+  if (const_value_owned(c, rk, constname)) return 1;
+  return class_nested_leaf(c, rk, constname) >= 0;
 }
-/* The module a `recv.const_get` searches, by name: a constant receiver's, or
-   for `self` the class or module whose method or body the call is in. */
-const char *const_get_recv_name(Compiler *c, int call, int recv) {
+/* The module a `recv.const_get` searches: a constant receiver's class, or
+   for `self` the class or module whose method or body the call is in.
+   Object, when no class of the program reopens it, is CG_OBJECT; a name
+   the class table lacks, CG_UNTABLED; no receiver the call names, CG_NONE. */
+int const_get_recv_class(Compiler *c, int call, int recv) {
   const NodeTable *nt = c->nt;
   NodeKind rk = nt_kind(nt, recv);
-  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return nt_str(nt, recv, "name");
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *nm = nt_str(nt, recv, "name");
+    if (!nm) return CG_NONE;
+    int k = comp_class_index(c, nm);
+    if (k >= 0) return k;
+    return builtin_core_class_slot(nm) == CORE_OBJECT ? CG_OBJECT : CG_UNTABLED;
+  }
   if (rk == NK_SelfNode) {
     Scope *s = comp_scope_of(c, call);
-    if (s && s->class_id >= 0 && s->class_id < c->nclasses) return c->classes[s->class_id].name;
+    if (s && s->class_id >= 0 && s->class_id < c->nclasses && c->classes[s->class_id].name) return s->class_id;
   }
-  return NULL;
+  return CG_NONE;
 }
 /* The class or module a `recv.const_set` sets its constant in, when the
    analysis knows it: a constant naming one, a local holding one class,
@@ -1899,7 +1911,7 @@ int const_set_slot(Compiler *c, int call, const char *n, const char **key) {
   if ((rn && is_object_base_name(rn)) || (cn && is_object_base_name(cn))) {
     *key = comp_const(c, n) ? n : NULL;
   } else if (cn) {
-    *key = const_value_owned_key(c, cn, n);
+    *key = const_value_owned_key(c, ci, n);
   } else if (qc_leaf_qualified(n)) {
     return CS_AMBIG;
   } else {
@@ -1911,16 +1923,18 @@ int const_set_slot(Compiler *c, int call, const char *n, const char **key) {
    taking at each the value constant or the class it holds under N; past them
    the top-level constant or the class keyed N. Answers the value's key (N, or
    the qualified name R's own carries) or NULL with *cls the class, -1 when
-   there is neither. */
-static const char *const_get_resolve(Compiler *c, const char *rnm, const char *cgn, int *cls) {
+   there is neither. RK is R's class (CG_NONE, CG_OBJECT, CG_UNTABLED when it
+   has none, is Object not reopened, or is a name the class table lacks). */
+static const char *const_get_resolve(Compiler *c, int rk, const char *cgn, int *cls) {
   *cls = -1;
   /* A qualified path ("A::B", "::A::B") is read segment by segment: each
      but the last names a class or module, which the next is looked up in,
      a leading `::` from the top level; a segment that is none is the
      NameError of the whole path. */
   if (cgn && strstr(cgn, "::")) {
-    const char *p = cgn, *cur = rnm;
-    if (p[0] == ':' && p[1] == ':') { p += 2; cur = NULL; }
+    const char *p = cgn;
+    int cur = rk;
+    if (p[0] == ':' && p[1] == ':') { p += 2; cur = CG_NONE; }
     for (const char *sep; (sep = strstr(p, "::")); p = sep + 2) {
       char seg[256];
       size_t l = (size_t)(sep - p);
@@ -1928,16 +1942,15 @@ static const char *const_get_resolve(Compiler *c, const char *rnm, const char *c
       memcpy(seg, p, l); seg[l] = '\0';
       int k = -1;
       if (const_get_resolve(c, cur, seg, &k) || k < 0) return NULL;
-      cur = c->classes[k].name;
+      cur = k;
     }
     return *p ? const_get_resolve(c, cur, p, cls) : NULL;
   }
   LocalVar *cv = comp_const(c, cgn);
   /* the common case, one constant of that leaf and no class: no body scan */
   if (cv && cv->type != TY_UNKNOWN && !qc_leaf_qualified(cgn) && !class_leaf_any(c, cgn)) return cgn;
-  int rk = rnm ? comp_class_index(c, rnm) : -1;
   for (int k = rk, n = 0; k >= 0 && n < 64; k = c->classes[k].parent, n++) {
-    const char *own = c->classes[k].name ? const_value_owned_key(c, c->classes[k].name, cgn) : NULL;
+    const char *own = const_value_owned_key(c, k, cgn);
     if (own) {
       LocalVar *ov = comp_const(c, own);
       if (ov && ov->type != TY_UNKNOWN) return own;
@@ -1945,9 +1958,9 @@ static const char *const_get_resolve(Compiler *c, const char *rnm, const char *c
     int nk = class_nested_leaf(c, k, cgn);
     if (nk >= 0) { *cls = nk; return NULL; }
   }
-  /* a receiver the class table lacks (a builtin module): its body still counts */
-  if (rk < 0 && rnm) {
-    const char *own = const_value_owned_key(c, rnm, cgn);
+  /* Object, when no class reopens it: its body still counts */
+  if (rk == CG_OBJECT) {
+    const char *own = const_value_owned_key(c, rk, cgn);
     LocalVar *ov = own ? comp_const(c, own) : NULL;
     if (ov && ov->type != TY_UNKNOWN) return own;
   }
@@ -1955,12 +1968,13 @@ static const char *const_get_resolve(Compiler *c, const char *rnm, const char *c
   if (!cv || cv->type == TY_UNKNOWN) return NULL;
   return *cls < 0 ? cgn : NULL;
 }
-/* Does the program know constant N, for `R.const_defined?(:N)` (R's name
-   or NULL): a constant or class keyed N, a wellknown one, or the class R's
-   const_get finds under a qualified key. */
-int const_defined_known(Compiler *c, const char *rnm, const char *cgn) {
+/* Does the program know constant N, for `R.const_defined?(:N)` (R's class,
+   CG_NONE for none): a constant or class keyed N, a wellknown one, or the
+   class R's const_get finds under a qualified key. A named receiver the
+   class table lacks still reaches that lookup. */
+int const_defined_known(Compiler *c, int rk, const char *cgn) {
   if (comp_const(c, cgn) || comp_class_index(c, cgn) >= 0 || comp_is_wellknown_const(cgn)) return 1;
-  return rnm && const_get_class_index(c, rnm, cgn) >= 0;
+  return rk != CG_NONE && const_get_class_index(c, rk, cgn) >= 0;
 }
 /* Does class or module K see constant CGN as `K.const_defined?(CGN)` looks:
    K, its ancestors and the modules they include. (A top-level constant,
@@ -1969,7 +1983,7 @@ int const_seen_by_class(Compiler *c, int k, const char *cgn) {
   static int depth = 0;
   if (depth > 8) return 0;
   for (int n = 0; k >= 0 && k < c->nclasses && n < 64; k = c->classes[k].parent, n++) {
-    if (c->classes[k].name && const_owned_by_class(c, c->classes[k].name, cgn)) return 1;
+    if (const_owned_by_class(c, k, cgn)) return 1;
     for (int i = 0; i < c->classes[k].nincluded_mods; i++) {
       depth++;
       int seen = const_seen_by_class(c, c->classes[k].included_mods[i], cgn);
@@ -1979,39 +1993,37 @@ int const_seen_by_class(Compiler *c, int k, const char *cgn) {
   }
   return 0;
 }
-/* `R.const_defined?(:N)` with R's name: N known to the program and seen
+/* `R.const_defined?(:N)` with R's class: N known to the program and seen
    from R. The table is flat, keyed by the leaf, so a constant another class
    holds answered for every receiver (#9876). A receiver the class table
    lacks (a builtin module), a qualified N and a top-level N keep the
    answer the flat table gives. */
-int const_defined_from(Compiler *c, const char *rnm, const char *cgn) {
-  if (!const_defined_known(c, rnm, cgn)) return 0;
-  if (!rnm || !cgn || strstr(cgn, "::") || const_name_resolves_top_level(c, cgn)) return 1;
-  int rk = comp_class_index(c, rnm);
-  if (rk < 0) return 1;
+int const_defined_from(Compiler *c, int rk, const char *cgn) {
+  if (!const_defined_known(c, rk, cgn)) return 0;
+  if (rk < 0 || !cgn || strstr(cgn, "::") || const_name_resolves_top_level(c, cgn)) return 1;
   return const_seen_by_class(c, rk, cgn);
 }
 /* `R.const_get(:N)` with N both a class and a value constant of the program
    (constants live in one flat namespace, keyed by the leaf): the value when
    R or a superclass holds it first, else the class. */
-int const_get_takes_value(Compiler *c, const char *rnm, const char *cgn) {
-  return const_get_value_key(c, rnm, cgn) != NULL;
+int const_get_takes_value(Compiler *c, int rk, const char *cgn) {
+  return const_get_value_key(c, rk, cgn) != NULL;
 }
 /* ... and the key of the value constant it reads then, or NULL when it
    answers the class. */
-const char *const_get_value_key(Compiler *c, const char *rnm, const char *cgn) {
+const char *const_get_value_key(Compiler *c, int rk, const char *cgn) {
   int cls;
-  return const_get_resolve(c, rnm, cgn, &cls);
+  return const_get_resolve(c, rk, cgn, &cls);
 }
 /* The class `R.const_get(:N)` answers, -1 when there is none. */
-int const_get_class_index(Compiler *c, const char *rnm, const char *cgn) {
+int const_get_class_index(Compiler *c, int rk, const char *cgn) {
   int cls;
-  const_get_resolve(c, rnm, cgn, &cls);
+  const_get_resolve(c, rk, cgn, &cls);
   return cls;
 }
 /* Both at once: the value's key, or NULL with *cls the class (-1 for none). */
-const char *const_get_lookup(Compiler *c, const char *rnm, const char *cgn, int *cls) {
-  return const_get_resolve(c, rnm, cgn, cls);
+const char *const_get_lookup(Compiler *c, int rk, const char *cgn, int *cls) {
+  return const_get_resolve(c, rk, cgn, cls);
 }
 
 /* Does this receiver denote a Hash built by a blockless `Hash.new` (or an

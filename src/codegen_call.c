@@ -4869,8 +4869,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   const char *rnm = (rvk == NK_ConstantReadNode || rvk == NK_ConstantPathNode)
                     ? nt_str(nt, recv, "name") : NULL;
   /* the receiver's class (`self` in a class method too) by its Ruby name */
-  const char *rkn = recv >= 0 ? const_get_recv_name(c, id, recv) : NULL;
-  int rk = rkn ? comp_class_index(c, rkn) : -1;
+  int rk = recv >= 0 ? const_get_recv_class(c, id, recv) : CG_NONE;
   if (rk >= 0 && class_ruby_name(c, rk)) rnm = class_ruby_name(c, rk);
   if (rnm && sp_streq(rnm, "Object")) rnm = NULL;
   if (def) {

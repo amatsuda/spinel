@@ -802,9 +802,9 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     else if (cg_ak == NK_StringNode) cg_qm = nt_str(nt, argv[0], "content");
     /* const_get(name, false) searches only the receiver's own constants */
     int cg_own = 0;
-    const char *cg_rnm = cg_qm ? const_get_recv_name(c, id, recv) : NULL;
+    int cg_rk = cg_qm ? const_get_recv_class(c, id, recv) : CG_NONE;
     if (cg_qm && argc >= 2 && nt_kind(nt, argv[1]) == NK_FalseNode) {
-      if (cg_rnm && !const_owned_by_class(c, cg_rnm, cg_qm)) cg_own = 1;
+      if (cg_rk != CG_NONE && !const_owned_by_class(c, cg_rk, cg_qm)) cg_own = 1;
     }
     /* A receiver known only at run time (a local, a parameter) searches the
        module it holds, not Object: switch on its class id over every module
@@ -815,12 +815,12 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        receiver here. Not for `const_get(name, false)` either: the own-only
        search needs the receiver's name, and this one is not known. */
     int cg_inherit = argc == 1 || (argc == 2 && nt_kind(nt, argv[1]) == NK_TrueNode);
-    if (cg_qm && !cg_rnm && cg_inherit) {
+    if (cg_qm && cg_rk == CG_NONE && cg_inherit) {
       NodeKind rk0 = nt_kind(nt, recv);
       TyKind rt0 = infer_type(c, recv);
       int dflt = -1;
       if (rk0 != NK_ConstantReadNode && rk0 != NK_ConstantPathNode && rk0 != NK_SelfNode &&
-          (rt0 == TY_CLASS || rt0 == TY_POLY) && !const_get_lookup(c, NULL, cg_qm, &dflt)) {
+          (rt0 == TY_CLASS || rt0 == TY_POLY) && !const_get_lookup(c, CG_NONE, cg_qm, &dflt)) {
         /* each module's answer, by class index; any value constant gives up */
         int *cks = calloc(c->nclasses > 0 ? c->nclasses : 1, sizeof *cks);
         int any = 0, allcls = 1;
@@ -828,7 +828,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         for (int k = 0; k < c->nclasses; k++) {
           cks[k] = dflt;
           if (!c->classes[k].name) continue;
-          if (const_get_lookup(c, c->classes[k].name, cg_qm, &cks[k])) { allcls = 0; break; }
+          if (const_get_lookup(c, k, cg_qm, &cks[k])) { allcls = 0; break; }
           if (cks[k] != dflt) any = 1;
         }
         const_get_leaves_end();
@@ -865,13 +865,12 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     if (cg_qm && !cg_own) {
       /* the value or the class of that leaf, as the typing chose */
-      const char *cg_key = const_get_value_key(c, cg_rnm, cg_qm);
+      const char *cg_key = const_get_value_key(c, cg_rk, cg_qm);
       if (cg_key) {
         LocalVar *cgv = comp_const(c, cg_key);
         if (const_has_flag(cgv)) {
           /* a constant not assigned yet is a NameError, qualified by a named receiver as below */
-          int cgk = cg_rnm ? comp_class_index(c, cg_rnm) : -1;
-          const char *cgq = cgk >= 0 && !is_object_root(cg_rnm) ? class_ruby_name(c, cgk) : NULL;
+          const char *cgq = cg_rk >= 0 && !is_object_root(c->classes[cg_rk].name) ? class_ruby_name(c, cg_rk) : NULL;
           buf_printf(b, "((cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s%s%s\")), ",
                      cg_key, cgq ? cgq : "", cgq ? "::" : "", cg_qm);
         }
@@ -893,7 +892,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* A CLASS or module name: const_get answers the class object. The lookup
          above knows only VALUE constants, so `Object.const_get(:Foo)` on a
          class the program defines fell through to the NameError below (#3969). */
-      { int cgc = const_get_class_index(c, cg_rnm, cg_qm);
+      { int cgc = const_get_class_index(c, cg_rk, cg_qm);
         if (cgc >= 0) {
           if (repr_of(c, id).as_ty == TY_CLASS) buf_printf(b, "((sp_Class){%d})", cgc);
           else buf_printf(b, "sp_box_class((sp_Class){%d})", cgc);
@@ -996,11 +995,12 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, "(sp_sock_const(\"%s\") >= 0)", qm);
         return 1;
       }
-      int yes = const_defined_from(c, cd_rnm, qm);
+      int cd_rk = const_get_recv_class(c, id, recv);
+      int yes = const_defined_from(c, cd_rk, qm);
       /* const_defined?(name, false) restricts the search to the receiver's own
          constants, so an inherited one does not count (#3762) */
       if (yes && argc >= 2 && nt_kind(nt, argv[1]) == NK_FalseNode) {
-        if (cd_rnm && !const_owned_by_class(c, cd_rnm, qm)) yes = 0;
+        if (cd_rk != CG_NONE && !const_owned_by_class(c, cd_rk, qm)) yes = 0;
       }
       /* a constant not assigned yet is not defined: asked at run time */
       if (yes && const_has_flag(comp_const(c, qm))) buf_printf(b, "cst_%s__set", qm);
@@ -3935,7 +3935,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           return 1;
         }
         int lit0 = rk0 == NK_ConstantReadNode || rk0 == NK_ConstantPathNode;
-        int yes = lit0 ? const_defined_from(c, nt_str(nt, recv, "name"), cn0) : const_defined_known(c, NULL, cn0);
+        int yes = lit0 ? const_defined_from(c, const_get_recv_class(c, id, recv), cn0) : const_defined_known(c, CG_NONE, cn0);
         /* a Class known only at run time: the classes that see the constant,
            as its literal form decides for one (#9876); a top-level one, or
            a qualified name, every class sees */

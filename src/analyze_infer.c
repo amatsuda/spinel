@@ -7004,15 +7004,15 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     else if (cgt_k == NK_StringNode) cgn = nt_str(nt, argv[0], "content");
     /* const_get(name, false) searches only the receiver's own constants, so an
        inherited one is a NameError, not that constant's type (#3762) */
-    const char *cg_rnm = cgn ? const_get_recv_name(c, id, recv) : NULL;
+    int cg_rk = cgn ? const_get_recv_class(c, id, recv) : CG_NONE;
     if (cgn && argc >= 2 && nt_kind(nt, argv[1]) == NK_FalseNode) {
-      if (cg_rnm && !const_owned_by_class(c, cg_rnm, cgn)) { *out = TY_POLY; return 1; }
+      if (cg_rk != CG_NONE && !const_owned_by_class(c, cg_rk, cgn)) { *out = TY_POLY; return 1; }
     }
     /* a CLASS or module name answers the class object itself (#3969) --
        unless a value constant of that leaf is the receiver's own */
-    if (cgn && const_get_class_index(c, cg_rnm, cgn) >= 0 && !const_get_takes_value(c, cg_rnm, cgn)) { *out = TY_CLASS; return 1; }
+    if (cgn && const_get_class_index(c, cg_rk, cgn) >= 0 && !const_get_takes_value(c, cg_rk, cgn)) { *out = TY_CLASS; return 1; }
     if (cgn) {
-      const char *cgk = const_get_value_key(c, cg_rnm, cgn);
+      const char *cgk = const_get_value_key(c, cg_rk, cgn);
       LocalVar *cv = comp_const(c, cgk ? cgk : cgn);
       if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; }
       { *out = TY_POLY; return 1; }
