@@ -4871,7 +4871,8 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   /* the receiver's class (`self` in a class method too) by its Ruby name */
   int rk = recv >= 0 ? const_get_recv_class(c, id, recv) : CG_NONE;
   if (rk >= 0 && class_ruby_name(c, rk)) rnm = class_ruby_name(c, rk);
-  if (rnm && sp_streq(rnm, "Object")) rnm = NULL;
+  /* Object is no qualifier of the NameError: its id, whether or not a class reopens it */
+  if (rk == CG_OBJECT || rk == comp_core_class(c, CORE_OBJECT)) rnm = NULL;
   if (def) {
     buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); "
                   "_r%d = 0; } } while (0); _r%d; })", t, t, t, t, t);

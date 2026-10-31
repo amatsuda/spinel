@@ -820,7 +820,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       TyKind rt0 = infer_type(c, recv);
       int dflt = -1;
       if (rk0 != NK_ConstantReadNode && rk0 != NK_ConstantPathNode && rk0 != NK_SelfNode &&
-          (rt0 == TY_CLASS || rt0 == TY_POLY) && !const_get_lookup(c, CG_NONE, cg_qm, &dflt)) {
+          (rt0 == TY_CLASS || rt0 == TY_POLY) && !const_get_resolve(c, CG_NONE, cg_qm, &dflt)) {
         /* each module's answer, by class index; any value constant gives up */
         int *cks = calloc(c->nclasses > 0 ? c->nclasses : 1, sizeof *cks);
         int any = 0, allcls = 1;
@@ -828,7 +828,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         for (int k = 0; k < c->nclasses; k++) {
           cks[k] = dflt;
           if (!c->classes[k].name) continue;
-          if (const_get_lookup(c, k, cg_qm, &cks[k])) { allcls = 0; break; }
+          if (const_get_resolve(c, k, cg_qm, &cks[k])) { allcls = 0; break; }
           if (cks[k] != dflt) any = 1;
         }
         const_get_leaves_end();
@@ -865,7 +865,8 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     if (cg_qm && !cg_own) {
       /* the value or the class of that leaf, as the typing chose */
-      const char *cg_key = const_get_value_key(c, cg_rk, cg_qm);
+      int cg_cls;
+      const char *cg_key = const_get_resolve(c, cg_rk, cg_qm, &cg_cls);
       if (cg_key) {
         LocalVar *cgv = comp_const(c, cg_key);
         if (const_has_flag(cgv)) {
@@ -892,12 +893,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* A CLASS or module name: const_get answers the class object. The lookup
          above knows only VALUE constants, so `Object.const_get(:Foo)` on a
          class the program defines fell through to the NameError below (#3969). */
-      { int cgc = const_get_class_index(c, cg_rk, cg_qm);
-        if (cgc >= 0) {
-          if (repr_of(c, id).as_ty == TY_CLASS) buf_printf(b, "((sp_Class){%d})", cgc);
-          else buf_printf(b, "sp_box_class((sp_Class){%d})", cgc);
-          return 1;
-        } }
+      if (cg_cls >= 0) {
+        if (repr_of(c, id).as_ty == TY_CLASS) buf_printf(b, "((sp_Class){%d})", cg_cls);
+        else buf_printf(b, "sp_box_class((sp_Class){%d})", cg_cls);
+        return 1;
+      }
       /* Builtin module constants: Klass.const_get(:C) resolves to the same value
          as Klass::C. const_get's result is poly, so box it (#2685). */
       {

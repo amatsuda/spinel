@@ -7010,9 +7010,10 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     }
     /* a CLASS or module name answers the class object itself (#3969) --
        unless a value constant of that leaf is the receiver's own */
-    if (cgn && const_get_class_index(c, cg_rk, cgn) >= 0 && !const_get_takes_value(c, cg_rk, cgn)) { *out = TY_CLASS; return 1; }
+    int cg_cls = -1;
+    const char *cgk = cgn ? const_get_resolve(c, cg_rk, cgn, &cg_cls) : NULL;
+    if (cgn && cg_cls >= 0 && !cgk) { *out = TY_CLASS; return 1; }
     if (cgn) {
-      const char *cgk = const_get_value_key(c, cg_rk, cgn);
       LocalVar *cv = comp_const(c, cgk ? cgk : cgn);
       if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; }
       { *out = TY_POLY; return 1; }

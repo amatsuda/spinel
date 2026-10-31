@@ -2075,10 +2075,7 @@ int        const_owned_by_class(Compiler *c, int rk, const char *constname);
 int        const_get_recv_class(Compiler *c, int call, int recv);
 enum { CS_NONE, CS_SLOT, CS_AMBIG };            /* const_set_slot's answers */
 int        const_set_slot(Compiler *c, int call, const char *n, const char **key);
-int        const_get_takes_value(Compiler *c, int rk, const char *cgn);
-const char *const_get_value_key(Compiler *c, int rk, const char *cgn);
-int        const_get_class_index(Compiler *c, int rk, const char *cgn);
-const char *const_get_lookup(Compiler *c, int rk, const char *cgn, int *cls);
+const char *const_get_resolve(Compiler *c, int rk, const char *cgn, int *cls);
 void       const_get_leaves_begin(Compiler *c);  /* index the class leaves while the class table holds still */
 void       const_get_leaves_end(void);
 int        const_defined_known(Compiler *c, int rk, const char *cgn);

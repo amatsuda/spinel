@@ -1921,11 +1921,14 @@ int const_set_slot(Compiler *c, int call, const char *n, const char **key) {
 }
 /* What `R.const_get(:N)` reads. Like Ruby, R first and then each superclass,
    taking at each the value constant or the class it holds under N; past them
-   the top-level constant or the class keyed N. Answers the value's key (N, or
-   the qualified name R's own carries) or NULL with *cls the class, -1 when
-   there is neither. RK is R's class (CG_NONE, CG_OBJECT, CG_UNTABLED when it
-   has none, is Object not reopened, or is a name the class table lacks). */
-static const char *const_get_resolve(Compiler *c, int rk, const char *cgn, int *cls) {
+   the top-level constant or the class keyed N. Constants live in one flat
+   namespace keyed by the leaf, so N may be both a class and a value constant
+   of the program: the value when R or a superclass holds it first, else the
+   class. Answers the value's key (N, or the qualified name R's own carries)
+   or NULL with *cls the class, -1 when there is neither. RK is R's class
+   (CG_NONE, CG_OBJECT, CG_UNTABLED when it has none, is Object not reopened,
+   or is a name the class table lacks). */
+const char *const_get_resolve(Compiler *c, int rk, const char *cgn, int *cls) {
   *cls = -1;
   /* A qualified path ("A::B", "::A::B") is read segment by segment: each
      but the last names a class or module, which the next is looked up in,
@@ -1974,7 +1977,9 @@ static const char *const_get_resolve(Compiler *c, int rk, const char *cgn, int *
    class table lacks still reaches that lookup. */
 int const_defined_known(Compiler *c, int rk, const char *cgn) {
   if (comp_const(c, cgn) || comp_class_index(c, cgn) >= 0 || comp_is_wellknown_const(cgn)) return 1;
-  return rk != CG_NONE && const_get_class_index(c, rk, cgn) >= 0;
+  int cls = -1;
+  if (rk != CG_NONE) const_get_resolve(c, rk, cgn, &cls);
+  return cls >= 0;
 }
 /* Does class or module K see constant CGN as `K.const_defined?(CGN)` looks:
    K, its ancestors and the modules they include. (A top-level constant,
@@ -2002,28 +2007,6 @@ int const_defined_from(Compiler *c, int rk, const char *cgn) {
   if (!const_defined_known(c, rk, cgn)) return 0;
   if (rk < 0 || !cgn || strstr(cgn, "::") || const_name_resolves_top_level(c, cgn)) return 1;
   return const_seen_by_class(c, rk, cgn);
-}
-/* `R.const_get(:N)` with N both a class and a value constant of the program
-   (constants live in one flat namespace, keyed by the leaf): the value when
-   R or a superclass holds it first, else the class. */
-int const_get_takes_value(Compiler *c, int rk, const char *cgn) {
-  return const_get_value_key(c, rk, cgn) != NULL;
-}
-/* ... and the key of the value constant it reads then, or NULL when it
-   answers the class. */
-const char *const_get_value_key(Compiler *c, int rk, const char *cgn) {
-  int cls;
-  return const_get_resolve(c, rk, cgn, &cls);
-}
-/* The class `R.const_get(:N)` answers, -1 when there is none. */
-int const_get_class_index(Compiler *c, int rk, const char *cgn) {
-  int cls;
-  const_get_resolve(c, rk, cgn, &cls);
-  return cls;
-}
-/* Both at once: the value's key, or NULL with *cls the class (-1 for none). */
-const char *const_get_lookup(Compiler *c, int rk, const char *cgn, int *cls) {
-  return const_get_resolve(c, rk, cgn, cls);
 }
 
 /* Does this receiver denote a Hash built by a blockless `Hash.new` (or an
