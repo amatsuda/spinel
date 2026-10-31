@@ -17521,8 +17521,9 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
   /* a TY_POLY value can hold an array at runtime (doom's
      `lump_name, mirrored = @sprite_index[key]` read through a local),
      so it must take the runtime-destructure path below, not the
-     scalar fill -- which handed the whole array to the first target. */
-  if (vty && !multi_src && !ty_is_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN && st != TY_POLY) {
+     scalar fill -- which handed the whole array to the first target. So
+     must an Array of a class's objects. */
+  if (vty && !multi_src && !ty_is_array(st) && !ty_is_obj_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN && st != TY_POLY) {
     for (int i = 0; i < ln; i++) {
       const char *lty = nt_type(nt, lefts[i]);
       NodeKind lk = nt_kind(nt, lefts[i]);
@@ -17665,9 +17666,11 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
     }
     return 1;
   }
-  /* any expression returning a typed array: runtime destructure */
-  if (ty_is_array(st) && st != TY_UNKNOWN) {
-    const char *k = (st == TY_POLY_ARRAY) ? "Poly" : array_kind(st);
+  /* any expression returning a typed array: runtime destructure. An Array
+     of a class's objects reads its elements as the class's pointers, NULL
+     (nil) past the end. */
+  if ((ty_is_array(st) || ty_is_obj_array(st)) && st != TY_UNKNOWN) {
+    const char *k = (st == TY_POLY_ARRAY) ? "Poly" : ty_is_obj_array(st) ? "Ptr" : array_kind(st);
     if (!k) k = "Int";
     TyKind elem = ty_array_elem(st);
     int tarr = ++g_tmp;
@@ -17680,7 +17683,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
        reads below take the source's length and its elements. A source the
        nil fact says is never nil keeps its C. */
     {
-      const char *nk = st == TY_POLY_ARRAY ? "Poly" : array_kind(st);
+      const char *nk = st == TY_POLY_ARRAY ? "Poly" : ty_is_obj_array(st) ? "Ptr" : array_kind(st);
       if (nk && !recv_never_nil(c, value)) {
         emit_indent(b, indent);
         buf_printf(b, "if (!_t%d) _t%d = sp_%sArray_new();\n", tarr, tarr, nk);

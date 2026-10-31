@@ -509,7 +509,7 @@ int desugar_masgn_store_evidence(Compiler *c) {
       TyKind st = infer_type(c, value);
       if (st == TY_UNKNOWN) continue;
       if (ty_is_object(st)) { nt_node_set_int(nt, id, "masgn_ev", 1); continue; }
-      scalar = st != TY_POLY && !ty_is_array(st);
+      scalar = st != TY_POLY && !ty_is_array(st) && !ty_is_obj_array(st);
     }
     nt_node_set_int(nt, id, "masgn_ev", 1);
     int n_before = nt->count;

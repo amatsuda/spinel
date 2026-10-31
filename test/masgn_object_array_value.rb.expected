@@ -1,0 +1,16 @@
+{a: N1, b: N2}
+[N2, N1]
+3
+4
+3
+4
+{a: N6, b: nil, c: nil}
+6
+nil
+{first: N7, last: N10}
+[8, 9]
+{first: N6, y: nil, z: nil}
+[]
+{a: N11, b: N12}
+{p: N13, q: N14}
+{p: N15, q: N16}
