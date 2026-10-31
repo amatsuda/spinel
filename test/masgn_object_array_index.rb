@@ -43,7 +43,7 @@ j = 2
 a[j], j = Node.new(14), 0
 p j, ids(a)
 k = 0
-k, a[k], a[k + 1] = 2, a[2], a[0]
+k, a[k], a[k + 1] = 2, a[1], a[0]
 p k, ids(a)
 
 # negative indices, and a store past the end that grows the Array
