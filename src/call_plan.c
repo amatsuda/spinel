@@ -1884,12 +1884,25 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
 /* See call_plan.h. A boxed receiver's cplan_targets lists every class's
    method of the name; its dispatch has an arm only for the classes its
    receiver can hold (comp_poly_candidates_at) and that fit the call, one
-   raising ArgumentError for a count the method refuses (PA_ARITY). */
+   raising ArgumentError for a count the method refuses (PA_ARITY). A send
+   on a boxed receiver also names its send_fallback, the top-level method
+   it runs for a receiver whose class does not define the name
+   (emit_send_blind), which neither list holds. */
 int cplan_emitted_targets(Compiler *c, int id, int *out, int cap) {
   const CallPlan *p = cplan_user_fresh(c, id);
-  if (p->via != UC_POLY || p->mi < 0 || p->dispatch == CP_REFUSE) return cplan_targets(c, id, out, cap);
+  int fb = p->send_fallback, n = 0;
+  if (fb >= 0) {
+    if (cap < 1) return CPT_UNKNOWN;
+    out[n++] = fb;
+  }
+  if (p->via != UC_POLY || p->mi < 0 || p->dispatch == CP_REFUSE) {
+    int m = cplan_targets(c, id, out + n, cap - n);
+    if (m == CPT_UNKNOWN) return m;
+    for (int i = n; i < n + m; i++)
+      if (out[i] == fb) { out[i] = out[n + m - 1]; m--; break; }
+    return n + m;
+  }
   const PolyPlan *pp = cplan_poly_fresh(c, id);
-  int n = 0;
   for (int i = 0; i < pp->n; i++) {
     int mi = pp->arm[i].mi, seen = 0;
     for (int j = 0; j < n && !seen; j++) seen = out[j] == mi;
