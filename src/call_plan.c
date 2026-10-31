@@ -2984,6 +2984,29 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
 /* The pre-arms of a dispatch with arguments (emit_poly_prearms_n, then
    emit_poly_prearms_n_blk): the tag pre-arm families, a class value's
    class-side arms, a callable value's call. */
+/* The generic `default:` tail of a poly dispatch with arguments when the
+   Object (or Kernel) reopening's method of the name refuses the call's
+   count and no builtin class has the name: the arity raise, for any
+   receiver no class arm took, in place of the builtin surface's trial.
+   As an arm it is one of the targets reachability keeps. 1 when added. */
+static int cpoly_obj_default_n(Compiler *c, int id, const char *name, int kwh, int pos_argc, int splat_a,
+                               PolyPlan *p, int *cap) {
+  if (builtin_object_method_known(name) || builtin_instance_name_known(name)) return 0;
+  int obj_cls = comp_core_class(c, CORE_OBJECT), obj_def = -1;
+  int obj_mi = obj_cls >= 0 ? call_target(c, id, obj_cls, name, 0, &obj_def) : -1;
+  char exp[600];
+  /* a private or protected one is a NoMethodError for an explicit
+     receiver, whose raise this arm is not; send reaches any */
+  int blind = !nt_str(c->nt, id, "vis_enforce") &&
+              (nt_str(c->nt, id, "send_blind") || nt_ignore_visibility(c->nt, id));
+  if (obj_mi < 0 || obj_def != obj_cls ||
+      (!blind && comp_method_vis_declared(c, obj_cls, name, NULL) != SP_VIS_PUBLIC) ||
+      poly_arm_count(c, &c->scopes[obj_mi], kwh, pos_argc, splat_a, exp, sizeof exp) >= 0)
+    return 0;
+  cpoly_add(p, cap, PA_ARITY, PA_KEY_DEFAULT, obj_mi, TY_UNKNOWN, PC_VOID);
+  return 1;
+}
+
 static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, const int *argv, TyKind ret,
                             const TyKind *atmp_ty, int kwall_any, int is_setter_val, PolyPlan *p, int *cap) {
   const NodeTable *nt = c->nt;
@@ -3035,7 +3058,8 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
     cpoly_trial(p, cap, PT_STR);
   cpoly_cases_n(c, id, name, argc, argv, ret, atmp_ty, &ps, splat_a, p, cap);
   if (cpoly_has_family(p, PB_ND_GENERIC) && !cpoly_has_family(p, PB_ND_REPLACE) &&
-      !cpoly_has_family(p, PB_ND_ROUND) && !cpoly_has_family(p, PB_ND_NUM))
+      !cpoly_has_family(p, PB_ND_ROUND) && !cpoly_has_family(p, PB_ND_NUM) &&
+      !cpoly_obj_default_n(c, id, name, kwh, pos_argc, splat_a, p, cap))
     cpoly_trial(p, cap, PT_GENERIC_TAIL);
   /* the families that write the switch's `default:` themselves */
   static const int dflt[] = { PB_ND_GENERIC, PB_ND_FIRSTN, PB_ND_KEYS, PB_ND_MERGE, PB_ND_AREF2, PB_ND_AREF,

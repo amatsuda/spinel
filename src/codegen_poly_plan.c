@@ -4692,6 +4692,23 @@ int poly_num_arm(const char *name, int argc) {
   return -1;
 }
 
+/* The generic `default:` tail the plan gives a poly dispatch with
+   arguments (cpoly_obj_default_n): the Object reopening's arity refusal.
+   1 when written; the builtin surface's trial is the tail otherwise. */
+static int emit_poly_plan_default_n(Compiler *c, int id, int kwh, int pos_argc, int splat_a, Buf *b) {
+  const PolyPlan *p = cplan_poly(c, id);
+  for (int i = 0; i < p->n; i++) {
+    const PolyArm *a = &p->arm[i];
+    if (a->key != PA_KEY_DEFAULT || a->kind != PA_ARITY) continue;
+    char exp[600];
+    poly_arm_count(c, &c->scopes[a->mi], kwh, pos_argc, splat_a, exp, sizeof exp);
+    buf_puts(b, " "); emit_poly_arity_raise(b, exp); buf_puts(b, " break;");
+    if (g_plan_check) pa_observe(PA_ARITY, PA_KEY_DEFAULT, a->mi, TY_UNKNOWN, PC_VOID);
+    return 1;
+  }
+  return 0;
+}
+
 /* The `default:` arm of a poly dispatch with arguments: for a switch of
    user-class arms alone, the generic one (`replace`, the numeric surface,
    String#index, find_index, then the builtin surface or the raise); for a
@@ -4921,10 +4938,11 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
        whole body (`gcd`'s ends `break;`) leaves what follows unreachable,
        and a builtin answer there was not even of the slot's type. */
     int dl_open = b->len == dl_pos || (b->len > 0 && b->p[b->len - 1] == '}');
-    int sum_done = dl_open && ret == TY_POLY &&
+    int obj_arity = dl_open && emit_poly_plan_default_n(c, id, kw->kwh, pos_argc, splat_a, b);
+    int sum_done = !obj_arity && dl_open && ret == TY_POLY &&
                    emit_poly_default_blk_arm(c, id, name, argc, argv, atmp, atmp_ty, tv, tr, blk_tmp2, b);
     int answer = sum_done ? 1 : 0;
-    if (!sum_done && (!dl_open ||
+    if (!obj_arity && !sum_done && (!dl_open ||
         (!(answer = emit_poly_aset_default(c, name, argc, atmp, atmp_ty, ret, tv, tr, b) ? 2 : 0) &&
          !(answer = emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
                                               ret, tv, is_setter_val ? -1 : tr, 0, b) ? 3 : 0))))
@@ -4932,7 +4950,8 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     /* A declined builtin trial may leave a nested frame behind. Its
        result belongs to this switch, as the plan's trial does. */
     if (g_plan_check) pa_resume(pa_frame);
-    if (g_plan_check && dl_open) pa_observe(PA_TRIAL, PA_KEY_TRIAL + PT_GENERIC_TAIL, -1, TY_UNKNOWN, answer);
+    if (g_plan_check && dl_open && !obj_arity)
+      pa_observe(PA_TRIAL, PA_KEY_TRIAL + PT_GENERIC_TAIL, -1, TY_UNKNOWN, answer);
   }
   /* `[]` gets a default of its own. The arms above enumerate the kinds
      someone thought to add -- every ARRAY kind, the string- and
