@@ -3437,6 +3437,13 @@ static void cv_mark_tree(Compiler *c, unsigned char *v, int k) {
     for (int e = 0; e < c->classes[j].nextended_mods; e++)
       if (c->classes[j].extended_mods[e] == k) v[j] = 1;
 }
+/* cv_mark_tree for every class whose name's last segment is nm */
+static void cv_mark_name_tree(Compiler *c, unsigned char *v, const char *nm) {
+  for (int k = 0; nm && k < c->nclasses; k++) {
+    const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
+    if (kn && sp_streq(seg ? seg + 1 : kn, nm)) cv_mark_tree(c, v, k);
+  }
+}
 /* Is there a `self` in subtree n not marked as no value (nonval), outside
    instance methods (`def m`, with module 1 inside them too) and nested
    class or module bodies? */
@@ -3493,14 +3500,61 @@ static void cv_self_answers(Compiler *c, unsigned char *v, int n, int cls, int d
     for (int j = 0; j < m; j++) cv_self_answers(c, v, ids[j], ncls, 0, depth + 1);
   }
 }
+static int cv_argc(const NodeTable *nt, int n) {
+  int args = nt_ref(nt, n, "arguments"), an = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &an);
+  return an;
+}
+/* Does the comparison nm, run on node recv with a Class value as its
+   argument, keep nothing of that value? recv has to be a Class value itself
+   (a constant naming a class or module, or a `.class` call), and the
+   program must add no method of the name, nor `==`, which `!=` calls, to
+   a class's singleton, to Class, to Module or to Object: a program
+   object's own `==` may store the Class value it is handed
+   (`s == obj.class`), and its `===` the subject of a `case`. */
+static int cv_compare_keeps_nothing(Compiler *c, int recv, const char *nm) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, recv, "name");
+    if (!cn || (comp_class_index(c, cn) < 0 && !is_builtin_class_name(cn) && !is_builtin_module_const_name(cn)))
+      return 0;
+  }
+  else if (rk != NK_CallNode || !is_class_query(nt_str(nt, recv, "name")) || cv_argc(nt, recv) != 0) return 0;
+  const char *names[2] = { nm, "==" };
+  int mod = comp_core_class(c, CORE_MODULE), obj = comp_core_class(c, CORE_OBJECT);
+  for (int i = 0; i < 2; i++) {
+    int ncm = 0;
+    comp_cmethod_candidates(c, names[i], &ncm);
+    if (ncm != 0 || class_reopen_cmethod(c, -1, -1, names[i]) >= 0 ||
+        (mod >= 0 && call_target(c, -1, mod, names[i], 0, NULL) >= 0) ||
+        (obj >= 0 && call_target(c, -1, obj, names[i], 0, NULL) >= 0))
+      return 0;
+  }
+  return 1;
+}
+/* ... and does each `when` of the CaseNode n, whose subject is a Class
+   value, test it with such a `===`? */
+static int cv_case_keeps_nothing(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int wn = 0; const int *wv = nt_arr(nt, n, "conditions", &wn);
+  for (int w = 0; w < wn; w++) {
+    int en = 0; const int *ev = nt_arr(nt, wv[w], "conditions", &en);
+    for (int i = 0; i < en; i++) if (!cv_compare_keeps_nothing(c, ev[i], "===")) return 0;
+  }
+  return 1;
+}
 /* Is the Class value that `.class` call n answers consumed where no poly
    dispatch can follow it: written into a string (`"#{x.class}"`, also as the
-   branch of a conditional inside one), compared (`==`, `!=`, `equal?`,
-   `eql?`), asked its name, text or an ordering (the plain class queries), the
-   subject of a `case` (compared with `===`), or thrown away? Such a read does not make the classes
+   branch of a conditional inside one), compared with a comparison that
+   keeps nothing of it (`==`, `!=`, `equal?`, `eql?` on another Class
+   value, cv_compare_keeps_nothing), asked its name, text or an ordering
+   (the plain class queries), the subject of a `case` whose `when`s are
+   such comparisons, or thrown away? Such a read does not make the classes
    values: the builtin files' error messages read `.class` that way.
    par: an_parent_map. */
-static int cv_class_read_plain(const NodeTable *nt, const int *par, int n) {
+static int cv_class_read_plain(Compiler *c, const int *par, int n) {
+  const NodeTable *nt = c->nt;
   VpUp up;
   VpUpKind k = vp_climb(nt, par, n, VPS_ALL, &up);
   if (k == VPU_DROPPED) return 1;
@@ -3508,18 +3562,14 @@ static int cv_class_read_plain(const NodeTable *nt, const int *par, int n) {
   int e = up.parent, child = up.node;
   NodeKind ek = nt_kind(nt, e);
   if (ek == NK_EmbeddedStatementsNode) return 1;
-  if (ek == NK_CaseNode) return nt_ref(nt, e, "predicate") == child;
+  if (ek == NK_CaseNode) return nt_ref(nt, e, "predicate") == child && cv_case_keeps_nothing(c, e);
   const char *nm;
   if (ek == NK_CallNode && nt_ref(nt, e, "receiver") == child)
     return nt_ref(nt, e, "block") < 0 && (nm = nt_str(nt, e, "name")) && is_class_plain_query(nm);
   if (ek == NK_ArgumentsNode && par[e] >= 0 && nt_kind(nt, par[e]) == NK_CallNode)
-    return (nm = nt_str(nt, par[e], "name")) && is_class_compare(nm);
+    return (nm = nt_str(nt, par[e], "name")) && is_class_compare(nm) &&
+           cv_compare_keeps_nothing(c, nt_ref(nt, par[e], "receiver"), nm);
   return 0;
-}
-static int cv_argc(const NodeTable *nt, int n) {
-  int args = nt_ref(nt, n, "arguments"), an = 0;
-  if (args >= 0) nt_arr(nt, args, "arguments", &an);
-  return an;
 }
 /* The name a send / public_send / __send__ call (n) is handed as a literal
    Symbol or String first argument, or NULL when it is computed. */
@@ -3581,11 +3631,11 @@ static void cv_build(Compiler *c) {
     if (is_method_owner_query(nm)) owner = 1;
     if (is_method_object_maker(nm)) methods = 1;
     if (is_class_relatives_query(nm)) rel = 1;
-    if (is_class_query(nm) && cv_argc(nt, n) == 0 && !cv_class_read_plain(nt, par, n)) cls_call = 1;
+    if (is_class_query(nm) && cv_argc(nt, n) == 0 && !cv_class_read_plain(c, par, n)) cls_call = 1;
     /* `x.send(:class)`: the same call, and a computed name may be "class" */
     if (is_send_family(nm)) {
       const char *sn = cv_send_literal_name(nt, n);
-      if ((!sn || is_class_query(sn)) && !cv_class_read_plain(nt, par, n)) cls_call = 1;
+      if ((!sn || is_class_query(sn)) && !cv_class_read_plain(c, par, n)) cls_call = 1;
     }
     if (is_mixin_call(nm) || is_kind_query(nm) || is_raise_alias(nm)) cv_nonval_args(nt, nonval, n);
     NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
@@ -3632,32 +3682,23 @@ static void cv_build(Compiler *c) {
     if (cv_self_value(nt, nonval, nt_ref(nt, dn, "body"), nt_kind(nt, dn) == NK_ModuleNode)) cv_mark_tree(c, v, k);
   }
   /* a named Struct.new / Data.define block is a class body: `self` read as a
-     value in it, or in its `def self.x`, names the class */
+     value in it, or in its `def self.x`, names the class, and a subclass
+     that inherits the class method (`Q < P`, `Q.me`) */
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     int blk = nt_ref(nt, n, "block"), recv = nt_ref(nt, n, "receiver"), w = par[n];
     if (blk < 0 || recv < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_kind(nt, recv) != NK_ConstantReadNode ||
         !is_record_class_builder(nt_str(nt, recv, "name"), nt_str(nt, n, "name")) ||
         w < 0 || nt_kind(nt, w) != NK_ConstantWriteNode) continue;
-    if (cv_self_value(nt, nonval, nt_ref(nt, blk, "body"), 0)) cv_mark_name(c, v, nt_str(nt, w, "name"));
+    if (cv_self_value(nt, nonval, nt_ref(nt, blk, "body"), 0)) cv_mark_name_tree(c, v, nt_str(nt, w, "name"));
   }
   /* (a reopened class's other bodies, and methods defined on a constant) */
   NT_FOREACH_KIND(nt, NK_ClassNode, n) {
     int p = nt_ref(nt, n, "constant_path");
-    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 0)) {
-      for (int k = 0; k < nk; k++) {
-        const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
-        if (kn && sp_streq(seg ? seg + 1 : kn, nt_str(nt, p, "name"))) cv_mark_tree(c, v, k);
-      }
-    }
+    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 0)) cv_mark_name_tree(c, v, nt_str(nt, p, "name"));
   }
   NT_FOREACH_KIND(nt, NK_ModuleNode, n) {
     int p = nt_ref(nt, n, "constant_path");
-    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1)) {
-      for (int k = 0; k < nk; k++) {
-        const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
-        if (kn && sp_streq(seg ? seg + 1 : kn, nt_str(nt, p, "name"))) cv_mark_tree(c, v, k);
-      }
-    }
+    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1)) cv_mark_name_tree(c, v, nt_str(nt, p, "name"));
   }
   NT_FOREACH_KIND(nt, NK_DefNode, n) {
     int r = nt_ref(nt, n, "receiver");

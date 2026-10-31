@@ -1,0 +1,8 @@
+false
+A2
+B
+NoMethodError: undefined method 'tag' for class A
+other
+A3
+B
+NoMethodError: undefined method 'tag' for class A
