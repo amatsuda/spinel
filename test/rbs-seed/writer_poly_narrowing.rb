@@ -36,5 +36,24 @@ r = build(nil)
 p r.verb
 p r.count
 p build("POST").verb
-p build(Cand.new("abc")).verb
-p build(Cand.new(7)).count
+# a Cand whose id is a String answers it for both to_s and to_i, so its
+# count would hold a String in a slot the seed declares Integer: the store
+# raises TypeError (#10710); a Cand whose id is an Integer does the same
+# for verb. Each is built where only the agreeing writer is read.
+def build_verb(v)
+  r = Req.new
+  r.verb = (v || "GET").to_s
+  r
+end
+def build_count(v)
+  r = Req.new
+  r.count = (v || 2).to_i
+  r
+end
+p build_verb(Cand.new("abc")).verb
+p build_count(Cand.new(7)).count
+begin
+  build(Cand.new("abc"))
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end

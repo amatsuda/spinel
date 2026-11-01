@@ -20222,7 +20222,25 @@ static sp_RbVal sp_rbs_check_cls(sp_RbVal v, int cls, const char *slot, const ch
 #define SP_RBS_CHECK_CLS(v, cls, slot, wantname) sp_rbs_check_cls((v), (cls), (slot), (wantname))
 #define SP_RBS_CHECK_ARY(v) sp_rbs_need_ary(v)
 #else
-#define SP_RBS_CHECK_TAG(v, want, slot, wantname) (v)
+/* A box narrowed into a slot a seed types as a scalar kind (Integer, Float,
+   String, Symbol, a boolean) or a program class is checked in every build
+   too: a value of another kind raises TypeError rather than be read as the
+   slot's representation (an Integer read as a `const char *` crashed where
+   CRuby printed it, #10710). nil passes, as above, and a String changed in
+   place (its handle's box) is a String. The seed check refuses what it can
+   see at compile time; this is the value it cannot, the answer of a call
+   or of a block whose kinds the body does not show. */
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_rbs_tag_fail(sp_RbVal v, const char *wantname) {
+  if (wantname[0] == 'a' && wantname[1] == ' ') wantname += 2;
+  else if (wantname[0] == 'a' && wantname[1] == 'n' && wantname[2] == ' ') wantname += 3;
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected %s)", sp_poly_class_name(v), wantname));
+}
+static SP_INLINE SP_UNUSED sp_RbVal sp_rbs_need_tag(sp_RbVal v, int want, const char *wantname) {
+  if (SP_UNLIKELY(!(v.tag == want || v.tag == SP_TAG_NIL || (want == SP_TAG_STR && sp_poly_is_strbuf(v)))))
+    sp_rbs_tag_fail(v, wantname);
+  return v;
+}
+#define SP_RBS_CHECK_TAG(v, want, slot, wantname) sp_rbs_need_tag((v), (want), (wantname))
 #define SP_RBS_CHECK_ARY(v) sp_rbs_need_ary(v)
 /* A box narrowed into a slot a seed types as a builtin class with no
    subclass (Time, Thread, Fiber, Random, IO) is checked in every build, as

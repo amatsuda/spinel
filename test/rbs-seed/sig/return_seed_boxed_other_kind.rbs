@@ -1,0 +1,4 @@
+class ReturnSeedBox
+  def self.pick: (String s) -> String
+  def self.pick_block: (String s) -> String
+end

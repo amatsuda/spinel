@@ -3,3 +3,4 @@
 "POST"
 "abc"
 7
+TypeError: wrong argument type String (expected Integer)
