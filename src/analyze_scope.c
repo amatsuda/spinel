@@ -1870,7 +1870,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   NodeKind wk = nt_kind(c->nt, id);
   if (child != scope_idx || wk == NK_ClassNode || wk == NK_ModuleNode || wk == NK_SingletonClassNode)
     cw.struct_direct = 0;
-  else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && is_struct_call(c->nt, nt_ref(c->nt, id, "value")) &&
+  else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_is_record_call(c->nt, nt_ref(c->nt, id, "value")) &&
            class_def_body(c->nt, id) >= 0)
     cw.struct_direct = 1;
   if (child_class >= 0) cw.cbody = child_class;
@@ -2294,17 +2294,6 @@ void register_locals(Compiler *c) {
    it as a class with one ivar + reader + writer per member. */
 int is_c_ident(const char *s);
 
-/* Is CallNode `val` a `Struct.new(...)` / `Data.define(...)`? */
-int is_struct_call(const NodeTable *nt, int val) {
-  if (val < 0 || nt_kind(nt, val) != NK_CallNode) return 0;
-  const char *mn = nt_str(nt, val, "name");
-  int vr = nt_ref(nt, val, "receiver");
-  const char *rn = vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode
-                   ? nt_str(nt, vr, "name") : NULL;
-  return rn && ((sp_streq(rn, "Struct") && mn && sp_streq(mn, "new")) ||
-                (sp_streq(rn, "Data") && mn && sp_streq(mn, "define")));
-}
-
 /* The class definition readers below take a definition node: a class's
    def_node, or a node a pass found by walking the tree. They answer from the
    node table alone, so the passes ahead of the scope walk, which have no
@@ -2419,6 +2408,18 @@ void class_def_set_body(NodeTable *nt, int def_node, int body) {
   else nt_node_set_ref(nt, def_node, "body", body);
 }
 
+/* Is `val` the call `Struct.new(...)` / `Data.define(...)`, the call that
+   makes a record class? It takes a call node, not a definition node. It
+   reads the node shape (a call on a plain constant) and asks
+   is_record_class_builder for the names; the sites ask it of a write's
+   value, a receiver, a superclass, or a call they walked to. */
+int class_def_is_record_call(const NodeTable *nt, int val) {
+  if (val < 0 || nt_kind(nt, val) != NK_CallNode) return 0;
+  int vr = nt_ref(nt, val, "receiver");
+  return vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode &&
+         is_record_class_builder(nt_str(nt, vr, "name"), nt_str(nt, val, "name"));
+}
+
 /* The class body a definition node carries: a ClassNode's or ModuleNode's
    own, or the block of `Name = Struct.new(...) do ... end` (and
    Data.define) or of a class builder's write, the class's def_node.
@@ -2429,7 +2430,7 @@ int class_def_body(const NodeTable *nt, int def_node) {
   NodeKind k = nt_kind(nt, def_node);
   if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) return nt_ref(nt, def_node, "body");
   int val = nt_ref(nt, def_node, "value");
-  if (!is_struct_call(nt, val) && class_def_builder(nt, def_node) < 0) return -1;
+  if (!class_def_is_record_call(nt, val) && class_def_builder(nt, def_node) < 0) return -1;
   int blk = nt_ref(nt, val, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
   int bb = nt_ref(nt, blk, "body");
@@ -3610,7 +3611,7 @@ void register_structs(Compiler *c) {
     if (ty_k == NK_ConstantWriteNode) {
       const char *cname = nt_str(nt, id, "name");
       int val = nt_ref(nt, id, "value");
-      if (!cname || !is_c_ident(cname) || !is_struct_call(nt, val)) continue;
+      if (!cname || !is_c_ident(cname) || !class_def_is_record_call(nt, val)) continue;
       int ci = comp_class_index(c, cname);
       if (ci >= 0) {
         /* A `class D` reopening this constant pre-created a memberless class
@@ -3636,7 +3637,7 @@ void register_structs(Compiler *c) {
        omits the synthetic name (CRuby shows `#<struct a=1, b=2>`). */
     else if (ty_k == NK_LocalVariableWriteNode) {
       int val = nt_ref(nt, id, "value");
-      if (!is_struct_call(nt, val)) continue;
+      if (!class_def_is_record_call(nt, val)) continue;
       char an[48];
       snprintf(an, sizeof an, "StructAnon_%s", comp_node_tag(c, id));
       ClassInfo *cls = comp_class_new(c, an, id);
@@ -3648,7 +3649,7 @@ void register_structs(Compiler *c) {
        struct/data call is the receiver of another call, with no name to hold it.
        Synthesize an anon class keyed to the call node itself so the receiver
        resolution (.new / .members / .class) can find it. #2682 */
-    else if (ty_k == NK_CallNode && is_struct_call(nt, id)) {
+    else if (ty_k == NK_CallNode && class_def_is_record_call(nt, id)) {
       /* ...or used as a VALUE anywhere else (`p Struct.new(:a)`, an element,
          a return): the class still has to exist to be printed or passed, and
          with none registered the call reported `Struct.new` as undefined
@@ -3676,7 +3677,7 @@ void register_structs(Compiler *c) {
     /* class X < Struct.new(:a, :b); ... end */
     else if (class_def_is_class(nt, id)) {
       int sup = class_def_super(nt, id);
-      if (!is_struct_call(nt, sup)) continue;
+      if (!class_def_is_record_call(nt, sup)) continue;
       int ci = elab_header_class(c, id, NULL, NULL);
       if (ci >= 0) register_struct_members(c, &c->classes[ci], sup);
     }
@@ -11880,9 +11881,8 @@ static int bc_anon_class_call(const NodeTable *nt, int id, int *is_module) {
   NodeKind rk = nt_kind(nt, rv);
   const char *rn = rk == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
   if (!nm || !rn) return 0;
-  *is_module = sp_streq(rn, "Module");
-  return (sp_streq(nm, "new") && (sp_streq(rn, "Class") || sp_streq(rn, "Module") || sp_streq(rn, "Struct"))) ||
-         (sp_streq(nm, "define") && sp_streq(rn, "Data"));
+  *is_module = is_module_const_name(rn);
+  return is_class_builder(rn, nm);
 }
 
 /* The superclass an anonymous class expression `v` creates: 1 with *out the

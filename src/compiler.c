@@ -3742,9 +3742,8 @@ static void cv_build(Compiler *c) {
      value in it, or in its `def self.x`, names the class, and a subclass
      that inherits the class method (`Q < P`, `Q.me`) */
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
-    int blk = nt_ref(nt, n, "block"), recv = nt_ref(nt, n, "receiver"), w = par[n];
-    if (blk < 0 || recv < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_kind(nt, recv) != NK_ConstantReadNode ||
-        !is_record_class_builder(nt_str(nt, recv, "name"), nt_str(nt, n, "name")) ||
+    int blk = nt_ref(nt, n, "block"), w = par[n];
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !class_def_is_record_call(nt, n) ||
         w < 0 || nt_kind(nt, w) != NK_ConstantWriteNode) continue;
     if (cv_self_value(nt, nonval, nt_ref(nt, blk, "body"), 0)) cv_mark_name_tree(c, v, nt_str(nt, w, "name"));
   }

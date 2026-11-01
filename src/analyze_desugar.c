@@ -13210,10 +13210,7 @@ static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
     }
     if (k != NK_CallNode) continue;
     const char *cn = nt_str(nt, id, "name");
-    int r = nt_ref(nt, id, "receiver");
-    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
-    int member = cn && rn && ((sp_streq(cn, "new") && sp_streq(rn, "Struct")) ||
-                              (sp_streq(cn, "define") && sp_streq(rn, "Data")));
+    int member = class_def_is_record_call(nt, id);
     for (int i = 0; cn && makers[i] && !member; i++) member = sp_streq(cn, makers[i]);
     if (member && cdef_call_names(nt, id, nm)) return 1;
   }
@@ -19195,7 +19192,7 @@ int desugar_struct_block_anonymous(Compiler *c) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) continue;
     int val = nt_ref(nt, id, "value");
-    if (!is_struct_call(nt, val)) continue;
+    if (!class_def_is_record_call(nt, val)) continue;
     int blk = nt_ref(nt, val, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     nt_node_set_int(nt, id, "class_new_anonymous", k == NK_ConstantWriteNode ? 1 : 2);
@@ -19280,7 +19277,7 @@ int desugar_inline_struct_blocks(Compiler *c) {
   int n0 = nt->count, changed = 0, serial = 0;
   int *parent = NULL;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode || !is_struct_call(nt, id)) continue;
+    if (nt_kind(nt, id) != NK_CallNode || !class_def_is_record_call(nt, id)) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     if (!parent) {
@@ -20719,7 +20716,7 @@ int desugar_class_body_object_acts(Compiler *c) {
     NodeKind wk = nt_kind(nt, w);
     if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
     int val = nt_ref(nt, w, "value");
-    int blk = is_struct_call(nt, val) ? nt_ref(nt, val, "block") : -1;
+    int blk = class_def_is_record_call(nt, val) ? nt_ref(nt, val, "block") : -1;
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) changed |= cb_give_self(nt, nt_ref(nt, blk, "body"), NULL, 1, NULL);
   }
   if (changed) comp_grow_node_arrays(c);
@@ -21947,12 +21944,7 @@ int desugar_self_const_get(Compiler *c) {
 static const char *holder_block_name(const NodeTable *nt, const int *parent, int block) {
   int call = parent[block];
   if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") != block) return NULL;
-  int receiver = nt_ref(nt, call, "receiver");
-  const char *receiver_name = receiver >= 0 && nt_kind(nt, receiver) == NK_ConstantReadNode ? nt_str(nt, receiver, "name") : NULL;
-  const char *method_name = nt_str(nt, call, "name");
-  if (!receiver_name || !method_name) return NULL;
-  if (!((sp_streq(receiver_name, "Struct") && sp_streq(method_name, "new")) ||
-        (sp_streq(receiver_name, "Data") && sp_streq(method_name, "define")))) return NULL;
+  if (!class_def_is_record_call(nt, call)) return NULL;
   int write = parent[call];
   if (write < 0 || nt_kind(nt, write) != NK_ConstantWriteNode || nt_ref(nt, write, "value") != call) return NULL;
   return nt_str(nt, write, "name");

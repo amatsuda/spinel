@@ -4727,18 +4727,6 @@ static QCAlias *qc_alias_new(void) {
   memset(al, 0, sizeof *al);
   return al;
 }
-/* Is the node `Struct.new(...)` or `Data.define(...)`, a call that makes a
-   class? */
-static int qc_struct_or_data_value(const NodeTable *nt, int v) {
-  NodeKind vk = nt_kind(nt, v);
-  if (vk != NK_CallNode) return 0;
-  const char *vn = nt_str(nt, v, "name");
-  int vr = nt_ref(nt, v, "receiver");
-  const char *rn = vr >= 0 &&
-                   nt_kind(nt, vr) == NK_ConstantReadNode ? nt_str(nt, vr, "name") : NULL;
-  return rn && vn && ((sp_streq(rn, "Struct") && sp_streq(vn, "new")) ||
-                      (sp_streq(rn, "Data") && sp_streq(vn, "define")));
-}
 /* `A = ::P`, `A = P`, `A = B::C`: record the module path A stands for,
    resolved where the write is, the way a header's head is (so `module Q;
    module P; end; A = P` is Q::P), through an alias written before it. An
@@ -4777,7 +4765,7 @@ static void qc_note_alias(const NodeTable *nt, int w, char (*path)[64], int dept
   snprintf(al->orig, 64, "%s", on ? on : wn);
   for (int i = 0; i < depth; i++) snprintf(al->scope[i], 64, "%s", path[i]);
   al->tl = n;
-  al->sd = qc_struct_or_data_value(nt, val);
+  al->sd = class_def_is_record_call(nt, val);
   for (int i = 0; i < n; i++) snprintf(al->target[i], 64, "%s", out[i]);
   for (int k = 0; k < (sp_streq(al->orig, al->name) ? 1 : 2); k++) {
     if (qc_nalias_ws == qc_calias_ws) {
@@ -5021,7 +5009,7 @@ static int qc_program_defines_class(const NodeTable *nt, const char *leaf) {
 static int qc_program_defines_struct_or_data(const NodeTable *nt, const char *leaf) {
   NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
     const char *cn = nt_str(nt, id, "name");
-    if (cn && sp_streq(cn, leaf) && qc_struct_or_data_value(nt, nt_ref(nt, id, "value"))) return 1;
+    if (cn && sp_streq(cn, leaf) && class_def_is_record_call(nt, nt_ref(nt, id, "value"))) return 1;
   }
   return 0;
 }
@@ -5756,7 +5744,7 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
      every reference to whichever was registered first. */
   if (ty_k == NK_ConstantWriteNode && depth > 0) {
     const char *cn = nt_str(nt, node, "name");
-    if (cn && qc_struct_or_data_value(nt, nt_ref(nt, node, "value"))) {
+    if (cn && class_def_is_record_call(nt, nt_ref(nt, node, "value"))) {
       if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
       QCWrite *w = &(*ws)[(*n)++];
       w->node = node; w->depth = depth; w->salt = 0; w->head[0] = 0;
@@ -35078,7 +35066,7 @@ int new_recv_every_class(Compiler *c, int recv) {
   if (recv < 0) return 0;
   NodeKind rk = nt_kind(c->nt, recv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) return 0;
-  if (rk == NK_CallNode && is_struct_call(c->nt, recv)) return 0;
+  if (rk == NK_CallNode && class_def_is_record_call(c->nt, recv)) return 0;
   if (self_class_static_ci(c, recv) >= 0 || class_var_static_ci(c, recv) >= 0) return 0;
   TyKind rt = infer_type(c, recv);
   return rt == TY_CLASS || rt == TY_POLY;
@@ -47450,7 +47438,7 @@ int refuse_superclass_exprs_at(Compiler *c, LowerCtx *lc, int id) {
   if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) return 0;
   const char *what = nt_type(ntc, sc);
   if (sk == NK_CallNode) {
-    if (is_struct_call(c->nt, sc)) return 0;
+    if (class_def_is_record_call(c->nt, sc)) return 0;
     int rv = nt_ref(ntc, sc, "receiver");
     const char *mn = nt_str(ntc, sc, "name");
     /* `class RetryOptions < Options.new(:max, :interval)` where Options <
