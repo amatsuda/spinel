@@ -43028,7 +43028,7 @@ static void refuse_mixin_after_calls(Compiler *c) {
 /* Can evaluating `e` do anything observable? A read of a local, an ivar or a
    constant, a literal, self, `&:sym`, and a lambda or `proc { }` literal
    cannot; anything else (a call, above all) may. */
-static int bo_may_act(const NodeTable *nt, int e) {
+int bo_may_act(const NodeTable *nt, int e) {
   if (e < 0) return 0;
   switch (nt_kind(nt, e)) {
   case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
