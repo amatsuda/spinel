@@ -4179,6 +4179,11 @@ void ver_entries_build(Compiler *c) {
   for (int s = 0; s < c->nscopes; s++) {   /* the later prepends' copies */
     if (!c->scopes[s].mixin_guarded) continue;
     const Scope *m = &c->scopes[s];
+    /* (a module's own guarded copy, of a late include into a reopened
+       module, is emitted only as its includers' clones, which carry the
+       guard and get entries of their own: one on the module would call a
+       copy that no function is emitted for) */
+    if (m->class_id >= 0 && comp_class_is_module(c, &c->classes[m->class_id])) continue;
     const char *name = comp_scope_user_name(m);
     if ((m->is_cmethod ? comp_cmethod_in_class(c, m->class_id, name) : comp_method_in_class(c, m->class_id, name)) != s) continue;
     if (!(ngc & (ngc - 1)) && !(gc = realloc(gc, sizeof *gc * (size_t)(ngc ? 2 * ngc : 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
