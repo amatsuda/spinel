@@ -5329,7 +5329,34 @@ int infer_write_types(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
     int val_id = nt_ref(nt, id, "value");
-    if (val_id < 0 || nt_kind(nt, val_id) != NK_CallNode) continue;
+    if (val_id < 0) continue;
+    /* A desugar that spells a node as a sequence of temp writes (an index
+       op-write on a user `[]`: `x = (__ixr = x; __ixr[k] || ...)`) appends
+       those writes at higher node ids too, so the main loop read its temps
+       still reset. Typed from the reset temp on one round and the settled
+       one on the next, `x` alternated and the fixpoint ran to its cap. */
+    if (nt_kind(nt, val_id) == NK_ParenthesesNode && subtree_writes_any_local(nt, val_id)) {
+      const char *pnm = nt_str(nt, id, "name");
+      LocalVar *plv = pnm ? scope_local(comp_scope_of(c, id), pnm) : NULL;
+      if (plv && !plv->is_param && !plv->is_block_param) {
+        TyKind pt = infer_type(c, val_id);
+        slot_take(c, plv, pt == TY_NIL ? TY_POLY : pt, val_id);
+        /* and the temps, which read `x` before this widened it */
+        int body = nt_ref(nt, val_id, "body"), bn = 0;
+        const int *bv = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        for (int i = 0; bv && i < bn; i++) {
+          if (nt_kind(nt, bv[i]) != NK_LocalVariableWriteNode) continue;
+          const char *tnm = nt_str(nt, bv[i], "name");
+          LocalVar *tlv = tnm ? scope_local(comp_scope_of(c, bv[i]), tnm) : NULL;
+          int tv = nt_ref(nt, bv[i], "value");
+          if (!tlv || tlv->is_param || tlv->is_block_param || tlv->rbs_seeded || tv < 0) continue;
+          TyKind tt = infer_type(c, tv);
+          if (tt != TY_UNKNOWN) slot_take(c, tlv, tt == TY_NIL ? TY_POLY : tt, tv);
+        }
+      }
+      continue;
+    }
+    if (nt_kind(nt, val_id) != NK_CallNode) continue;
     if (nt_ref(nt, val_id, "block") < 0) continue;
     const char *vnm = nt_str(nt, val_id, "name");
     int vrecv = nt_ref(nt, val_id, "receiver");
