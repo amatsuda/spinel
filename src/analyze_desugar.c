@@ -14784,6 +14784,19 @@ int desugar_value_form_drop_block(Compiler *c) {
   return changed;
 }
 
+/* Is `t` a builtin value with no Enumerable in CRuby, no `each` to walk? (An
+   IO, ARGF or a Dir includes it, and a class object may extend it.) */
+static int ty_lacks_enumerable(TyKind t) {
+  switch (t) {
+  case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_STRING: case TY_STRBUF:
+  case TY_SYMBOL: case TY_BOOL: case TY_TIME: case TY_COMPLEX: case TY_RATIONAL:
+  case TY_MATCHDATA: case TY_REGEX: case TY_EXCEPTION:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
 /* The name a call had before the pre-pass renamed it to the builtin's
    (detect to find, collect_concat to flat_map), which is the name a class of
    the program may answer with a reader or a method of its own. Written back
@@ -14931,18 +14944,18 @@ int desugar_builtin_enum_calls(Compiler *c) {
     if (builtin_enum_name_index(bname ? bname : name) < 0) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
-    if (chained && chained[id]) continue;
     TyKind rt = infer_type(c, recv);
-    int ok = 0;
     /* an Integer, a String or nil has no Enumerable at all: a call renamed
        to the builtin's name (detect to find) takes back the name it was
        written with, the one a top-level method a send reaches answers
-       (`42.send(:detect)`), or a reopening of the receiver's class */
-    if ((rt == TY_NIL || rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT || rt == TY_STRING ||
-         rt == TY_STRBUF || rt == TY_SYMBOL || rt == TY_BOOL) && enum_unrename(nt, id)) {
+       (`42.send(:detect)`), or a reopening of the receiver's class; so does
+       one an outer each is chained on (`42.send(:detect).each { }`) */
+    if (ty_lacks_enumerable(rt) && enum_unrename(nt, id)) {
       changed = 1;
       continue;
     }
+    if (chained && chained[id]) continue;
+    int ok = 0;
     /* an Enumerator over a generator is driven lazily through #next by the
        typed emitter of these names, which is what lets a prefix be taken
        from an infinite one (or a search on one to terminate at all); the
