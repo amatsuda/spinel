@@ -1565,10 +1565,12 @@ static void sp_re_mark_globals(void) {
 /* Hand the collector (lib/sp_gc.c) this TU's root-marking and string-heap
    sweep. Runs before main, so the hooks are set before the first
    allocation can trigger a collection. */
+#ifndef SP_GC_NONE   /* (--gc=none: no collection marks them) */
 SP_CONSTRUCTOR static void sp_gc_install_tu_hooks(void) {
   sp_gc_mark_globals_hook = sp_re_mark_globals;
   /* sp_gc_str_sweep_hook is installed by sp_alloc.c's constructor. */
 }
+#endif
 
 /* `$+` / `$LAST_PAREN_MATCH` -- contents of the highest-indexed group
    that participated in the match. Walks sp_re_captures[] from 9 down

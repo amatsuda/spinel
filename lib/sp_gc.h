@@ -168,6 +168,35 @@ typedef struct { int nv; int np; } sp_gc_frame_hdr;
 #define SP_GC_ENTRY_RBVAL(v) ((void**)((uintptr_t)&(v) | (uintptr_t)1))
 #define SP_GC_ENTRY_STR(v)   ((void**)((uintptr_t)&(v) | (uintptr_t)2))
 
+/* --gc=none (the emitted TU defines SP_GC_NONE): no collector runs, so
+   nothing reads a root. The TU registers none -- its frames, its slots and
+   the runtime header's own inline helpers -- and the boxed frame storage
+   stays, read by nothing. The archive's own roots are its, pushed and
+   popped in pairs, which the TU's saved counts (sp_exc_rootmark, ...) still
+   restore to values it held (#10699). */
+#ifdef SP_GC_NONE
+#undef SP_GC_SAVE
+#undef SP_GC_RESTORE
+#undef SP_GC_ROOT
+#undef SP_GC_ROOT_RBVAL
+#undef SP_GC_ROOT_STR
+#undef SP_GC_ROOT_SRANGE
+#undef SP_GC_ROOT_FRAME
+#undef SP_GC_ENTRY_PTR
+#undef SP_GC_ENTRY_RBVAL
+#undef SP_GC_ENTRY_STR
+#define SP_GC_SAVE() int SP_UNUSED _gc_saved = 0
+#define SP_GC_RESTORE() ((void)0)
+#define SP_GC_ROOT(v) ((void)0)
+#define SP_GC_ROOT_RBVAL(v) ((void)0)
+#define SP_GC_ROOT_STR(v) ((void)0)
+#define SP_GC_ROOT_SRANGE(v) ((void)0)
+#define SP_GC_ROOT_FRAME(f) ((void)0)
+#define SP_GC_ENTRY_PTR(v) ((void **)0)
+#define SP_GC_ENTRY_RBVAL(v) ((void **)0)
+#define SP_GC_ENTRY_STR(v) ((void **)0)
+#endif
+
 /* ---- write barrier ----
    A generational mark walks the young objects and whatever the roots reach; an
    old object it does not walk can still be the only thing holding a young one.
