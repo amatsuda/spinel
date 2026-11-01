@@ -4897,7 +4897,7 @@ static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int
   NodeKind k = nt_kind(nt, node);
   QCRebase *own = NULL;
   if (k == NK_ConstantWriteNode) qc_note_alias(nt, node, path, depth, lex);
-  if ((k == NK_ClassNode || k == NK_ModuleNode) && depth < QC_MAXDEPTH) {
+  if (class_def_opens_cref(nt, node) && depth < QC_MAXDEPTH) {
     int cp = nt_ref(nt, node, "constant_path");
     qc_anchor_object_header(nt, cp);
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
@@ -5148,7 +5148,7 @@ void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth,
   NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return;
   QCRebase *own = NULL;
-  if ((ty_k == NK_ModuleNode || ty_k == NK_ClassNode) && depth < QC_MAXDEPTH)
+  if (class_def_opens_cref(nt, node) && depth < QC_MAXDEPTH)
     depth = qc_push_header(nt, node, &path, depth, NULL, &own);
   else if (ty_k == NK_ConstantWriteNode) {
     const char *nm = nt_str(nt, node, "name");
@@ -5227,7 +5227,7 @@ static void qc_build_reverse_flags(Compiler *c) {
       int p = nt_ref(nt, q, "parent");
       if (p >= 0 && p < n) qc_cpath_parent[p] = 1;
     }
-    else if (qk == NK_ClassNode || qk == NK_ModuleNode) {
+    else if (class_def_opens_cref(nt, q)) {
       int cp = nt_ref(nt, q, "constant_path");
       if (cp >= 0 && cp < n) qc_def_cpath[cp] = 1;
     }
@@ -5373,8 +5373,8 @@ static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, cons
   for (int d = qc_ndefs - 1; d >= 0 && !supn; d--) {
     if (!qc_path_eq(qc_defs[d].path, qc_defs[d].depth, path, n)) continue;
     int dn = qc_defs[d].node;
-    if (nt_kind(nt, dn) == NK_ClassNode)
-      supn = qc_resolve_ref(nt, nt_ref(nt, dn, "superclass"), path, n - 1, sup);
+    if (class_def_is_class(nt, dn))
+      supn = qc_resolve_ref(nt, class_def_super(nt, dn), path, n - 1, sup);
   }
   return supn > 0 ? qc_ancestor_lookup(nt, sup, supn, nm, ws, wn, 0, depth + 1) : -1;
 }
@@ -5459,13 +5459,13 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
   char (*path)[64] = mods;
   QCRebase *own = NULL;
   int outer = 0;
-  if ((ty_k == NK_ModuleNode || ty_k == NK_ClassNode) && depth < QC_MAXDEPTH) {
+  if (class_def_opens_cref(nt, node) && depth < QC_MAXDEPTH) {
     /* `class Foo < Foo` in A: CRuby reads the superclass in the scope
        around the header, before the constant A::Foo exists, so it names the
        Foo found from there, not the class being defined. Resolved here with
        the class's writes skipped, and left alone by the walk below. A
        reopen (A::Foo written earlier) keeps the old reading. */
-    int sup = ty_k == NK_ClassNode ? nt_ref(nt, node, "superclass") : -1;
+    int sup = class_def_super(nt, node);
     int hcp = nt_ref(nt, node, "constant_path");
     const char *hn = hcp >= 0 ? nt_str(nt, hcp, "name") : NULL;
     if (sup >= 0 && hn && nt_kind(nt, sup) == NK_ConstantReadNode && nt_str(nt, sup, "name") &&
@@ -5729,7 +5729,7 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
   NodeKind ty_k = nt_kind(nt, node);
   if (!ty) return;
   QCRebase *own = NULL;
-  if ((ty_k == NK_ModuleNode || ty_k == NK_ClassNode) && depth < QC_MAXDEPTH) {
+  if (class_def_opens_cref(nt, node) && depth < QC_MAXDEPTH) {
     int cp = nt_ref(nt, node, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     if (mn) {
