@@ -1366,11 +1366,41 @@ spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_initialize_in_block.rb [promote] rc=1
 spinel: test/reject/runtime_condition_def_initialize_in_block.rb:7: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_inherited.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_list_inherited.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_inherited.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_list_inherited.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_module.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_list_module.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_module.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_list_module.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_unrelated.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_list_unrelated.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_unrelated.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_list_unrelated.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_module_includers.rb [default] rc=1
 spinel: test/reject/runtime_condition_def_module_includers.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_module_includers.rb [promote] rc=1
 spinel: test/reject/runtime_condition_def_module_includers.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_private_instance_methods.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_private_instance_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_private_instance_methods.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_private_instance_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_private_methods.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_private_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_private_methods.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_private_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_private_super.rb [default] rc=1
 spinel: test/reject/runtime_condition_def_private_super.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
@@ -1378,11 +1408,29 @@ spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_private_super.rb [promote] rc=1
 spinel: test/reject/runtime_condition_def_private_super.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_protected_instance_methods.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_protected_instance_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_protected_instance_methods.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_protected_instance_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_protected_methods.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_protected_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_protected_methods.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_protected_methods.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_respond_to.rb [default] rc=1
 spinel: test/reject/runtime_condition_def_respond_to.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_respond_to.rb [promote] rc=1
 spinel: test/reject/runtime_condition_def_respond_to.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_singleton_methods.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_singleton_methods.rb:8: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_singleton_methods.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_singleton_methods.rb:8: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/scan_subject_stdin_gets.rb [default] rc=1
 spinel: test/reject/scan_subject_stdin_gets.rb:3: IO#gets or IO#readline in a program that reads $_: they do not set $_ here, so $_ would not be the line just read. Keep the line in a variable instead

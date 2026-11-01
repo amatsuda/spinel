@@ -1788,13 +1788,25 @@ int builtin_object_method_known(const char *m) {
 }
 
 /* A question whether a receiver has a method: of one by name (1), or a
-   list of its methods (2) */
+   list of its methods: one that answers the whole program (2), or one a
+   receiver's own chain decides (3) */
 int is_method_presence_query(const char *n) {
   static const char *const by_name[] = { "respond_to?", "method_defined?", "public_method_defined?",
     "private_method_defined?", "protected_method_defined?", "instance_method", "public_instance_method",
     "method", "public_method", NULL };
   static const char *const lists[] = { "instance_methods", "public_instance_methods", "methods", "public_methods", NULL };
-  return builtin_name_in(n, by_name) ? 1 : builtin_name_in(n, lists) ? 2 : 0;
+  static const char *const chain_lists[] = { "private_instance_methods", "protected_instance_methods",
+    "private_methods", "protected_methods", "singleton_methods", NULL };
+  return builtin_name_in(n, by_name) ? 1 : builtin_name_in(n, lists) ? 2 : builtin_name_in(n, chain_lists) ? 3 : 0;
+}
+/* A list of an object's own singleton methods (a class's, asked of the class) */
+int is_singleton_method_list(const char *n) { return n && sp_streq(n, "singleton_methods"); }
+/* A list of a class's instance methods, asked of the class or module itself
+   (the others, asked of a class, list its class methods) */
+int is_instance_method_list(const char *n) {
+  static const char *const names[] = { "instance_methods", "public_instance_methods", "private_instance_methods",
+    "protected_instance_methods", NULL };
+  return builtin_name_in(n, names);
 }
 /* Does every object (with cmeth, every class and module too) answer m with
    a builtin method: one of Object's own, Kernel's or Object's (Module's)? */
