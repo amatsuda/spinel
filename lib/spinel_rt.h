@@ -20176,6 +20176,21 @@ static inline void sp_proc_fill(sp_int P, sp_int O, sp_int Q, int R, sp_int n, s
    is not checked either, since a subclass in an ancestor-typed slot is
    correct and layout-compatible. What this catches is the reinterpretation
    family -- a pointer landing in a scalar slot and the reverse. */
+/* A box narrowed into a slot a seed types as an Array is checked in every
+   build: anything but an Array (or nil, as above) raises the TypeError a
+   seeded Array[untyped] parameter raises (sp_poly_as_poly_array), where
+   the conversion to a typed Array read it as nil and the program answered
+   something else in silence. A value that reaches the slot through an
+   untyped parameter is the case the compile-time check cannot see
+   (#10681). */
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_rbs_ary_fail(sp_RbVal v) {
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Array)", sp_poly_class_name(v)));
+}
+static SP_INLINE SP_UNUSED sp_RbVal sp_rbs_need_ary(sp_RbVal v) {
+  if (SP_UNLIKELY(!(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)))))
+    sp_rbs_ary_fail(v);
+  return v;
+}
 #ifdef SP_RBS_CHECK
 static sp_RbVal sp_rbs_check(sp_RbVal v, int want, const char *slot, const char *wantname) {
   /* (a box of a String changed in place holds its handle, sp_String *, and
@@ -20198,8 +20213,10 @@ static sp_RbVal sp_rbs_check_cls(sp_RbVal v, int cls, const char *slot, const ch
 }
 #define SP_RBS_CHECK_TAG(v, want, slot, wantname) sp_rbs_check((v), (want), (slot), (wantname))
 #define SP_RBS_CHECK_CLS(v, cls, slot, wantname) sp_rbs_check_cls((v), (cls), (slot), (wantname))
+#define SP_RBS_CHECK_ARY(v) sp_rbs_need_ary(v)
 #else
 #define SP_RBS_CHECK_TAG(v, want, slot, wantname) (v)
+#define SP_RBS_CHECK_ARY(v) sp_rbs_need_ary(v)
 /* A box narrowed into a slot a seed types as a builtin class with no
    subclass (Time, Thread, Fiber, Random, IO) is checked in every build, as
    a container's is: a value of another class raises TypeError rather than

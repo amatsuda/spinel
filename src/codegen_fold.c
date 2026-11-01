@@ -7879,6 +7879,10 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         Buf bx; memset(&bx, 0, sizeof bx);
         emit_expr(c, provided, &ab);
         if (ar.elem == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, ab.p ? ab.p : "NULL", &bx);
+        /* a box is asserted to be an Array before it is read as one: a
+           String through an untyped parameter was read as nil (#10681) */
+        else if (p && p->rbs_seeded)
+          emit_rbs_checked_text(c, pt, m->pnames[idx], ab.p ? ab.p : "sp_box_nil()", &bx);
         else buf_puts(&bx, ab.p ? ab.p : "sp_box_nil()");
         emit_unbox_text(c, pt, bx.p ? bx.p : "sp_box_nil()", out);
         free(ab.p); free(bx.p);

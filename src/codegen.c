@@ -965,6 +965,8 @@ void emit_rbs_checked_text(Compiler *c, TyKind slot, const char *slotname,
       break;
   }
   if (!tag) { buf_puts(b, expr); return; }
+  /* an Array is checked in every build (sp_rbs_need_ary, #10681) */
+  if (ty_is_array(slot)) { buf_printf(b, "SP_RBS_CHECK_ARY(%s)", expr); return; }
   if (cls) buf_printf(b, "SP_RBS_CHECK_CLS(%s, %s, \"", expr, cls);
   else buf_printf(b, "SP_RBS_CHECK_TAG(%s, %s, \"", expr, tag);
   for (const char *p2 = slotname ? slotname : "?"; *p2; p2++) {

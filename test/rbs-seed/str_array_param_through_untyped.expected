@@ -1,0 +1,2 @@
+["a", "b"]
+TypeError: wrong argument type String (expected Array)
