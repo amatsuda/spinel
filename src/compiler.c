@@ -4674,18 +4674,18 @@ int class_is_blank_slate(Compiler *c, int ci) {
   return 0;
 }
 
-/* Is class ci under BasicObject with no `include Kernel` in its chain's
-   bodies: neither Kernel's methods nor Object's are in its ancestry? */
-int class_lacks_kernel(Compiler *c, int ci) {
-  if (!class_is_blank_slate(c, ci)) return 0;
+/* Does the body of the class or module named `cn` write `include Kernel`,
+   or include a module whose body does (through that module's own includes,
+   to a bounded depth)? */
+static int def_body_includes_kernel(Compiler *c, const char *cn, int depth) {
   const NodeTable *nt = c->nt;
-  for (int k = ci; k >= 0; k = c->classes[k].parent) {
-    const char *cn = c->classes[k].name;
-    NT_FOREACH_KIND(nt, NK_ClassNode, id) {
+  if (!cn || depth > 16) return 0;
+  for (int q = 0; q < 2; q++)
+    NT_FOREACH_KIND(nt, q ? NK_ModuleNode : NK_ClassNode, id) {
       int cp = nt_ref(nt, id, "constant_path");
       const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
       int body = nt_ref(nt, id, "body"), bn = 0;
-      if (!nm || !cn || !sp_streq(nm, cn) || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+      if (!nm || !sp_streq(nm, cn) || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
       const int *bb = nt_arr(nt, body, "body", &bn);
       for (int j = 0; j < bn; j++) {
         if (nt_kind(nt, bb[j]) != NK_CallNode || nt_ref(nt, bb[j], "receiver") >= 0 ||
@@ -4694,11 +4694,20 @@ int class_lacks_kernel(Compiler *c, int ci) {
         const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
         for (int a = 0; a < an; a++) {
           const char *mn = nt_str(nt, av[a], "name");
-          if (mn && sp_streq(mn, "Kernel")) return 0;
+          if (mn && (sp_streq(mn, "Kernel") || def_body_includes_kernel(c, mn, depth + 1))) return 1;
         }
       }
     }
-  }
+  return 0;
+}
+
+/* Is class ci under BasicObject with no `include Kernel` in its chain's
+   bodies or in a module they include: neither Kernel's methods nor Object's
+   are in its ancestry? */
+int class_lacks_kernel(Compiler *c, int ci) {
+  if (!class_is_blank_slate(c, ci)) return 0;
+  for (int k = ci; k >= 0; k = c->classes[k].parent)
+    if (def_body_includes_kernel(c, c->classes[k].name, 0)) return 0;
   return 1;
 }
 
