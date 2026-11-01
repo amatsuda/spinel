@@ -21428,6 +21428,112 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
   return qn;
 }
 
+/* Is the superclass a path write's Class.new names (if any) a class the walk
+   knows, or a core class? */
+static int pb_super_known(const NodeTable *nt, const int *parent, InhNames *r, char **qn, int id) {
+  int an = 0, val = nt_ref(nt, id, "value");
+  const int *av = nt_arr(nt, nt_ref(nt, val, "arguments"), "arguments", &an);
+  if (an == 0) return 1;
+  NodeKind k = nt_kind(nt, av[0]);
+  if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return 0;
+  const char *nm = nt_str(nt, av[0], "name");
+  if (k == NK_ConstantReadNode && nm && (is_builtin_class_name(nm) || is_builtin_exception_name(nm))) return 1;
+  char q[1024];
+  inh_resolve_path(r, qn, nt, parent, id, av[0], 1, q, sizeof q, NULL);
+  return anh_has(&r->known, q);
+}
+
+/* mark_path_builders' walk over one statement list: each class or module
+   a header or a builder defines there is added to r->known by its full Ruby
+   path, and its body walked in turn. A path write whose namespace resolves,
+   from the write's lexical scope, to a name already known is marked; it is
+   a builder then (class_def_builder) when its value is a Class.new or
+   Module.new call with a block. A namespace whose first name an enclosing
+   scope defines as well as the top level is left unmarked: the class pass
+   resolves such a path by its leaf. */
+static void pb_walk(const NodeTable *nt, const int *parent, InhNames *r, char **qn, int stmts) {
+  int n = 0;
+  const int *v = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
+  for (int i = 0; i < n; i++) {
+    int id = v[i], lexical = 0;
+    char q[1024], w[512];
+    /* a statement of a file the inline model spliced here from a require in
+       a method, a block or a lambda runs only when that code does, not
+       unconditionally earlier: it neither defines a namespace nor is a
+       write the walk marks */
+    if (nt_int(nt, id, "req_deferred", 0)) continue;
+    if (nt_kind(nt, id) == NK_ConstantPathWriteNode) {
+      int ns = nt_ref(nt, nt_ref(nt, id, "target"), "parent");
+      NodeKind nk = ns >= 0 ? nt_kind(nt, ns) : NK_NONE;
+      if (nk != NK_ConstantReadNode && nk != NK_ConstantPathNode) continue;
+      inh_resolve_path(r, qn, nt, parent, id, ns, 1, q, sizeof q, &lexical);
+      int rooted = 0;
+      if (!anh_has(&r->known, q) || !cbs_path_text(nt, ns, w, sizeof w, &rooted)) continue;
+      char *sep = strstr(w, "::");
+      if (sep) *sep = 0;
+      if (lexical && !rooted && anh_has(&r->known, w)) continue;
+      /* a second definition of one path is a value write, as is one whose
+         superclass is no class the walk or the core knows */
+      size_t ql = strlen(q);
+      snprintf(q + ql, sizeof q - ql, "::%s", nt_str(nt, nt_ref(nt, id, "target"), "name"));
+      if (anh_has(&r->known, q) || !pb_super_known(nt, parent, r, qn, id)) continue;
+      nt_node_set_str((NodeTable *)nt, id, "ns_defined_before", "1");
+    }
+    if (!class_def_opens_cref(nt, id) && class_def_builder(nt, id) < 0) continue;
+    /* a header under a namespace the walk does not know (`module A::N` with
+       no A before it) defines nothing it knows */
+    int cp = class_def_path(nt, id), ns = -1;
+    NodeKind ck = cp >= 0 ? nt_kind(nt, cp) : NK_NONE;
+    if (ck == NK_ConstantPathNode || ck == NK_ConstantPathTargetNode) ns = nt_ref(nt, cp, "parent");
+    if (ns >= 0) {
+      inh_resolve_path(r, qn, nt, parent, id, ns, 1, q, sizeof q, NULL);
+      if (!anh_has(&r->known, q)) continue;
+    }
+    inh_resolve_path(r, qn, nt, parent, id, cp, 0, q, sizeof q, NULL);
+    if (class_def_opens_cref(nt, id) && !qn[id]) qn[id] = strdup(q);
+    /* a header's constant is bound as its body opens, a builder's once its
+       block has run */
+    int builder = class_def_builder(nt, id) >= 0;
+    if (!builder) inh_add_name(&r->known, q);
+    pb_walk(nt, parent, r, qn, class_def_body(nt, id));
+    if (builder) inh_add_name(&r->known, q);
+  }
+}
+
+/* Mark each path write (`A::B = Class.new do ... end`) whose namespace is a
+   class or module the program defines before it: by a header or a builder
+   whose statement, like the write's own, runs unconditionally (at the top
+   level, in a class or module body or in a builder's block, not under a
+   condition, a loop, a method, a block or a rescue), earlier in the same
+   file. The namespace is resolved by its full Ruby path from the write's
+   lexical scope, as inh_resolve_path resolves a header's. Run once, ahead
+   of the passes, on the names as the program wrote them; a path write a
+   pass makes later is not marked and stays a value. */
+void mark_path_builders(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  NT_FOREACH_KIND(nt, NK_ConstantPathWriteNode, w) any = 1;
+  if (!any) return;
+  /* CRuby calls a const_added the program defines at the write, which a
+     builder does not run */
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    const char *dn = nt_str(nt, d, "name");
+    if (dn && is_const_added_name(dn)) return;
+  }
+  int *parent = an_parent_map(nt);
+  char **qn = calloc((size_t)(nt->count > 0 ? nt->count : 1), sizeof(char *));
+  if (!parent || !qn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int f = 0; f < nt_nroots(nt); f++) {
+    InhNames r; memset(&r, 0, sizeof r);
+    pb_walk(nt, parent, &r, qn, nt_ref(nt, nt_root(nt, f), "statements"));
+    for (int k = 0; k < r.known.n; k++) free((char *)r.known.key[k]);
+    anh_free(&r.known);
+  }
+  for (int id = 0; id < nt->count; id++) free(qn[id]);
+  free(qn);
+  free(parent);
+}
+
 /* The classes by the qualified names their headers resolve to
    (inh_qualified_names): whether one of its bodies has an inherited hook,
    its own or through `extend`, the qualified superclass the first header

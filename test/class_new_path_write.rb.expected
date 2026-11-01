@@ -1,0 +1,45 @@
+nil
+nil
+2
+"A::B"
+"A::N::C"
+"A::N::C"
+:c
+"A::M"
+2
+true
+2
+3
+"Z::B"
+4
+5
+"Z::H"
+"A::B::D"
+6
+"Z::B::D"
+"1 is not a class/module"
+true
+nil
+"5 is not a class/module"
+nil
+3
+42
+true
+NoMethodError
+NoMethodError
+true
+1
+nil
+nil
+"uninitialized constant E::K"
+"constant"
+"constant"
+8
+nil
+:name_error
+:unset
+"constant"
+1
+:set
+7
+"X::B"

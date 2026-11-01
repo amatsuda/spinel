@@ -728,13 +728,18 @@ int is_autoload_query_name(const char *n) {
   return sp_streq(n, "autoload?");
 }
 
+/* the hook a constant's definition calls on its namespace */
+int is_const_added_name(const char *n) {
+  return sp_streq(n, "const_added");
+}
+
 /* the methods a definition runs when the program defines them: inherited
    (class), included, extended, prepended, method_added and its singleton
    kin, const_added */
 int is_definition_hook_name(const char *n) {
   return sp_streq(n, "inherited") || sp_streq(n, "included") || sp_streq(n, "extended") ||
          sp_streq(n, "prepended") || sp_streq(n, "method_added") ||
-         sp_streq(n, "singleton_method_added") || sp_streq(n, "const_added");
+         sp_streq(n, "singleton_method_added") || is_const_added_name(n);
 }
 
 /* The hooks definition form `form` (given its arguments) fires, on the
