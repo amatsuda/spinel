@@ -2159,16 +2159,14 @@ static int cplan_recv_own_member(Compiler *c, int id, const char *name) {
   return ty_is_object(rt) && comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE;
 }
 
-/* Does presence query id (is_method_presence_query, kind pq) ask about a
+/* Does presence query id (is_method_presence_query, kind 1) ask about a
    named entry whose name answers before a version ran, of a history
    holding a version marked cond_lone (a lone def under an `if` the
    lowering leaves to the record, a define_method a Struct or Data block
-   may not run): a list, or a name not literal or of such an entry
-   (cond_def_refl)? */
-static int ver_refl_named(Compiler *c, int id, int pq) {
+   may not run): a name not literal or of such an entry (cond_def_refl)? */
+static int ver_refl_named(Compiler *c, int id) {
   int args = nt_ref(c->nt, id, "arguments"), an = 0;
-  if (!c->nver_refl || !pq) return 0;
-  if (pq == 2) return 1;
+  if (!c->nver_refl) return 0;
   if (args >= 0) nt_arr(c->nt, args, "arguments", &an);
   const char *q = an ? method_sym_arg(c, id) : NULL;
   for (int i = 0; an && q && i < c->nver_entries; i++) {
@@ -2177,6 +2175,63 @@ static int ver_refl_named(Compiler *c, int id, int pq) {
       return 1;
   }
   return an && !q;
+}
+/* Is scope s a method that answers before its branch has run: a named
+   entry whose name reflection does not answer (cond_def_refl), or the
+   dispatcher a lone def under a run-time condition is lowered to
+   (cond_lone_disp)? */
+static int ver_cond_scope(Compiler *c, const Scope *s) {
+  return s->def_node >= 0 && (nt_int(c->nt, s->def_node, "cond_def_refl", 0) || nt_int(c->nt, s->def_node, "cond_lone_disp", 0));
+}
+/* Does a class's chain (its class side when sg) find, for a method of a
+   conditional scope, such a scope, so that a list of its methods names a
+   method that may not exist yet? */
+static int ver_list_chain(Compiler *c, int k, int sg) {
+  for (int si = 1; si < c->nscopes; si++) {
+    const Scope *s = &c->scopes[si];
+    if (!s->is_cmethod != !sg || !ver_cond_scope(c, s)) continue;
+    int m = call_target(c, -1, k, comp_scope_user_name(s), sg ? CT_CMETHOD : 0, NULL);
+    if (m >= 0 && m < c->nscopes && ver_cond_scope(c, &c->scopes[m])) return 1;
+  }
+  return 0;
+}
+/* Does list-of-methods call id (is_method_presence_query, kind 3) list a
+   method that may not exist yet: its receiver's chain finds a method of a
+   conditional scope? A constant names its class: the instance side of a
+   class or module for instance_methods and its kin, its class side for the
+   others. A class value of another form is asked of the classes it can be
+   (poly_cls_value_reaches); an object's list is its class's and the
+   classes below it (an object's singleton_methods, its own, lists none of
+   a class's). A receiver of no class known here is taken to. */
+static int ver_list_held(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int r = nt_ref(nt, id, "receiver"), sg = !is_instance_method_list(name);
+  if (!c->nver_refl && !c->ncond_disp) return 0;
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    int k = cplan_const_recv_class(c, id, r);
+    /* a read a pass rewrote from a local has no place in the record: its
+       name, as the list builtin resolves it (an_singleton_methods_foldable) */
+    if (k < -1 && rk == NK_ConstantReadNode) k = comp_class_index(c, nt_str(nt, r, "name"));
+    return k < 0 || ver_list_chain(c, k, sg);
+  }
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (rt == TY_CLASS) {
+    for (int si = 1; si < c->nscopes; si++) {
+      const Scope *s = &c->scopes[si];
+      if (!s->is_cmethod == !sg && ver_cond_scope(c, s) && poly_cls_value_reaches(c, id, s->class_id)) return 1;
+    }
+    return 0;
+  }
+  if (!ty_is_object(rt)) return 1;
+  if (is_singleton_method_list(name)) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    int a = k;
+    while (a >= 0 && a != ty_object_class(rt)) a = c->classes[a].parent;
+    if (a >= 0 && ver_list_chain(c, k, 0)) return 1;
+  }
+  return 0;
 }
 /* the limit the call's shape names, and in *lx how a user method exempts it */
 static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *buf, size_t cap) {
@@ -2193,9 +2248,9 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     return "a def under a condition only the run time decides, of a name another method answers "
            "(a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did "
            "not run is not known at compile time; see docs/limitations.md";
-  int pq = c->nver_refl ? is_method_presence_query(name) : 0;
-  if ((nt_int(nt, id, "cond_def_reflect", 0) || (pq == 1 && ver_refl_named(c, id, pq)) ||
-       ((nt_int(nt, id, "cond_def_reflect_list", 0) || ver_refl_named(c, id, pq & 2)) && !cplan_recv_own_member(c, id, name))) &&
+  int pq = is_method_presence_query(name);
+  if ((nt_int(nt, id, "cond_def_reflect", 0) || (pq == 1 && ver_refl_named(c, id)) ||
+       ((pq == 2 ? c->nver_refl || c->ncond_disp : pq == 3 && ver_list_held(c, id)) && !cplan_recv_own_member(c, id, name))) &&
       cplan_reachable(c, id))
     return "a method defined under a condition only the run time decides is not answered for by "
            "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "

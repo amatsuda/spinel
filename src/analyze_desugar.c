@@ -12949,9 +12949,9 @@ static void cdef_method_name(NodeTable *nt, int id, const char *base) {
    name would answer true where CRuby, when the branch did not run, says
    false. Such a question is refused: respond_to?, method_defined? and its
    kin, instance_method, method and public_method naming it, or naming a
-   method only the run time knows, and the lists of methods
-   (instance_methods, methods and their kin). Refused at compile time where
-   reachable (feature_limit, "cond_def_reflect"). */
+   method only the run time knows. Refused at compile time where reachable
+   (feature_limit, "cond_def_reflect"). The lists of methods are asked of
+   the receiver's chain by the call plan (ver_list_held). */
 static void cdef_refuse(NodeTable *nt, int id, const char *flag) {
   long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
             col = nt_int(nt, id, "node_col", 0);
@@ -12973,33 +12973,18 @@ static void cdef_refuse(NodeTable *nt, int id, const char *flag) {
 }
 
 static void cdef_refuse_reflection(NodeTable *nt, const char *const *lone, int nlone) {
-  static const char *const by_name[] = { "respond_to?", "method_defined?", "public_method_defined?",
-    "private_method_defined?", "protected_method_defined?", "instance_method", "public_instance_method",
-    "method", "public_method", NULL };
-  static const char *const lists[] = { "instance_methods", "public_instance_methods", "methods",
-    "public_methods", NULL };
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    int hit = 0;
-    /* a list is refused once the receiver is known (feature_limit): one
-       whose class answers the name with a reader of its own, a Struct member
-       `methods`, lists nothing (#10345) */
-    int list = 0;
-    for (int i = 0; nm && lists[i] && !list; i++) list = sp_streq(nm, lists[i]);
-    if (list) { nt_node_set_int(nt, id, "cond_def_reflect_list", 1); continue; }
-    for (int i = 0; nm && by_name[i] && !hit; i++) {
-      if (!sp_streq(nm, by_name[i])) continue;
-      int args = nt_ref(nt, id, "arguments"), ac = 0;
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-      if (ac < 1) break;
-      NodeKind ak = nt_kind(nt, av[0]);
-      const char *q = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") :
-                      ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
-      if (!q) { hit = 1; break; }
-      for (int j = 0; j < nlone && !hit; j++) hit = sp_streq(q, lone[j]);
-    }
+    const char *nm = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+    if (!nm || is_method_presence_query(nm) != 1) continue;
+    int args = nt_ref(nt, id, "arguments"), ac = 0, hit = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac < 1) continue;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *q = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                    ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (!q) hit = 1;
+    for (int j = 0; j < nlone && !hit; j++) hit = sp_streq(q, lone[j]);
     if (hit) cdef_refuse(nt, id, "cond_def_reflect");
   }
 }
@@ -13264,6 +13249,7 @@ int desugar_conditional_defs(Compiler *c) {
                              arm, ng, disp_raise_no_method(nt, msg));
     free(arm);
     free(nm);
+    if (ng == 1) { nt_node_set_int(nt, def, "cond_lone_disp", 1); c->ncond_disp++; }   /* (a list of methods asks them: ver_list_held) */
     cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, *g[0].vis ? fwd_new_call(nt, -1, g[0].vis, def) : def);
     serial += ng;
     free(base);
