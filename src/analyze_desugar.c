@@ -12080,6 +12080,50 @@ static void bls_walk(NodeTable *nt, int id, int lvl, BlsTag *tag) {
   }
 }
 
+static int cdef_arity(const NodeTable *nt, int def);
+/* `X = Class.new do |k| ... end`, `M = Module.new do |m| ... end`: the
+   block runs once, at the write, with the class as its one argument, so
+   the parameter is a local of the body that holds the class: `k = self`
+   as the body's first statement, the block left with no parameters. Only
+   one plain parameter: `it`, `_1`, `|k, j|`, `|*a|`, `|k = 1|` and a block
+   parameter keep their block (and their answers) as they were. The row
+   runs ahead of body-local-scopes, which gives the local a name private
+   to the body. The parameter node of the write's block, or -1. */
+static int builder_block_param(const NodeTable *nt, int id) {
+  int call = class_def_builder(nt, id), blk = call >= 0 ? nt_ref(nt, call, "block") : -1;
+  int bp = blk >= 0 ? nt_ref(nt, blk, "parameters") : -1;
+  if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) return -1;
+  int ps = nt_ref(nt, bp, "parameters"), rn = 0;
+  const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
+  return rn == 1 && cdef_arity(nt, bp) == 1 && nt_ref(nt, ps, "block") < 0 && nt_str(nt, rq[0], "name") ? rq[0] : -1;
+}
+int desugar_builder_block_param_left(Compiler *c, LowerCtx *lc, int id) {
+  (void)lc;
+  return builder_block_param(c->nt, id) >= 0;
+}
+int desugar_builder_block_param_at(Compiler *c, LowerCtx *lc, int id) {
+  (void)lc;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int rq = builder_block_param(nt, id);
+  if (rq < 0) return 0;
+  int blk = nt_ref(nt, class_def_builder(nt, id), "block"), body = class_def_body(nt, id);
+  if (body >= 0) {
+    int wr = fwd_new_node_like(nt, rq, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wr, "name", nt_str(nt, rq, "name"));
+    nt_node_set_ref(nt, wr, "value", fwd_new_node_like(nt, rq, "SelfNode"));
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    nb[0] = wr;
+    if (bn) memcpy(nb + 1, bb, sizeof(int) * (size_t)bn);
+    nt_node_set_arr(nt, body, "body", nb, bn + 1);
+    free(nb);
+  }
+  nt_node_set_ref(nt, blk, "parameters", -1);
+  comp_grow_node_arrays(c);
+  return 1;
+}
+
 /* `module M; a = 5; end; a ||= 10`: a class, module or singleton class body
    is a local scope of its own, but its statements are emitted into the
    top level's C function, where a local of the same name shared one C

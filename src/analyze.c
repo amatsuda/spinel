@@ -47556,6 +47556,7 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_RESCUE_BLOCK_BODIES);
   AN_STEP_V("desugar_cext_decls", desugar_cext_decls(c));
   lower_run(c, &lc, LW_MARK_SYM_PROC_BLOCKS);               /* { |_spx| _spx.m } is `&:m` */
+  lower_run(c, &lc, LW_BUILDER_BLOCK_PARAM);        /* X = Class.new do |k| -> k = self, ahead of the body's locals */
   lower_run(c, &lc, LW_BODY_LOCAL_SCOPES);          /* a class body local -> a name of its own */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   lower_run(c, &lc, LW_ERRNO_ALIASES);             /* Errno::EWOULDBLOCK -> Errno::EAGAIN where they share a number */
