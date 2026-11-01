@@ -2398,9 +2398,10 @@ void class_def_set_body(NodeTable *nt, int def_node, int body) {
 }
 
 /* Is `val` the call `Struct.new(...)` / `Data.define(...)`, the call that
-   makes a record class? The node-shape half of that fact (the receiver's
-   constant and the method name, by is_record_class_builder); the sites
-   ask it of a write's value, a receiver or a superclass. */
+   makes a record class? It takes a call node, not a definition node. It
+   reads the node shape (a call on a plain constant) and asks
+   is_record_class_builder for the names; the sites ask it of a write's
+   value, a receiver, a superclass, or a call they walked to. */
 int class_def_is_record_call(const NodeTable *nt, int val) {
   if (val < 0 || nt_kind(nt, val) != NK_CallNode) return 0;
   int vr = nt_ref(nt, val, "receiver");
@@ -11868,9 +11869,8 @@ static int bc_anon_class_call(const NodeTable *nt, int id, int *is_module) {
   NodeKind rk = nt_kind(nt, rv);
   const char *rn = rk == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
   if (!nm || !rn) return 0;
-  *is_module = sp_streq(rn, "Module");
-  return (sp_streq(nm, "new") && (sp_streq(rn, "Class") || sp_streq(rn, "Module") || sp_streq(rn, "Struct"))) ||
-         (sp_streq(nm, "define") && sp_streq(rn, "Data"));
+  *is_module = is_module_const_name(rn);
+  return is_class_builder(rn, nm);
 }
 
 /* The superclass an anonymous class expression `v` creates: 1 with *out the

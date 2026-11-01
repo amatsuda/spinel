@@ -483,7 +483,7 @@ int elab_header_class(const Compiler *c, int node, int *owner, const char **leaf
 int elab_builder_class(Compiler *c, int node);
 /* the readers of a class definition node (analyze_scope.c), from the node
    table alone: a class's def_node, or a node a pass walked to */
-int class_def_is_record_call(const NodeTable *nt, int val);   /* `Struct.new(..)` / `Data.define(..)`, the call that makes a record class */
+int class_def_is_record_call(const NodeTable *nt, int val);   /* a `Struct.new(..)` / `Data.define(..)` call */
 const NodeKind *class_def_kinds(int *n);   /* the node kinds a definition can be */
 int class_def_builder(const NodeTable *nt, int def_node);   /* a constant write's Class.new / Module.new call that defines a class, -1 for none */
 int class_cref(Compiler *c, int cls);   /* the class whose constants code in cls's body writes */

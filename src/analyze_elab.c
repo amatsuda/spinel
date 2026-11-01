@@ -3192,8 +3192,8 @@ enum { LR_NEVER = INT_MAX, LR_CORE = -4, RQ_INST = 1, RQ_CLASS = 2 };
 static int lr_rta_builder(Compiler *c, int w) {
   const NodeTable *nt = c->nt;
   int v = nt_kind(nt, w) == NK_ConstantWriteNode ? nt_ref(nt, w, "value") : -1;
-  int recv = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1, k;
-  if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode || !is_record_class_builder(nt_str(nt, recv, "name"), nt_str(nt, v, "name"))) return LR_UNKNOWN_CLASS;
+  int k;
+  if (!class_def_is_record_call(nt, v)) return LR_UNKNOWN_CLASS;
   return (k = comp_class_index(c, lr_written_name(nt, w))) >= 0 ? k : LR_CORE;
 }
 typedef struct { const char *name; int cls; } LrRtaName;
@@ -3495,10 +3495,8 @@ static void lr_rta(Compiler *c) {
     for (int j = 0; kc && j < kc->nmix; j++)
       if (elab_mix_on_singleton(kc->mix[j].kind)) lr_rta_ext(&t, lr_later(c, &kc->mix[j].mod, kc->mix[j].ref), 0);
   }
-  NT_FOREACH_KIND(c->nt, NK_CallNode, b) {
-    int recv = nt_ref(c->nt, b, "receiver");
-    if (recv >= 0 && nt_kind(c->nt, recv) == NK_ConstantReadNode && is_record_class_builder(nt_str(c->nt, recv, "name"), nt_str(c->nt, b, "name"))) t.builders = 1;
-  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, b)
+    if (class_def_is_record_call(c->nt, b)) t.builders = 1;
   lr_rta_names(&t);
   lr_rta_add(&t, LR_MAIN);
   for (int k = 0; k < c->nclasses; k++) if (c->classes[k].is_builtin_const) lr_rta_add(&t, k);
