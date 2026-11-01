@@ -13173,6 +13173,7 @@ int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, in
    as the first version, so a call in a method or a kept block can choose
    it until the program's definition runs, through the usual version cells. */
 int desugar_concat_builtin_version(Compiler *c) {
+  if (an_prog_never_gives("concat", 0)) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
   CondDef *v = NULL;
   int n = 0, like = -1;
