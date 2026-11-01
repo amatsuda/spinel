@@ -103,6 +103,19 @@ static void cplan_exc_reopen(Compiler *c, int call, const char *name, CallPlan *
   if (mi >= 0) cplan_set(p, mi, xr[0], UC_REOPEN, xn > 1 ? CP_SWITCH : CP_DIRECT);
 }
 
+/* Does the chain of root class `top` (one with no user superclass) go on
+   into a builtin other than Object: `< StandardError`, `< String`, a
+   Struct.new? That builtin's methods come before an Object reopening's in
+   CRuby's lookup (a Child#message super reaches Exception#message), and
+   the plan sees none of them, so a super that found no user method stops
+   there rather than at the reopening. */
+static int cplan_root_under_builtin(Compiler *c, int top) {
+  if (c->classes[top].is_struct) return 1;
+  int sc = class_def_super(c->nt, c->classes[top].def_node);
+  if (sc < 0) return 0;
+  const char *nm = nt_kind(c->nt, sc) == NK_ConstantReadNode ? nt_str(c->nt, sc, "name") : NULL;
+  return !(nm && sp_streq(nm, "Object"));
+}
 /* A super's parent-chain target, past inherited copies of the same
    extended definition. Shared by resolution, inference, inline splicing and the miss check. */
 int cplan_super_chain_mi(Compiler *c, int id, Scope *s, int par, const char *name) {
@@ -123,8 +136,10 @@ int cplan_super_chain_mi(Compiler *c, int id, Scope *s, int par, const char *nam
     int top = par;
     while (c->classes[top].parent >= 0) top = c->classes[top].parent;
     int obj = comp_super_parent(c, top, 0);
-    /* (not under BasicObject: Object is not in that chain) */
-    if (obj >= 0 && obj != top && !class_is_blank_slate(c, top) && comp_method_in_chain(c, obj, name, NULL) >= 0) { par = obj; mi = 1; }
+    /* (not under BasicObject: Object is not in that chain; not under another
+       builtin: its methods come first, cplan_root_under_builtin) */
+    if (obj >= 0 && obj != top && !class_is_blank_slate(c, top) && !cplan_root_under_builtin(c, top) &&
+        comp_method_in_chain(c, obj, name, NULL) >= 0) { par = obj; mi = 1; }
   }
   return mi >= 0 ? call_target(c, id, par, name,
                                CT_REACH | (s->is_cmethod ? CT_CMETHOD : 0), NULL) : -1;
