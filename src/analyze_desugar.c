@@ -8467,6 +8467,14 @@ int desugar_index_op_write_user(Compiler *c) {
     nt_node_set_ref(nt, id, "arguments", -1);
     nt_node_set_ref(nt, id, "value", -1);
     comp_grow_node_arrays(c);
+    /* An empty `{}` stored into a boxed receiver has no slot its later key
+       operations reach (they go through the box), so it is the general
+       boxed-key hash, as one on the right of a multiple assignment is;
+       the String-keyed default raised on the first Symbol key. */
+    if (rt == TY_POLY && c->hash_want && val < c->node_cap && nt_kind(nt, val) == NK_HashNode) {
+      int en = 0; nt_arr(nt, val, "elements", &en);
+      if (en == 0 && !ty_is_hash(c->hash_want[val])) comp_set_hash_want(c, val, TY_POLY_POLY_HASH);
+    }
     int encl = c->nscope[id];
     for (int j = first; j < nt->count; j++) c->nscope[j] = encl;
     /* locals were collected before the fixpoint; these are new */
