@@ -1879,6 +1879,11 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
      since it was written; the subject never was (#4369's rule, at the one site
      that walks a STRING rather than an array). */
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_STR(_t%d);\n", ts);
+  /* (one representation: when the program reads the match registers, every
+     turn's match keeps its target, sp_re_set_captures, and a live payload
+     is kept as a copy; the subject is kept once here, not copied per match,
+     as the scan loop does. 80,000 matches over a 600 KB subject copied 33 GB.) */
+  if (g_reads_match_regs) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_t%d = sp_str_keep(_t%d);\n", ts, ts); }
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = 0;\n", tpos);
   /* the SUBJECT's length bounds the scan, and strlen stops at an embedded
      NUL: `"a\0b".gsub(/./m) { }` walked one character and stopped. */
