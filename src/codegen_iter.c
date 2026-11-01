@@ -8357,7 +8357,10 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     if (sargc >= 2) emit_boxed(c, sargv[1], b); else buf_puts(b, "sp_box_int(1)");
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", ts);
     emit_indent(b, indent);
-    emit_boxed_step_head(b, tc, tl, ts, "0", "0", NULL);
+    /* a boxed limit that holds nil is no end: the walk goes on until the
+       block breaks */
+    char open[48]; snprintf(open, sizeof open, "_t%d.tag == SP_TAG_NIL", tl);
+    emit_boxed_step_head(b, tc, tl, ts, "0", open, NULL);
     buf_puts(b, " {\n");
     if (p0) { char cs[32]; snprintf(cs, sizeof cs, "_t%d", tc); emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, cs, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", tc);

@@ -1223,7 +1223,10 @@ endif
 # promote, where it is a big Rational (promote_rational_bignum).
 RAISE_MODE_PINS := test/float_to_r_bounded.rb test/rational_string_overflow.rb test/int_overflow_raises.rb test/int_overflow_op_assign.rb test/poly_int_overflow_raises.rb test/str_to_i_overflow.rb test/string_to_i_overflow_raises.rb test/bounded_counter_unchecked_add.rb test/float_to_int_out_of_range.rb test/bigrational_to_i_out_of_range.rb test/float_to_int_boundary.rb test/poly_call_legacy_abi_gate.rb test/poly_call_fast_abi_gate.rb test/poly_method_return_kinds.rb test/int_min_overflow_raises.rb test/masgn_boxed_ivar_slot_mismatch.rb test/array_index_sum_overflow.rb
 # Tests a promote gap fails, out of the promote lane until it is fixed.
-PROMOTE_GAPS :=
+# step_boxed_float_bound: under promote every Integer local is boxed, so a
+# boxed limit or step is not known to be a Float or Rational, and an
+# Integer's step walks the Integer loop (an_step_rat_bound).
+PROMOTE_GAPS := test/step_boxed_float_bound.rb
 ifeq ($(SPINEL_INT_OVERFLOW),promote)
 TESTS := $(filter-out $(RAISE_MODE_PINS) $(PROMOTE_GAPS),$(TESTS))
 # Drive the spinel front-end and the C compile in promote mode so the test
