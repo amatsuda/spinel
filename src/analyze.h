@@ -481,6 +481,10 @@ int elab_builder_class(Compiler *c, int node);
 /* the readers of a class definition node (analyze_scope.c), from the node
    table alone: a class's def_node, or a node a pass walked to */
 int is_struct_call(const NodeTable *nt, int val);   /* `Struct.new(..)` / `Data.define(..)` */
+const NodeKind *class_def_kinds(int *n);   /* the node kinds a definition can be */
+const char *class_def_name(const NodeTable *nt, int def_node);   /* the constant name it writes, NULL for none */
+const char *class_def_bare_name(const NodeTable *nt, int def_node);   /* ...written as a plain constant, NULL under a path */
+void class_def_set_body(NodeTable *nt, int def_node, int body);   /* its body statements, as a pass rebuilds them */
 int class_def_body(const NodeTable *nt, int def_node);   /* its body statements, -1 for none */
 int class_def_super(const NodeTable *nt, int def_node);   /* its superclass reference, -1 for none */
 int class_def_is_module(const NodeTable *nt, int def_node);

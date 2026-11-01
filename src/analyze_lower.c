@@ -53,8 +53,10 @@ enum {
   LF_MARKS = 1,   /* sets marks only: no shape is eliminated, so no left */
   LF_STMT = 2,    /* enters at the statements of the bodies of its kinds, not at the nodes */
   LF_PROGRAM = 4, /* a pass over the whole program: visited once, with id -1, and nothing is asked of a node */
-  LF_SCOPE = 8    /* names the locals of the scope a node of its kinds opens: visited at the node, with the
+  LF_SCOPE = 8,   /* names the locals of the scope a node of its kinds opens: visited at the node, with the
                      scope's statements and the node that names it in the lowering context (lc->scope) */
+  LF_FRAMES = 16  /* enters, besides at its kinds, at every definition whose body opens a frame (class_def_opens_frame):
+                     self and definee are the class there, which is what a def, alias or define_method in the body asks */
 };
 enum { LW_MAX_KINDS = 6 };
 
@@ -92,11 +94,11 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_io_popen_block_at, desugar_io_popen_block_left, "`IO.popen(cmd) { }` in read mode", desugar_io_popen_block_gate },
   [LW_USER_BACKTICK] = { "desugar_user_backtick", 0, { NK_XStringNode, NK_InterpolatedXStringNode },
     desugar_user_backtick_at, NULL, "a backtick literal in a program that defines ` itself", desugar_user_backtick_gate },
-  [LW_LITERAL_UNDEF_METHOD] = { "desugar_literal_undef_method", LF_STMT, { NK_ClassNode, NK_ModuleNode },
+  [LW_LITERAL_UNDEF_METHOD] = { "desugar_literal_undef_method", LF_STMT | LF_FRAMES, { NK_NONE },
     desugar_literal_undef_method_at, desugar_literal_undef_method_left, "`undef_method :a` in a body" },
   [LW_EXPLICIT_INITIALIZE_CALLS] = { "desugar_explicit_initialize_calls", LF_PROGRAM, { NK_NONE },
     desugar_explicit_initialize_calls_at, NULL, "`initialize(x)` called in a method" },
-  [LW_NOARG_DISPLAY_WRAPPERS] = { "desugar_noarg_display_wrappers", LF_STMT, { NK_ClassNode, NK_ModuleNode },
+  [LW_NOARG_DISPLAY_WRAPPERS] = { "desugar_noarg_display_wrappers", LF_STMT | LF_FRAMES, { NK_NONE },
     desugar_noarg_display_wrappers_at, desugar_noarg_display_wrappers_left, "`def inspect(i = 0)` in a body" },
   [LW_PAREN_BLOCK_ARG] = { "desugar_paren_block_arg", 0, { NK_BlockArgumentNode },
     desugar_paren_block_arg_at, desugar_paren_block_arg_left, "`&(e)`: a block argument in parentheses" },
@@ -105,7 +107,7 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_paren_operands_at, desugar_paren_operands_left, "`(e).m`, `x = (e)`: a receiver or value in parentheses" },
   [LW_SEND_CLASS_MAKERS] = { "desugar_send_class_makers", 0, { NK_CallNode },
     desugar_send_class_makers_at, desugar_send_class_makers_left, "`Struct.send(:new, ..)`, `Data.send(:define, ..)`" },
-  [LW_SELF_SUPERCLASS] = { "desugar_self_superclass", LF_STMT, { NK_ClassNode },
+  [LW_SELF_SUPERCLASS] = { "desugar_self_superclass", LF_STMT | LF_FRAMES, { NK_NONE },
     desugar_self_superclass_at, desugar_self_superclass_left, "`class I < self` in a class body" },
   [LW_STRUCT_SUBCLASS_NEW_WRITE] = { "desugar_struct_subclass_new_write", 0, { NK_ConstantWriteNode },
     desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_left, "`X = K.new(..)` where K < Struct" },
@@ -132,7 +134,7 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_encoding_queries_at, desugar_encoding_queries_left, "`Encoding.default_internal`, `Encoding.find(\"utf-8\")`" },
   [LW_ALIAS_METHOD_STRING_NAMES] = { "desugar_alias_method_string_names", 0, { NK_CallNode },
     desugar_alias_method_string_names_at, desugar_alias_method_string_names_left, "`alias_method \"a\", \"b\"`" },
-  [LW_ALIAS_METHOD_VALUES] = { "desugar_alias_method_values", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+  [LW_ALIAS_METHOD_VALUES] = { "desugar_alias_method_values", LF_STMT | LF_FRAMES, { NK_SingletonClassNode },
     desugar_alias_method_values_at, desugar_alias_method_values_left, "a value-used `alias_method` in a body" },
   [LW_REASSIGNED_BLOCK_PARAMS] = { "desugar_reassigned_block_params", 0, { NK_BlockNode },
     desugar_reassigned_block_params_at, desugar_reassigned_block_params_left, "a block parameter the body assigns" },
@@ -156,15 +158,15 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_stored_enum_each_at, NULL, "`e.each { }` on a stored enumerator" },
   [LW_SCOPE_NUMBERED_BLOCK_PARAMS] = { "scope_numbered_block_params", LF_PROGRAM, { NK_NONE },
     scope_numbered_block_params_at, NULL, "two blocks of one scope with numbered parameters" },
-  [LW_SINGLETON_CLASS_DEFINE_METHOD] = { "desugar_singleton_class_define_method", LF_STMT, { NK_ClassNode, NK_ModuleNode },
+  [LW_SINGLETON_CLASS_DEFINE_METHOD] = { "desugar_singleton_class_define_method", LF_STMT | LF_FRAMES, { NK_NONE },
     desugar_singleton_class_define_method_at, desugar_singleton_class_define_method_left, "`singleton_class.define_method` in a body" },
   [LW_EMPTY_HASH_COMPARE_BY_IDENTITY] = { "desugar_empty_hash_compare_by_identity", 0, { NK_CallNode },
     desugar_empty_hash_compare_by_identity_at, desugar_empty_hash_compare_by_identity_left, "`{}.compare_by_identity`" },
-  [LW_DEFINE_METHOD_PROC_ARG] = { "desugar_define_method_proc_arg", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+  [LW_DEFINE_METHOD_PROC_ARG] = { "desugar_define_method_proc_arg", LF_STMT | LF_FRAMES, { NK_SingletonClassNode },
     desugar_define_method_proc_arg_at, NULL, "`define_method(:m, proc)` in a body" },
   [LW_DEFINE_METHOD_CAPTURES] = { "desugar_define_method_captures", 0, { NK_ProgramNode, NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
     desugar_define_method_captures_at, NULL, "a body local a define_method block captures" },
-  [LW_DEFINE_METHOD_KEYWORDS] = { "desugar_define_method_keywords", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+  [LW_DEFINE_METHOD_KEYWORDS] = { "desugar_define_method_keywords", LF_STMT | LF_FRAMES, { NK_SingletonClassNode },
     desugar_define_method_keywords_at, NULL, "a `define_method` block with keyword or rest parameters" },
   [LW_NAME_ANON_BLOCK_KWREST] = { "name_anon_block_kwrest", 0, { NK_BlockNode, NK_LambdaNode },
     name_anon_block_kwrest_at, name_anon_block_kwrest_left, "an anonymous `**` block parameter" },
@@ -218,6 +220,12 @@ static KindSet kind_set_of(const Lowering *w) {
 }
 
 static int kind_set_has(const KindSet *s, NodeKind k) { return (int)(s->w[k >> 6] >> (k & 63) & 1); }
+
+/* Does row w enter at node id: a node of its kinds (set), or for a row that
+   enters at frames (LF_FRAMES) a definition that opens one */
+static int lower_enters(const NodeTable *nt, const Lowering *w, const KindSet *set, int id) {
+  return kind_set_has(set, nt_kind(nt, id)) || ((w->flags & LF_FRAMES) && class_def_opens_frame(nt, id));
+}
 
 /* ---- the parent map ---- */
 
@@ -316,7 +324,7 @@ static int lower_site(Compiler *c, LowerCtx *lc, const Lowering *w, int id, int 
     return body >= 0 ? lower_scope(c, lc, w, id, id, &body, 1, ask, first) : 0;
   }
   if (w->flags & LF_STMT) {
-    int body = nt_ref(nt, id, "body");
+    int body = class_def_body(nt, id);
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
     int sn = 0;
     const int *sv = nt_arr(nt, body, "body", &sn);
@@ -349,7 +357,7 @@ static int lower_sites(Compiler *c, LowerCtx *lc, const Lowering *w, int ask, in
   }
   if (lc->span && !ask) return lower_span_sites(c, lc, w);
   for (int id = 0; id < end; id++)
-    if (kind_set_has(&set, nt_kind(nt, id))) n += lower_site(c, lc, w, id, ask, first);
+    if (lower_enters(nt, w, &set, id)) n += lower_site(c, lc, w, id, ask, first);
   return n;
 }
 
@@ -579,7 +587,7 @@ static int lower_span_sites(Compiler *c, LowerCtx *lc, const Lowering *w) {
   const LowerSpan *s = lc->span;
   KindSet set = kind_set_of(w);
   int n = 0;
-  if (s->owner >= 0 && kind_set_has(&set, nt_kind(nt, s->owner))) {
+  if (s->owner >= 0 && lower_enters(nt, w, &set, s->owner)) {
     if (w->flags & LF_STMT) n += lower_stmts(c, lc, w, s->owner, s->body, s->stmts, s->nstmts, 0, NULL);
     else if (w->flags & LF_SCOPE)
       for (int i = 0, j; i < s->nstmts; i = j) {
@@ -590,9 +598,9 @@ static int lower_span_sites(Compiler *c, LowerCtx *lc, const Lowering *w) {
     else n += lower_site(c, lc, w, s->owner, 0, NULL);
   }
   for (int i = 0; i < s->nnodes; i++)
-    if (s->nodes[i] < lc->n0 && kind_set_has(&set, nt_kind(nt, s->nodes[i]))) n += lower_site(c, lc, w, s->nodes[i], 0, NULL);
+    if (s->nodes[i] < lc->n0 && lower_enters(nt, w, &set, s->nodes[i])) n += lower_site(c, lc, w, s->nodes[i], 0, NULL);
   for (int id = s->count0; id < lc->n0; id++)
-    if (kind_set_has(&set, nt_kind(nt, id))) n += lower_site(c, lc, w, id, 0, NULL);
+    if (lower_enters(nt, w, &set, id)) n += lower_site(c, lc, w, id, 0, NULL);
   return n;
 }
 

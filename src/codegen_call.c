@@ -2318,10 +2318,11 @@ static int path_header_class(Compiler *c, int stmt) {
 static int class_body_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count && n < max; id++) {
-    NodeKind ty_k = nt_kind(nt, id);
-    if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
+    /* a body's constants are the class's where it opens a constant scope (a
+       Class.new block's are its cref's, never the class's) */
+    if (!class_def_opens_cref(nt, id)) continue;
     if (elab_header_class(c, id, NULL, NULL) != ci) continue;
-    int body = nt_ref(nt, id, "body");
+    int body = class_def_body(nt, id);
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn && n < max; k++) {
       NodeKind sk = nt_kind(nt, stmts[k]);
@@ -2355,10 +2356,10 @@ static int class_body_constants(Compiler *c, int ci, const char **out, const cha
    (qc_owner names the module its path resolved to). */
 static int class_path_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
   const NodeTable *nt = c->nt;
-  static const NodeKind hk[] = { NK_ClassNode, NK_ModuleNode };
-  for (int i = 0; i < 2; i++)
-    NT_FOREACH_KIND(nt, hk[i], id) {
-      int k = path_header_class(c, id);
+  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  for (int dh = 0; dh < ndk; dh++)
+    NT_FOREACH_KIND(nt, dk[dh], id) {
+      int k = class_def_is_class(nt, id) || class_def_is_module(nt, id) ? path_header_class(c, id) : -1;
       if (n >= max || k < 0 || c->classes[k].enclosing_class != ci) continue;
       const char *nm, *sh;
       class_stmt_const_names(nt, id, &nm, &sh);
@@ -2390,10 +2391,9 @@ static int class_module_refs(Compiler *c, int ci, const char *kw, int *out, int 
   const NodeTable *nt = c->nt;
   int n = 0;
   for (int id = 0; id < nt->count && n < max; id++) {
-    NodeKind ty_k = nt_kind(nt, id);
-    if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
+    if (!class_def_opens_frame(nt, id)) continue;
     if (elab_header_class(c, id, NULL, NULL) != ci) continue;
-    int body = nt_ref(nt, id, "body");
+    int body = class_def_body(nt, id);
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn && n < max; k++) {
       NodeKind sk = nt_kind(nt, stmts[k]);
@@ -5240,8 +5240,9 @@ static int rational_conv_maybe(Compiler *c) {
   if (an_user_defines_method(c, "to_r") || an_user_defines_method(c, "to_int") ||
       an_user_defines_method(c, "method_missing") ||
       an_prog_names_method("to_r") || an_prog_names_method("to_int")) return 1;
-  NT_FOREACH_KIND(c->nt, NK_ClassNode, cid) {
-    int sup = nt_ref(c->nt, cid, "superclass");
+  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  for (int dh = 0; dh < ndk; dh++) NT_FOREACH_KIND(c->nt, dk[dh], cid) {
+    int sup = class_def_is_class(c->nt, cid) ? class_def_super(c->nt, cid) : -1;
     const char *sn = sup >= 0 ? nt_str(c->nt, sup, "name") : NULL;
     if (sn && sp_streq(sn, "Numeric")) return 1;
   }
@@ -23672,14 +23673,14 @@ static int plain_uses_walk(const NodeTable *nt) {
   if (n > 0) found = 1;
   nt_nodes_of_kind(nt, NK_UndefNode, &n);
   if (n > 0) found = 1;
-  const int *ids = nt_nodes_of_kind(nt, NK_ClassNode, &n);
-  for (int i = 0; i < n && !found; i++) {
-    int cp = nt_ref(nt, ids[i], "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (cn && sp_streq(cn, "ERB")) found = 1;
-  }
+  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  for (int dh = 0; dh < ndk; dh++)
+    NT_FOREACH_KIND(nt, dk[dh], id) {
+      const char *cn = !found && class_def_is_class(nt, id) ? class_def_name(nt, id) : NULL;
+      if (is_erb_const_name(cn)) found = 1;
+    }
   const char *asked = NULL;
-  ids = nt_nodes_of_kind(nt, NK_BlockArgumentNode, &n);
+  const int *ids = nt_nodes_of_kind(nt, NK_BlockArgumentNode, &n);
   for (int i = 0; i < n && !found; i++) {
     int e = nt_ref(nt, ids[i], "expression");
     const char *ln = e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode ? nt_str(nt, e, "name") : NULL;

@@ -287,7 +287,7 @@ static int cw_cref_at(ConstWalk *w, int id) {
   const NodeTable *nt = w->nt;
   for (int a = w->par[id]; a >= 0; a = w->par[a]) {
     NodeKind k = nt_kind(nt, a);
-    if (k != NK_ClassNode && k != NK_ModuleNode && k != NK_SingletonClassNode) continue;
+    if (k != NK_SingletonClassNode && !class_def_opens_cref(nt, a)) continue;
     char buf[512];
     if (k == NK_SingletonClassNode) {
       int ex = nt_ref(nt, a, "expression"), out = ex >= 0 && nt_kind(nt, ex) == NK_SelfNode ? cw_cref_at(w, a) : 0;
@@ -296,8 +296,7 @@ static int cw_cref_at(ConstWalk *w, int id) {
     }
     else {
       if (nt_int(nt, a, "class_new_anonymous", 0)) continue;
-      int cp = nt_ref(nt, a, "constant_path");
-      const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      const char *nm = class_def_name(nt, a);
       int ci = elab_header_class(w->c, a, NULL, NULL);
       const char *q = ci >= 0 ? class_ruby_name(w->c, ci) : nm;
       if (!q) continue;
@@ -353,8 +352,7 @@ void an_const_presence(Compiler *c) {
       if (dn && is_const_missing_name(dn)) w.cmissing = 1;
     }
     else if (k == NK_ClassNode || k == NK_ModuleNode) {
-      int cp = nt_ref(nt, id, "constant_path");
-      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      const char *cn = class_def_name(nt, id);
       if (cn && (is_builtin_class_name(cn) || is_builtin_reopen_name(cn))) w.reopened = 1;
     }
   }
