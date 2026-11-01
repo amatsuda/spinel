@@ -1,0 +1,5 @@
+"nil"
+"42"
+[:mutex, nil]
+[:picked, 42]
+[:picked_mutex, nil]
