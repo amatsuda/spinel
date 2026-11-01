@@ -1136,7 +1136,7 @@ int class_var_static_ci(Compiler *c, int node) {
   NodeKind ty_k = nt_kind(nt, node);
   /* an inline `Struct.new(...)` / `Data.define(...)` receiver resolves to the
      anon class synthesized for that call node (#2682) */
-  if (ty_k == NK_CallNode && is_struct_call(nt, node))
+  if (ty_k == NK_CallNode && class_def_is_record_call(nt, node))
     return anon_struct_ci_for_value(c, node);
   if (ty_k != NK_LocalVariableReadNode) return -1;
   const char *vn = nt_str(nt, node, "name");
@@ -1159,7 +1159,7 @@ int class_var_static_ci(Compiler *c, int node) {
              ? const_node_class_index(c, val) : -1;
     /* k = Struct.new(:a, :b): resolve to the anonymous struct class that
        register_structs synthesized for this write (keyed by def_node) */
-    if (ci < 0 && is_struct_call(nt, val)) {
+    if (ci < 0 && class_def_is_record_call(nt, val)) {
       for (int k = comp_class_of_def(c, w); k >= 0; k = comp_class_def_next(c, k))
         if (c->classes[k].is_anon_struct) { ci = k; break; }
     }

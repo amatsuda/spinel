@@ -14564,7 +14564,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   }
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ||
       (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) ||
-      (rk == NK_CallNode && is_struct_call(nt, recv))) {
+      (rk == NK_CallNode && class_def_is_record_call(nt, recv))) {
     int ci = rk == NK_LocalVariableReadNode ? class_var_static_ci(c, recv)
            : rk == NK_CallNode ? anon_struct_ci_for_value(c, recv)
                                                     : const_node_class_index(c, recv);
@@ -15565,7 +15565,7 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
     if (mrk == NK_ConstantReadNode || mrk == NK_ConstantPathNode)
       mci = const_node_class_index(c, recv);
     else if (mrk == NK_LocalVariableReadNode ||
-             (mrk == NK_CallNode && is_struct_call(nt, recv)))
+             (mrk == NK_CallNode && class_def_is_record_call(nt, recv)))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) {

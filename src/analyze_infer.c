@@ -4322,7 +4322,7 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) { *out = TY_POLY; return 1; }
     }
     if (rk == NK_ConstantReadNode || rk == NK_LocalVariableReadNode ||
-        (rk == NK_CallNode && is_struct_call(nt, recv))) {  /* inline Data.define(...).new (#2682) */
+        (rk == NK_CallNode && class_def_is_record_call(nt, recv))) {  /* inline Data.define(...).new (#2682) */
       const char *cn = rk == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
       int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
       if (ci >= 0) {
@@ -8259,7 +8259,7 @@ static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, c
     int mci = -1;
     if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
       mci = comp_class_index(c, cn);
-    else if (rk == NK_LocalVariableReadNode || (rk == NK_CallNode && is_struct_call(nt, recv)))
+    else if (rk == NK_LocalVariableReadNode || (rk == NK_CallNode && class_def_is_record_call(nt, recv)))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) { *out = TY_POLY_ARRAY; return 1; }

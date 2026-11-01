@@ -21373,7 +21373,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     emit_assign(c, id, b, indent);
     /* `k = Struct.new(...) do ... end`: the block's statements run too */
     int v = nt_ref(nt, id, "value");
-    if (v >= 0 && is_struct_call(nt, v)) {
+    if (v >= 0 && class_def_is_record_call(nt, v)) {
       int sci = elab_builder_class(c, id);
       if (sci >= 0) emit_class_body_stmts(c, sci, class_def_body(nt, id), b, indent);
     }
