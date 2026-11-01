@@ -5165,6 +5165,61 @@ void host_begin(HostStep *h, LowerCtx *lc) {
   h->lc = lc;
 }
 
+static int host_id_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+/* A node of the statements ids[0..n) in a shape a step before the
+   registration's walk reads, one that is not a row and that no form or
+   query of the walk has taken over (the precondition rule, H3-PLAN 2.4), or
+   -1: an ffi declaration (desugar_ffi_library_functions,
+   desugar_native_func_defs), a mixin (desugar_included_hooks,
+   desugar_explicit_receiver_mixin, desugar_extend_self,
+   desugar_extend_enumerable), a class builder (desugar_class_new_blocks,
+   desugar_inline_struct_blocks), const_get (desugar_literal_const_get,
+   desugar_self_const_get, desugar_dynamic_const_get), a write through a
+   constant path (desugar_constant_path_self_alias, qualify_colliding_consts),
+   instance_eval (desugar_instance_eval_defs), a method_defined? guard
+   (desugar_def_unless_method_defined), an alias (desugar_inherited_aliases,
+   desugar_reader_aliases_before_redef, desugar_module_function_aliases).
+   A define_method block is the program's own code, which those steps read
+   where it is written: its nodes are not asked. Code spliced in the walk
+   carries none. */
+int host_prewalk_shape(NodeTable *nt, const int *ids, int n) {
+  int nn = 0, nb = 0, ns = 0, hit = -1;
+  int *all = nt_subtree_ids(nt, ids, n, &nn), *blk = malloc(sizeof(int) * (size_t)(nn + 1));
+  if (!blk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < nn; i++) {
+    const char *nm = nt_str(nt, all[i], "name");
+    int b = nt_ref(nt, all[i], "block");
+    if (nt_kind(nt, all[i]) == NK_CallNode && b >= 0 && (is_define_method_name(nm) || is_define_singleton_method_name(nm)))
+      blk[nb++] = b;
+  }
+  int *own = nb ? nt_subtree_ids(nt, blk, nb, &ns) : NULL;
+  if (own) qsort(own, (size_t)ns, sizeof(int), host_id_cmp);
+  for (int i = 0; i < nn && hit < 0; i++) {
+    int id = all[i], rv = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    if (own && bsearch(&id, own, (size_t)ns, sizeof(int), host_id_cmp)) continue;
+    switch (nt_kind(nt, id)) {
+    case NK_CallNode:
+      if (is_ffi_decl_name(nm) || is_mixin_call(nm) || is_const_query_name(nm) || is_instance_eval_family(nm) ||
+          is_alias_method_name(nm) || is_method_defined_query(nm) ||
+          ((nt_kind(nt, rv) == NK_ConstantReadNode || nt_kind(nt, rv) == NK_ConstantPathNode) &&
+           is_class_builder(nt_str(nt, rv, "name"), nm)))
+        hit = id;
+      break;
+    case NK_AliasMethodNode: case NK_ConstantPathWriteNode: case NK_ConstantPathOperatorWriteNode:
+    case NK_ConstantPathOrWriteNode: case NK_ConstantPathAndWriteNode: case NK_ConstantPathTargetNode:
+      hit = id;
+      break;
+    default: break;
+    }
+  }
+  free(all); free(blk); free(own);
+  return hit;
+}
+
 /* One splice is one scope: its first statement names it (lower_span). Its
    code runs in a frame of the locals `locals` (comma-joined; NULL: not
    known) but `gone`, which its class_eval text reads. */
@@ -5172,6 +5227,8 @@ int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, co
   n = sce_span(c, h, owner, body, at, n, locals, gone);
   int bn = 0;
   const int *st = nt_arr(c->nt, body, "body", &bn);
+  if (h->now && h->lc->check && at + n <= bn && host_prewalk_shape((NodeTable *)c->nt, st + at, n) >= 0)
+    lower_say(h->lc, "host_splice", "a statement spliced in the walk carries a shape a step before the walk reads");
   if (h->now && at + n <= bn) {   /* the walk reaches them next: lowered now, as one span */
     int *sp = malloc(sizeof(int) * (size_t)(2 * n + 1));   /* a row may replace the body's array */
     if (!sp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }

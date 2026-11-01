@@ -818,6 +818,7 @@ int lower_stmt_at(const NodeTable *nt, const LowerCtx *lc, int stmt);   /* the p
 const int *lower_parents(Compiler *c, LowerCtx *lc);   /* every node's parent, made at a row's first ask in a run */
 void lower_begin(Compiler *c, LowerCtx *lc);
 void lower_check_unreachable(Compiler *c, LowerCtx *lc, const char *row, int root);   /* SPINEL_LOWER_CHECK: no root reaches the subtree at root */
+void lower_say(LowerCtx *lc, const char *row, const char *what);   /* SPINEL_LOWER_CHECK: one finding of row's */
 int lower_run(Compiler *c, LowerCtx *lc, int row);   /* the nodes it rewrote */
 int lower_row_once(Compiler *c, int row);   /* a row on a context of its own, for a pass the fixpoint repeats */
 int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts, const int *scopes, int n);   /* the rows that ran, on spliced statements */
@@ -852,6 +853,8 @@ int elab_stmt_list(Compiler *c, int node, int *frame);   /* the statement list s
 int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c: the graft over every class and module body */
 int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* ... over spliced statements */
 void sce_facts_free(struct SceFacts *f);
+int sce_graft_text(Compiler *c, HostStep *h, int owner, const char *text, int site, int **out, int *n);   /* a macro's computed class_eval text, grafted, not placed */
+int host_prewalk_shape(NodeTable *nt, const int *ids, int n);   /* a node of the span a pre-walk step reads, or -1 */
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
 
 /* the rows' functions, in the files that own the rewrites */

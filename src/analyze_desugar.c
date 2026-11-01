@@ -10961,16 +10961,6 @@ static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, cons
    twin, unless the class or the classes between it and the extend define a
    class method of that name, which comes ahead of Enumerable. The twin is
    asked for on self, so a subclass's call reaches its own #each. */
-static const char *const ee_enum_names[] = {
-  "all?", "any?", "chain", "chunk", "chunk_while", "collect", "collect_concat", "compact", "count",
-  "cycle", "detect", "drop", "drop_while", "each_cons", "each_entry", "each_slice", "each_with_index",
-  "each_with_object", "entries", "filter", "filter_map", "find", "find_all", "find_index", "first",
-  "flat_map", "grep", "grep_v", "group_by", "include?", "inject", "lazy", "map", "max", "max_by",
-  "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?", "partition", "reduce", "reject",
-  "reverse_each", "select", "slice_after", "slice_before", "slice_when", "sort", "sort_by", "sum",
-  "take", "take_while", "tally", "to_a", "to_h", "to_set", "uniq", "zip",
-  "is_a?", "kind_of?",   /* (the test of Enumerable itself, which a class method may answer too) */
-  NULL };
 static int ee_is_enumerable_ref(const NodeTable *nt, int n) {
   NodeKind k = nt_kind(nt, n);
   return (k == NK_ConstantReadNode || (k == NK_ConstantPathNode && nt_ref(nt, n, "parent") < 0)) &&
@@ -10985,7 +10975,6 @@ static int ee_extends_enumerable(const NodeTable *nt, int st) {
   for (int j = 0; j < an; j++) if (ee_is_enumerable_ref(nt, av[j])) return 1;
   return 0;
 }
-#define EE_NNAMES ((int)(sizeof ee_enum_names / sizeof ee_enum_names[0]) - 1)
 typedef struct {
   char key[512], sup[512];
   int node;      /* its first class or module node */
@@ -10993,14 +10982,10 @@ typedef struct {
   int extends;
   int used;      /* a call went to its twin, or to a superclass's */
   int en_seen;   /* (the walk of its bodies in program order) Enumerable extended so far */
-  unsigned char shadow[EE_NNAMES];   /* a class method of that name, which comes ahead of Enumerable */
+  unsigned char shadow[EXTEND_ENUMERABLE_NNAMES];   /* a class method of that name, which comes ahead of Enumerable */
 } EeClass;
 static int ee_find(const EeClass *v, int n, const char *key) {
   for (int i = 0; i < n; i++) if (sp_streq(v[i].key, key)) return i;
-  return -1;
-}
-static int ee_name_index(const char *nm) {
-  for (int i = 0; nm && i < EE_NNAMES; i++) if (sp_streq(ee_enum_names[i], nm)) return i;
   return -1;
 }
 /* a class or module's own key, "A::B::" (fwd_ns_key's is the namespace it
@@ -11116,7 +11101,7 @@ static int ee_instance_decl(const char *nm) {
 static void ee_mark_module(const NodeTable *nt, const int *parent, EeClass *v, int i, const char *mk, int depth) {
   if (depth > 16) return;
   NT_FOREACH_KIND(nt, NK_DefNode, d) {
-    int ni = ee_name_index(nt_str(nt, d, "name"));
+    int ni = extend_enumerable_name_index(nt_str(nt, d, "name"));
     int m = ni >= 0 && nt_ref(nt, d, "receiver") < 0 ? ee_body_around(nt, parent, d) : -1;
     char dk[512];
     if (m < 0 || nt_kind(nt, m) != NK_ModuleNode) continue;
@@ -11146,7 +11131,7 @@ static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int
   NodeKind k = nt_kind(nt, st);
   if (k == NK_AliasMethodNode) {
     int nn = nt_ref(nt, st, "new_name");
-    int ni = ee_name_index(nn >= 0 ? nt_str(nt, nn, "value") : NULL);
+    int ni = extend_enumerable_name_index(nn >= 0 ? nt_str(nt, nn, "value") : NULL);
     if (ni >= 0 && sclass) v[i].shadow[ni] = 1;
     return;
   }
@@ -11173,7 +11158,7 @@ static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int
     NodeKind ak = nt_kind(nt, av[j]);
     const char *s = ak == NK_SymbolNode ? nt_str(nt, av[j], "value")
                   : ak == NK_StringNode ? nt_str(nt, av[j], "content") : NULL;
-    int ni = ee_name_index(s);
+    int ni = extend_enumerable_name_index(s);
     if (ni >= 0) v[i].shadow[ni] = 1;
   }
 }
@@ -11250,7 +11235,7 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
   }
   /* the class methods of an Enumerable name each class defines */
   NT_FOREACH_KIND(nt, NK_DefNode, d) {
-    int ni = ee_name_index(nt_str(nt, d, "name"));
+    int ni = extend_enumerable_name_index(nt_str(nt, d, "name"));
     char own[512];
     if (ni < 0 || !ee_cmethod_owner(nt, parent, d, own, sizeof own)) continue;
     int i = ee_find(v, nv, own);
@@ -11281,7 +11266,7 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int is_test = sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?");
-    int ni = ee_name_index(nm);
+    int ni = extend_enumerable_name_index(nm);
     if (is_test) {
       int an = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
       if (an != 1 || !ee_is_enumerable_ref(nt, av[0])) continue;
@@ -25734,22 +25719,15 @@ int desugar_def_unless_method_defined(Compiler *c) {
    file. A class_eval of known text among the text's statements is grafted
    in turn, in the frame the text makes. Anything else stays a runtime
    eval, which is refused as before. */
-/* the class_eval call's string argument node, or -1 */
-static int sce_eval_string(const NodeTable *nt, int st) {
-  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return -1;
-  int rcv = nt_ref(nt, st, "receiver");
-  if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) return -1;
-  const char *nm = nt_str(nt, st, "name");
-  if (!nm || !is_class_eval_text_name(nm)) return -1;
+/* Are class_eval call st's file and line arguments ones the graft reads
+   without running them (`__FILE__`, a string, `__LINE__`, `__LINE__ + 1`,
+   an integer)? Its arguments in *av (*an of them, the text first) */
+static int sce_eval_args(const NodeTable *nt, int st, const int **avp, int *anp) {
   int an = 0; int args = nt_ref(nt, st, "arguments");
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  if (an < 1 || !av) return -1;
-  NodeKind k = nt_kind(nt, av[0]);
-  if (k != NK_StringNode && k != NK_InterpolatedStringNode) return -1;
-  /* the file and line arguments are not evaluated: only ones with nothing
-     to run (`__FILE__`, a string, `__LINE__`, `__LINE__ + 1`, an integer) */
-  if (an > 3) return -1;
-  if (an >= 2 && nt_kind(nt, av[1]) != NK_SourceFileNode && nt_kind(nt, av[1]) != NK_StringNode) return -1;
+  *avp = av; *anp = an;
+  if (an < 1 || an > 3 || !av) return 0;
+  if (an >= 2 && nt_kind(nt, av[1]) != NK_SourceFileNode && nt_kind(nt, av[1]) != NK_StringNode) return 0;
   if (an >= 3) {
     int l = av[2];
     if (nt_kind(nt, l) == NK_CallNode) {
@@ -25759,11 +25737,24 @@ static int sce_eval_string(const NodeTable *nt, int st) {
       int lr = nt_ref(nt, l, "receiver");
       if (!op || !(is_add_sub(op)) || ln != 1 || !lv || lr < 0 ||
           nt_kind(nt, lr) != NK_SourceLineNode || nt_kind(nt, lv[0]) != NK_IntegerNode)
-        return -1;
+        return 0;
     }
-    else if (nt_kind(nt, l) != NK_SourceLineNode && nt_kind(nt, l) != NK_IntegerNode) return -1;
+    else if (nt_kind(nt, l) != NK_SourceLineNode && nt_kind(nt, l) != NK_IntegerNode) return 0;
   }
-  return av[0];
+  return 1;
+}
+/* the class_eval call's string argument node, or -1 */
+static int sce_eval_string(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return -1;
+  int rcv = nt_ref(nt, st, "receiver");
+  if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) return -1;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || !is_class_eval_text_name(nm)) return -1;
+  int an = 0;
+  const int *av = NULL;
+  if (!sce_eval_args(nt, st, &av, &an)) return -1;
+  NodeKind k = nt_kind(nt, av[0]);
+  return k == NK_StringNode || k == NK_InterpolatedStringNode ? av[0] : -1;
 }
 static void sce_append(char **buf, size_t *len, size_t *cap, const char *t) {
   size_t tl = strlen(t);
@@ -26717,6 +26708,26 @@ int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const
   if (ok == NK_ClassNode || ok == NK_ModuleNode) n = sce_body(c, h, owner, body, at, n, locals, gone, &changed);
   if (changed) comp_grow_node_arrays(c);
   return n;
+}
+
+/* The statements `text` becomes as the code of class_eval call `site`
+   (a macro's, whose text the evaluator computed) run in owner's body: parsed
+   with the site's file and line arguments, in a frame not known (the
+   macro's, whose locals the body does not have), into *out (*n). 0, or -1
+   where the graft does not take it, as it would not take the same text
+   written at the site; nothing is placed. */
+int sce_graft_text(Compiler *c, HostStep *h, int owner, const char *text, int site, int **out, int *n) {
+  const NodeTable *nt = c->nt;
+  struct SceFacts *f = sce_facts(h);
+  const int *av = NULL;
+  int an = 0;
+  if (!sce_eval_args(nt, site, &av, &an)) return -1;
+  if (f->gate < 0) f->gate = sce_program_reflects_scoped(nt, &f->scoped);
+  if (f->gate > 0 || (f->scoped.n > 0 && sce_scoped_reaches(nt, &f->scoped, owner, 0))) return -1;
+  SceFrame fr = { NULL, 0 };
+  int r = sce_graft(c, &fr, NULL, -1, text, site, out, n);
+  comp_grow_node_arrays(c);
+  return r;
 }
 
 /* ---- a class body's calls of its own class methods ----

@@ -1,0 +1,9 @@
+[[:string, :null], 9]
+:string
+["gen.rb", 40]
+["gen.rb", 40]
+42
+42
+3
+[:created_at, :title, :updated_at]
+[:bump, :counter, :created_where, :field, :stamp, :timestamps, :title_type, :updated_where]

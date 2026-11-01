@@ -1475,6 +1475,25 @@ int is_enumerable_module_name(const char *n) {
   return n && sp_streq(n, "Enumerable");
 }
 
+/* The index of n among the methods `extend Enumerable` sends from a class
+   to an instance-side twin, unless a class method of the name comes first
+   (desugar_extend_enumerable), or -1 */
+int extend_enumerable_name_index(const char *n) {
+  static const char *const names[] = {
+    "all?", "any?", "chain", "chunk", "chunk_while", "collect", "collect_concat", "compact", "count",
+    "cycle", "detect", "drop", "drop_while", "each_cons", "each_entry", "each_slice", "each_with_index",
+    "each_with_object", "entries", "filter", "filter_map", "find", "find_all", "find_index", "first",
+    "flat_map", "grep", "grep_v", "group_by", "include?", "inject", "lazy", "map", "max", "max_by",
+    "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?", "partition", "reduce", "reject",
+    "reverse_each", "select", "slice_after", "slice_before", "slice_when", "sort", "sort_by", "sum",
+    "take", "take_while", "tally", "to_a", "to_h", "to_set", "uniq", "zip",
+    "is_a?", "kind_of?",   /* (the test of Enumerable itself, which a class method may answer too) */
+    NULL };
+  _Static_assert(sizeof names / sizeof names[0] == EXTEND_ENUMERABLE_NNAMES + 1, "EXTEND_ENUMERABLE_NNAMES counts the names");
+  for (int i = 0; n && i < EXTEND_ENUMERABLE_NNAMES; i++) if (sp_streq(names[i], n)) return i;
+  return -1;
+}
+
 int is_comparable_module_name(const char *n) {
   return n && sp_streq(n, "Comparable");
 }
@@ -1827,6 +1846,19 @@ int is_define_method_name(const char *n) {
 int is_define_singleton_method_name(const char *n) { return n && sp_streq(n, "define_singleton_method"); }
 /* Kernel#singleton_class */
 int is_singleton_class_name(const char *n) { return n && sp_streq(n, "singleton_class"); }
+/* The ffi gem's and native_func's declarations, which a step before the
+   registration's walk turns into methods (desugar_ffi_library_functions,
+   desugar_native_func_defs) */
+int is_ffi_decl_name(const char *n) {
+  return n && (sp_streq(n, "ffi_lib") || sp_streq(n, "ffi_lib_flags") || sp_streq(n, "ffi_convention") ||
+               sp_streq(n, "attach_function") || sp_streq(n, "attach_variable") || sp_streq(n, "callback") ||
+               sp_streq(n, "native_func") || sp_streq(n, "ffi_func"));
+}
+/* Module#method_defined? and its visibility kin */
+int is_method_defined_query(const char *n) {
+  return n && (sp_streq(n, "method_defined?") || sp_streq(n, "public_method_defined?") ||
+               sp_streq(n, "private_method_defined?") || sp_streq(n, "protected_method_defined?"));
+}
 int is_undef_method_name(const char *n) { return n && sp_streq(n, "undef_method"); }
 int is_remove_method_name(const char *n) { return n && sp_streq(n, "remove_method"); }
 
