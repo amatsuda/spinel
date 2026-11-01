@@ -1,7 +1,7 @@
 # A class body's call of a program method that defines and writes nothing
-# when it runs is no code the record cannot follow; one that defines or
-# writes something, may (a cycle), or calls a method the walk has not
-# recorded yet is (opaque).
+# when it runs is no code the record cannot follow; one whose definitions
+# the macro form runs is recorded as them (defs); one that writes, may (a
+# cycle), or calls a method the walk has not recorded yet is (opaque).
 class Foo
   def self.label(x) = "foo #{x}"
   def self.twice = label(1) + label(2)

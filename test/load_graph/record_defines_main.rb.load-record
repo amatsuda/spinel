@@ -9,7 +9,7 @@ r0 #1 f0 ClassNode Foo line 5
   r0 #7 f0 DefNode sets line 11
   r0 #8 f0 DefNode calls_later line 12
   r0 #9 f0 CallNode twice line 13
-  r0 #10 f0 CallNode defs line 14
+  r0 #10 f0 CallNode attr_accessor line 14
   r0 #11 f0 IfNode line 15
     r0 #12 may f0 CallNode ping line 15
   r0 #13 f0 CallNode sets line 16
@@ -27,5 +27,7 @@ Foo.ping: def#5 end=yes
 Foo.pong: def#6 end=yes
 Foo.sets: def#7 end=yes
 Foo.calls_later: def#8 end=yes
-opaque Foo: opaque#10 opaque#12 may opaque#13 opaque#15 may
+Foo#z: reader#10 end=yes
+Foo#z=: writer#10 end=yes
+opaque Foo: opaque#12 may opaque#13 opaque#15 may
 Foo.later: def#16 end=yes

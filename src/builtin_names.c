@@ -1825,6 +1825,8 @@ int is_define_method_name(const char *n) {
   return n && sp_streq(n, "define_method");
 }
 int is_define_singleton_method_name(const char *n) { return n && sp_streq(n, "define_singleton_method"); }
+/* Kernel#singleton_class */
+int is_singleton_class_name(const char *n) { return n && sp_streq(n, "singleton_class"); }
 int is_undef_method_name(const char *n) { return n && sp_streq(n, "undef_method"); }
 int is_remove_method_name(const char *n) { return n && sp_streq(n, "remove_method"); }
 

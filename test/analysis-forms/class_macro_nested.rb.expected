@@ -1,0 +1,9 @@
+"title:str"
+"created_at:time"
+"created_by:str"
+"updated_at:time"
+"updated_by:str"
+[:created_at, :created_by, :title, :updated_at, :updated_by]
+true
+false
+:deep
