@@ -3093,18 +3093,72 @@ static void class_note_prepended_mod(Compiler *c, int ci, int mod_ci) {
   c->mixin_gen++;
 }
 
-/* A copied &block has the same Proc-or-NULL ABI as the original. It is
-   outside pnames, so copying the positional/keyword locals does not register
-   it. Seed it before inference; otherwise the body walk leaves an ordinary
-   UNKNOWN local which late widening turns into POLY. Reassignments already
-   use a separate local from desugar_blk_param_writes. */
-static void scope_copy_block_param(Scope *dst, const Scope *src) {
-  if (!src->blk_param) return;
-  dst->blk_param = strdup(src->blk_param);
-  if (dst->blk_param[0]) {
-    LocalVar *lv = scope_local_intern(dst, dst->blk_param);
+/* Copy the method shape of src into the clone dst: its yield flag, its
+   parameter layout (names, defaults, required count, rest/post/kwrest slots),
+   its &block, and the define_method loop substitution. Runs after the cloned
+   body is walked; the parameters are interned as param locals so
+   infer_param_types can update their types. The copies an include, a
+   prepend, an extend, a class-method specialization and an alias make take
+   the whole shape from here: listing the fields by hand, they dropped the
+   loop substitution, and the body read the loop variable as an unset local
+   (nil) instead of the literal. (A yielding method's proc-form clone,
+   make_yield_proc_forms, still lists its own.) */
+static void scope_copy_method_shape(Scope *dst, Scope *src) {
+  dst->yields = src->yields;
+  dst->nrequired = src->nrequired;
+  dst->rest_idx = src->rest_idx;
+  dst->kwrest_idx = src->kwrest_idx;
+  /* A copied &block has the same Proc-or-NULL ABI as the original. It is
+     outside pnames, so copying the positional/keyword locals does not
+     register it. Seed it before inference; otherwise the body walk leaves an
+     ordinary UNKNOWN local which late widening turns into POLY. Reassignments
+     already use a separate local from desugar_blk_param_writes. */
+  if (src->blk_param) {
+    dst->blk_param = strdup(src->blk_param);
+    if (dst->blk_param[0]) {
+      LocalVar *lv = scope_local_intern(dst, dst->blk_param);
+      lv->is_param = 1;
+      lv_set_type(lv, TY_PROC);
+    }
+  }
+  /* A method unrolled from `[lits].each { |v| define_method(..) { .. } }`
+     reads v as its literal (collect_dm_each_unroll): the copy reads the same
+     literal node, which sits in the class body and not in the cloned method
+     body, and v stays a typed non-C local as in the original. */
+  if (src->dm_subst_name) {
+    dst->dm_subst_name = strdup(src->dm_subst_name);
+    dst->dm_subst_node = src->dm_subst_node;
+    LocalVar *sv = scope_local(src, src->dm_subst_name);
+    LocalVar *lv = scope_local_intern(dst, dst->dm_subst_name);
     lv->is_param = 1;
-    lv_set_type(lv, TY_PROC);
+    if (sv) lv_set_type(lv, sv->type);
+  }
+  { dst->nparams = src->nparams; comp_touch_scope(dst->idx); }
+  /* the posts after a rest are part of the layout: a copy without them laid
+     `super(1)` into an included `def m(*r, p1)` out as if the rest came
+     last, the 1 into the rest and p1 left its zero */
+  dst->npost_rest = src->npost_rest;
+  if (src->nparams <= 0) return;
+  dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
+  dst->pdefault = malloc(sizeof(int) * (size_t)src->nparams);
+  for (int p = 0; p < src->nparams; p++) {
+    dst->pnames[p] = src->pnames[p] ? strdup(src->pnames[p]) : NULL;
+    dst->pdefault[p] = src->pdefault ? src->pdefault[p] : -1;
+  }
+  for (int p = 0; p < src->nparams; p++) {
+    if (dst->pnames[p]) {
+      LocalVar *lv = scope_local_intern(dst, dst->pnames[p]);
+      lv->is_param = 1;
+      /* A splat / double-splat parameter is typed by construction when the
+         source scope is built (a poly array / a hash), not by any call site,
+         so nothing re-derives it for the clone: carry it over. Left UNKNOWN,
+         `*args` in a method transplanted by `extend`/`include` typed every
+         use of args as nothing and the method's return with it. */
+      if (p == src->rest_idx || p == src->kwrest_idx) {
+        LocalVar *sv = scope_local(src, dst->pnames[p]);
+        if (sv && lv->type == TY_UNKNOWN) lv_set_type(lv, sv->type);
+      }
+    }
   }
 }
 
@@ -3142,40 +3196,21 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
     { dst->class_id = newci; comp_touch_scope(dst->idx); }
     { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }    /* an instance method of the singleton subclass */
     { dst->reachable = src->reachable; comp_touch_scope(dst->idx); }
-    dst->yields = src->yields;
-    dst->nrequired = src->nrequired;
-    dst->rest_idx = src->rest_idx;
-    dst->npost_rest = src->npost_rest;
-    dst->kwrest_idx = src->kwrest_idx;
     src->is_transplanted_source = 1;   /* the module original is copied away */
     { dst->origin_module_ci = mod_ci + 1; comp_touch_scope(dst->idx); }  /* #owner names the module (#3662) */
-    scope_copy_block_param(dst, src);
-    { dst->nparams = src->nparams; comp_touch_scope(dst->idx); }
-    if (src->nparams > 0) {
-      dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
-      dst->pdefault = malloc(sizeof(int) * (size_t)src->nparams);
-      for (int p = 0; p < src->nparams; p++) {
-        dst->pnames[p] = src->pnames[p] ? strdup(src->pnames[p]) : NULL;
-        dst->pdefault[p] = src->pdefault ? src->pdefault[p] : -1;
-      }
-      /* Give the copy its own parameter LOCALS, carrying the original's types.
-         Walking the cloned body only interns a parameter the body READS, and a
-         method that just hands its parameter to `super` reads none of them
-         (`def render(text) = "[#{super}]"`). The caller then found no slot to
-         take the parameter's type from and passed the argument's own, which
-         the emitted signature -- built from the same missing slot as poly --
-         did not accept (#3951). */
-      for (int p = 0; p < src->nparams; p++) {
-        if (!dst->pnames[p]) continue;
-        LocalVar *sp_lv = scope_local(src, dst->pnames[p]);
-        LocalVar *dp = scope_local_intern(dst, dst->pnames[p]);
-        if (!dp) continue;
-        dp->is_param = 1;
-        if (sp_lv && dp->type == TY_UNKNOWN) lv_set_type(dp, sp_lv->type);
-        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];  /* intern may realloc */
-      }
-      scope_own_defaults(c, dst_idx);
+    scope_copy_method_shape(dst, src);
+    /* The copy's parameter locals carry the original's types. A method
+       that just hands its parameter to `super` reads none of them
+       (`def render(text) = "[#{super}]"`), so nothing in the cloned body
+       types them; the caller then passed the argument's own type, which the
+       emitted signature, typed poly, did not accept (#3951). */
+    for (int p = 0; p < dst->nparams; p++) {
+      if (!dst->pnames[p]) continue;
+      LocalVar *sp_lv = scope_local(src, dst->pnames[p]);
+      LocalVar *dp = scope_local(dst, dst->pnames[p]);
+      if (sp_lv && dp && dp->type == TY_UNKNOWN) lv_set_type(dp, sp_lv->type);
     }
+    scope_own_defaults(c, dst_idx);
   }
 }
 
@@ -4331,7 +4366,6 @@ static int alias_def_in_effect(Compiler *c, int k, const char *od, const char *n
    effect instead (an include or prepend keeps one under a shadow name). It
    is refused when the class has no copy, and where a subclass's own include
    or prepend still answers the alias with another method. */
-static void scope_copy_params(Scope *dst, const Scope *src);
 extern int g_inc_did_clone;
 
 /* The copy in class k, under a shadow name (`__inc <n> od`), of k's own
@@ -4371,13 +4405,7 @@ static const char *alias_body_copy(Compiler *c, int k, int want, const char *od)
   dst->is_include_copy = src->is_include_copy;
   { dst->origin_module_ci = src->origin_module_ci; comp_touch_scope(dst->idx); }
   { dst->reachable = 1; comp_touch_scope(dst->idx); }
-  dst->yields = src->yields;
-  dst->nrequired = src->nrequired;
-  dst->rest_idx = src->rest_idx;
-  dst->npost_rest = src->npost_rest;
-  dst->kwrest_idx = src->kwrest_idx;
-  scope_copy_block_param(dst, src);
-  scope_copy_params(dst, src);
+  scope_copy_method_shape(dst, src);
   scope_own_defaults(c, di);
   g_inc_did_clone = 1;
   return c->scopes[di].name;
@@ -6845,41 +6873,6 @@ static int module_function_self_dependent(Compiler *c, int scope_idx) {
   return 0;
 }
 
-/* Copy src's parameter names and defaults into the clone dst, and intern
-   them as param locals so infer_param_types can update their types. */
-static void scope_copy_params(Scope *dst, const Scope *src) {
-  { dst->nparams = src->nparams; comp_touch_scope(dst->idx); }
-  /* the posts after a rest are part of the layout: a copy without them laid
-     `super(1)` into an included `def m(*r, p1)` out as if the rest came
-     last, the 1 into the rest and p1 left its zero */
-  dst->npost_rest = src->npost_rest;
-  if (src->nparams <= 0) return;
-  dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
-  dst->pdefault = malloc(sizeof(int) * (size_t)src->nparams);
-  for (int p = 0; p < src->nparams; p++) {
-    dst->pnames[p] = src->pnames[p] ? strdup(src->pnames[p]) : NULL;
-    dst->pdefault[p] = src->pdefault ? src->pdefault[p] : -1;
-  }
-  for (int p = 0; p < src->nparams; p++) {
-    if (dst->pnames[p]) {
-      LocalVar *lv = scope_local_intern(dst, dst->pnames[p]);
-      lv->is_param = 1;
-      /* A splat / double-splat parameter is typed by construction when the
-         source scope is built (a poly array / a hash), not by any call site,
-         so nothing re-derives it for the clone: carry it over. Left UNKNOWN,
-         `*args` in a method transplanted by `extend`/`include` typed every
-         use of args as nothing and the method's return with it. */
-      if (p == src->rest_idx || p == src->kwrest_idx) {
-        for (int L = 0; L < src->nlocals; L++)
-          if (src->locals[L].name && sp_streq(src->locals[L].name, dst->pnames[p])) {
-            if (lv->type == TY_UNKNOWN) lv_set_type(lv, src->locals[L].type);
-            break;
-          }
-      }
-    }
-  }
-}
-
 /* Give a copied method its own default values: clone each one and walk it
    into the copy. Shared, a default reading an earlier parameter
    (`def m(p1 = 51, p2 = p1)`) was typed against the source method's
@@ -7194,11 +7187,6 @@ else {
     { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }
     dst->is_include_copy = 1;
     { dst->reachable = src->reachable; comp_touch_scope(dst->idx); }
-    dst->yields = src->yields;
-    dst->nrequired = src->nrequired;
-    dst->rest_idx = src->rest_idx;
-    dst->kwrest_idx = src->kwrest_idx;
-    scope_copy_block_param(dst, src);
     /* ...but a module_function original keeps its module-side spelling:
        `Rt.peek` is a real call whoever also includes Rt, so the source is
        not copied AWAY, only copied FROM. */
@@ -7207,7 +7195,7 @@ else {
        includer declares the name's visibility itself */
     else if (!class_declares_vis(&c->classes[ci], dst_name))
       comp_method_vis_set(&c->classes[ci], dst_name, SP_VIS_PRIVATE);
-    scope_copy_params(dst, src);
+    scope_copy_method_shape(dst, src);
     if (scope_own_defaults(c, dst_idx)) g_inc_did_clone = 1;
     src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
     /* a copy a later include makes: a call reaches the method behind it
@@ -8451,10 +8439,6 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, int
      behind it until that statement has run (Scope.mixin_guarded) */
   dst->mixin_guarded = cell;
   dst->guard_behind = behind;
-  dst->yields = src->yields;
-  dst->nrequired = src->nrequired;
-  dst->rest_idx = src->rest_idx;
-  dst->kwrest_idx = src->kwrest_idx;
   /* A create method ending in its bare `new` returns the specialized subclass
      instance, so pin its return type. One that only builds an instance on the
      way to some other value (`w = new(p); w.finish`), and every other
@@ -8464,8 +8448,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, int
     scope_set_ret(dst, ty_object(ci));
     dst->ret_specialized = 1;
   }
-  scope_copy_block_param(dst, src);
-  scope_copy_params(dst, src);
+  scope_copy_method_shape(dst, src);
   scope_own_defaults(c, dst_idx);
   src = &c->scopes[mi]; dst = &c->scopes[dst_idx];
   /* Recurse into the inherited intermediates this body reaches. Scan the
@@ -9051,17 +9034,12 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
           if (guard) { dst->mixin_guarded = prepend_cell(c, &cell); dst->guard_behind = active_mi; }
           { dst->origin_module_ci = mod_id + 1; comp_touch_scope(dst->idx); }   /* #owner names the module */
           { dst->reachable = sc->reachable; comp_touch_scope(dst->idx); }
-          dst->yields = sc->yields;
-          dst->nrequired = sc->nrequired;
-          dst->rest_idx = sc->rest_idx;
-          dst->kwrest_idx = sc->kwrest_idx;
           scope_set_ret(dst, sc->ret);
-          scope_copy_block_param(dst, sc);
-          /* register_locals has already run, so the parameters have to be
-             copied across by hand and their locals re-interned -- exactly
-             what the include clone does, and the half my first attempt at
-             this omitted (the clone came out with no signature at all). */
-          scope_copy_params(dst, sc);
+          /* register_locals has already run, so the method shape has to be
+             copied across and its locals re-interned, as the include clone
+             does (without the parameters the clone came out with no
+             signature at all). */
+          scope_copy_method_shape(dst, sc);
           scope_own_defaults(c, dst_i);
           sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
           /* the module body's ivars belong to the prepending class's layout */
