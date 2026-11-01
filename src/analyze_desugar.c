@@ -9392,9 +9392,68 @@ static int fwd_blk_param_read_elsewhere(Compiler *c, Scope *ms, const char *name
    recv).each(&t)`, so it runs once. Ahead of the receiver is its source
    position whenever nothing before it can act: desugar_block_arg_order has
    already put every operand of a call where something can into temps of its
-   own, in source order, the callable a plain read among them. *ex becomes a
-   read of the temp. */
-static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex) {
+   own, in source order, the callable a plain read among them. One it left
+   (`obj.method(:m)`, whose receiver does not act, but reads what the
+   receiver may change: an instance variable the receiver's call rewrites)
+   is ordered here, with order: the receiver and the arguments that act run
+   first, into temps, as CRuby runs them ahead of the block argument; a
+   receiver that does not act goes first too when an argument does, unless
+   nothing can rewrite it (an argument may rebind its read). *ex
+   becomes a read of the temp. */
+static int fwd_stable_operand(Compiler *c, int e);
+static int fwd_hoist_temp(Compiler *c, int id, int k, int e, int *stm, int *ns) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  char tn[48];
+  snprintf(tn, sizeof tn, "__fwdo_%s_%d", comp_node_tag(c, id), k);
+  int w = nt_new_node(nt, "LocalVariableWriteNode"), r = nt_new_node(nt, "LocalVariableReadNode");
+  nt_node_set_str(nt, w, "name", tn);
+  nt_node_set_ref(nt, w, "value", e);
+  nt_node_set_str(nt, r, "name", tn);
+  scope_local_intern(comp_scope_of(c, id), tn);
+  stm[(*ns)++] = w;
+  return r;
+}
+/* Does evaluating argument a of a call act: a splat's expression, a
+   keyword argument's keys and values, or the argument itself? */
+static int fwd_arg_acts(const NodeTable *nt, int a) {
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_SplatNode) return bo_may_act(nt, nt_ref(nt, a, "expression"));
+  if (k != NK_KeywordHashNode) return bo_may_act(nt, a);
+  int en = 0; const int *el = nt_arr(nt, a, "elements", &en);
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) != NK_AssocNode || bo_may_act(nt, nt_ref(nt, el[e], "key")) || bo_may_act(nt, nt_ref(nt, el[e], "value")))
+      return 1;
+  return 0;
+}
+/* ...its temps: the argument itself, a splat's expression (the argument
+   becomes `*tmp`), a keyword argument's keys and values, in order; the
+   argument now. stm has room for the writes (fwd_arg_slots). */
+static int fwd_arg_slots(const NodeTable *nt, int a) {
+  int en = 0;
+  if (nt_kind(nt, a) == NK_KeywordHashNode) nt_arr(nt, a, "elements", &en);
+  return 1 + 2 * en;
+}
+static int fwd_arg_hoist(Compiler *c, int id, int k, int a, int *stm, int *ns) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  NodeKind ak = nt_kind(nt, a);
+  if (ak == NK_SplatNode) {
+    int ex = nt_ref(nt, a, "expression");
+    if (bo_may_act(nt, ex)) nt_node_set_ref(nt, a, "expression", fwd_hoist_temp(c, id, k, ex, stm, ns));
+    return a;
+  }
+  if (ak == NK_KeywordHashNode) {
+    int en = 0; const int *el = nt_arr(nt, a, "elements", &en);
+    for (int e = 0; e < en; e++) {
+      if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
+      int key = nt_ref(nt, el[e], "key"), val = nt_ref(nt, el[e], "value");
+      if (bo_may_act(nt, key)) nt_node_set_ref(nt, el[e], "key", fwd_hoist_temp(c, id, k * 64 + 2 * e, key, stm, ns));
+      if (bo_may_act(nt, val)) nt_node_set_ref(nt, el[e], "value", fwd_hoist_temp(c, id, k * 64 + 2 * e + 1, val, stm, ns));
+    }
+    return a;
+  }
+  return bo_may_act(nt, a) ? fwd_hoist_temp(c, id, k, a, stm, ns) : a;
+}
+static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex, int order) {
   NodeTable *nt = (NodeTable *)c->nt;
   char tn[48];
   snprintf(tn, sizeof tn, "__fwdc_%s", comp_node_tag(c, id));
@@ -9415,9 +9474,25 @@ static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex) {
     owner = recv;
     recv = nt_ref(nt, recv, "receiver");
   }
-  int stmts[2] = { w, recv };
+  int ac = 0, args = nt_ref(nt, id, "arguments");
+  const int *av = order && args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  int slots = 3;
+  for (int k = 0; k < ac; k++) slots += fwd_arg_slots(nt, av[k]);
+  int *stm = malloc(sizeof(int) * (size_t)slots), ns = 0, *nav = ac ? malloc(sizeof(int) * (size_t)ac) : NULL;
+  if (!stm || (ac && !nav)) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* an argument that acts may rebind the receiver's read: the receiver goes
+     first, unless nothing can rewrite it */
+  int arg_acts = 0;
+  for (int k = 0; k < ac; k++) arg_acts |= fwd_arg_acts(nt, av[k]);
+  int last = recv;
+  if (order && (bo_may_act(nt, recv) || (arg_acts && !fwd_stable_operand(c, recv)))) last = fwd_hoist_temp(c, id, 0, recv, stm, &ns);
+  for (int k = 0; k < ac; k++) nav[k] = fwd_arg_hoist(c, id, k + 1, av[k], stm, &ns);
+  if (ac) nt_node_set_arr(nt, args, "arguments", nav, ac);
+  stm[ns++] = w;
+  stm[ns++] = last;
   int body = nt_new_node(nt, "StatementsNode");
-  nt_node_set_arr(nt, body, "body", stmts, 2);
+  nt_node_set_arr(nt, body, "body", stm, ns);
+  free(stm); free(nav);
   int paren = nt_new_node(nt, "ParenthesesNode");
   nt_node_set_ref(nt, paren, "body", body);
   nt_node_set_ref(nt, owner, "receiver", paren);
@@ -9634,31 +9709,54 @@ static int fwd_subtree_calls(const NodeTable *nt, int e) {
     for (int k = 0; k < nd->a[j].n; k++) if (fwd_subtree_calls(nt, nd->a[j].ids[k])) return 1;
   return 0;
 }
-/* Is the call e a `method(name)` lookup whose receiver and name call
-   nothing (a literal, self, a local, an instance variable, a constant), so
-   evaluating it again where the block runs answers the same Method and
-   runs nothing? */
-static int fwd_inert_method_lookup(const NodeTable *nt, int e) {
+/* Does a block or a lambda of local read cx's scope write it: of its method,
+   or at the top level of the program? A call can run such a closure. */
+static int fwd_local_closure_written(Compiler *c, int cx) {
+  const NodeTable *nt = c->nt;
+  const char *cn = nt_str(nt, cx, "name");
+  Scope *ms = comp_scope_of(c, cx);
+  return !cn || fwd_subtree_writes(nt, ms && ms->def_node >= 0 ? ms->def_node : nt->root_id, cn, 1, 0);
+}
+/* Does reading e again where the block runs answer what reading it now
+   does, and run nothing: no operand, a literal, self, a constant, or a local
+   that no block or lambda of its scope writes (at the top level, of the
+   program)? Anything else (a global, an instance variable, a call) is read
+   once, into a temp. */
+static int fwd_stable_operand(Compiler *c, int e) {
+  const NodeTable *nt = c->nt;
+  if (e < 0) return 1;
+  switch (nt_kind(nt, e)) {
+  case NK_SelfNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode: case NK_FloatNode:
+  case NK_RationalNode: case NK_ImaginaryNode: case NK_SymbolNode: case NK_StringNode: case NK_ConstantReadNode:
+    return 1;
+  case NK_ConstantPathNode:
+    return fwd_stable_operand(c, nt_ref(nt, e, "parent"));
+  case NK_LocalVariableReadNode:
+    return !fwd_local_closure_written(c, e);
+  default: return 0;
+  }
+}
+/* Is the call e a `method(name)` lookup whose receiver and name are stable
+   operands, so evaluating it again where the block runs answers the same
+   Method and runs nothing? */
+static int fwd_inert_method_lookup(Compiler *c, int e) {
+  const NodeTable *nt = c->nt;
   if (!is_method_ref_name(nt_str(nt, e, "name"))) return 0;
   int args = nt_ref(nt, e, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  return an == 1 && av && !fwd_subtree_calls(nt, nt_ref(nt, e, "receiver")) && !fwd_subtree_calls(nt, av[0]);
+  return an == 1 && av && fwd_stable_operand(c, nt_ref(nt, e, "receiver")) && fwd_stable_operand(c, av[0]);
 }
 /* May evaluating e change what the read cx (a local or an instance
    variable) answers? By a write to it; for an instance variable by any
    call, which may run a method that writes it; for a local by any call
-   where a block or a lambda of its method writes it (at the top level,
-   where that is not looked for, by any call). */
+   where a block or a lambda of its scope writes it (fwd_local_closure_written). */
 static int fwd_subtree_may_rebind(Compiler *c, int e, int cx) {
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cx, "name");
   if (!cn) return 1;
   if (fwd_subtree_writes(nt, e, cn, 0, 0)) return 1;
   if (!fwd_subtree_calls(nt, e)) return 0;
-  if (nt_kind(nt, cx) != NK_LocalVariableReadNode) return 1;
-  Scope *ms = comp_scope_of(c, cx);
-  int def = ms ? ms->def_node : -1;
-  return def < 0 || fwd_subtree_writes(nt, def, cn, 1, 0);
+  return nt_kind(nt, cx) != NK_LocalVariableReadNode || fwd_local_closure_written(c, cx);
 }
 
 /* Does any class, module or the top level define an instance method `name`? */
@@ -9778,10 +9876,11 @@ int desugar_value_callable_forwards(Compiler *c) {
                      exk == NK_ConstantPathNode;
     /* `&method(:m)`, `&obj.method(:m)`: a deterministic method-object
        lookup, safe to re-evaluate where the block runs while its receiver
-       and its name call nothing (fwd_inert_method_lookup); one whose
-       operand calls something is hoisted like any other expression, or
+       and its name are stable operands (fwd_inert_method_lookup); one whose
+       operand calls something, or reads what the callable or the loop's own
+       method may change, is hoisted like any other expression, or
        `M.synchronize(&worker.method(:work))` ran worker under the lock */
-    int method_obj = exk == NK_CallNode && fwd_inert_method_lookup(nt, ex);
+    int method_obj = exk == NK_CallNode && fwd_inert_method_lookup(c, ex);
     /* `&->(x){...}`: an inline lambda literal, equivalent to the block itself;
        building it per element has no observable side effect */
     int inline_lambda = exk == NK_LambdaNode;
@@ -9992,7 +10091,7 @@ int desugar_value_callable_forwards(Compiler *c) {
     else if (ty_is_hash(rt)) wrap_pair = 0;   /* each_key/each_value: the bare key/value */
 
     int base = nt->count;
-    if (hoist) fwd_hoist_callable(c, id, blk, &ex);
+    if (hoist) fwd_hoist_callable(c, id, blk, &ex, ex >= 0 && nt_kind(nt, ex) == NK_CallNode && !bo_may_act(nt, ex));
     int fill_test = -1;
     if (fill_nilable) {
       /* the callable is read once, into the temp the test assigns */

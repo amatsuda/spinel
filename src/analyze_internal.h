@@ -855,6 +855,7 @@ int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c:
 int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* ... over spliced statements */
 void sce_facts_free(struct SceFacts *f);
 int sce_graft_text(Compiler *c, HostStep *h, int owner, const char *text, int site, int **out, int *n);   /* a macro's computed class_eval text, grafted, not placed */
+int bo_may_act(const NodeTable *nt, int e);   /* analyze.c: can evaluating e do anything observable (a call may; a read of a local, an instance variable or a constant, a literal cannot) */
 int host_prewalk_shape(NodeTable *nt, const int *ids, int n);   /* a node of the span a pre-walk step reads, or -1 */
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
 
