@@ -9406,6 +9406,7 @@ static int fwd_blk_param_read_elsewhere(Compiler *c, Scope *ms, const char *name
    nothing can rewrite it (an argument may rebind its read). *ex
    becomes a read of the temp. */
 static int fwd_stable_operand(Compiler *c, int e);
+static int fwd_subtree_writes(const NodeTable *nt, int e, const char *name, int closures, int inside);
 static int fwd_hoist_temp(Compiler *c, int id, int k, int e, int *stm, int *ns) {
   NodeTable *nt = (NodeTable *)c->nt;
   char tn[48];
@@ -9486,11 +9487,16 @@ static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex, int order)
   int *stm = malloc(sizeof(int) * (size_t)slots), ns = 0, *nav = ac ? malloc(sizeof(int) * (size_t)ac) : NULL;
   if (!stm || (ac && !nav)) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* an argument that acts may rebind the receiver's read: the receiver goes
-     first, unless nothing can rewrite it */
-  int arg_acts = 0;
-  for (int k = 0; k < ac; k++) arg_acts |= fwd_arg_acts(nt, av[k]);
+     first, unless nothing can rewrite it (a closure, or an argument that
+     writes the local itself: `a.each_with_object(a = [2], ...)`) */
+  int arg_acts = 0, recv_written = 0;
+  const char *rn = nt_kind(nt, recv) == NK_LocalVariableReadNode ? nt_str(nt, recv, "name") : NULL;
+  for (int k = 0; k < ac; k++) {
+    arg_acts |= fwd_arg_acts(nt, av[k]);
+    recv_written |= rn && fwd_subtree_writes(nt, av[k], rn, 0, 0);
+  }
   int last = recv;
-  if (order && (bo_may_act(nt, recv) || (arg_acts && !fwd_stable_operand(c, recv)))) last = fwd_hoist_temp(c, id, 0, recv, stm, &ns);
+  if (order && (bo_may_act(nt, recv) || (arg_acts && (recv_written || !fwd_stable_operand(c, recv))))) last = fwd_hoist_temp(c, id, 0, recv, stm, &ns);
   for (int k = 0; k < ac; k++) nav[k] = fwd_arg_hoist(c, id, k + 1, av[k], stm, &ns);
   if (ac) nt_node_set_arr(nt, args, "arguments", nav, ac);
   stm[ns++] = w;
