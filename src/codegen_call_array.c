@@ -1813,20 +1813,18 @@ typedef struct {
   int boxed, snapshot;
   int conv_mi;     /* the operand's own to_ary, run at its turn; -1 for none */
   TyKind obj_ty;   /* ... and the object's type, which the hold keeps */
+  TyKind conv_ty;  /* the dispatch's result, before checking it is an Array */
+  int obj_boxed;
   int arr;         /* the temp holding the operand's Array */
 } ConcatOperand;
 
-/* A program object's to_ary that concat calls at the operand's turn: the
-   one implementation (no descendant has its own), taking no argument and
-   answering an Array that is never nil. -1 for another converter (one
-   method_missing serves, one a subclass overrides, one that may answer
-   nil), which stays on the ordinary call path. */
+/* A program object's no-argument to_ary. The existing dispatch selects a
+   subclass override; its result is checked at the operand's turn. */
 static int concat_converter_mi(Compiler *c, TyKind t) {
-  int mi = splice_to_ary_mi(c, t);
-  if (mi < 0 || c->scopes[mi].nparams != 0 || comp_method_overridden(c, ty_object_class(t), "to_ary", 0))
-    return -1;
-  Repr rr = repr_of_ret(c, &c->scopes[mi]);
-  return rr.kind == RK_BOXED || rr.may_nil || !arr_kind(rr.as_ty) ? -1 : mi;
+  int cid = ty_object_class(t);
+  if (c->classes[cid].is_value_type) return -1;
+  int mi = comp_implicit_to_ary_mi(c, cid);
+  return mi >= 0 && c->scopes[mi].nparams == 0 ? mi : -1;
 }
 
 /* Capture before any later conversion this lowering may perform. Direct
@@ -1840,13 +1838,17 @@ static int prepare_concat_operands(Compiler *c, const int *argv, int argc, Conca
        entry, in turn with the others, as CRuby's to_ary: beside another
        operand the AST rewrite (desugar_array_op_to_ary) does not take it,
        and the call raised NoMethodError. */
-    if (ty_is_object(r.as_ty) && r.kind != RK_BOXED && !conv_to_ary_misfit(c, r.as_ty)) {
+    if (ty_is_object(r.as_ty) && !conv_to_ary_misfit(c, r.as_ty)) {
       int mi = concat_converter_mi(c, r.as_ty);
       if (mi < 0) return 0;
       out[i].conv_mi = mi;
       out[i].obj_ty = r.as_ty;
+      out[i].obj_boxed = r.kind == RK_BOXED;
       out[i].repr = repr_of_ret(c, &c->scopes[mi]);
-      out[i].boxed = 0;
+      out[i].conv_ty = dispatch_ret_over(c, ty_object_class(r.as_ty), "to_ary", 0, mi, c->scopes[mi].ret, -1);
+      out[i].boxed = out[i].repr.kind == RK_BOXED || out[i].repr.may_nil ||
+                     !arr_kind(out[i].conv_ty) || comp_method_overridden(c, ty_object_class(r.as_ty), "to_ary", 0);
+      if (out[i].boxed) out[i].repr.as_ty = TY_POLY;
       out[i].snapshot = later_conversion;
       later_conversion = 1;
       continue;
@@ -1889,10 +1891,11 @@ static void emit_concat_hold(Compiler *c, int node, TyKind type, int boxed, int 
    and append only when all conversions succeed. bulk admits the single
    Integer block append; it does not change capture policy. */
 int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const int *argv, int argc, int bulk, Buf *b) {
+  int boxed_recv = rt == TY_POLY;
   int fresh = an_push_widens_fresh(c, id);
-  if (fresh) rt = TY_POLY_ARRAY;
+  if (fresh && !boxed_recv) rt = TY_POLY_ARRAY;
   const char *k = arr_kind(rt);
-  if (!k || nt_argv_has_splat(c->nt, argv, argc)) return 0;
+  if ((!k && !boxed_recv) || nt_argv_has_splat(c->nt, argv, argc)) return 0;
   ConcatOperand *op = (ConcatOperand *)calloc(argc ? argc : 1, sizeof *op);
   if (!op) { perror("calloc"); exit(1); }
   if (!prepare_concat_operands(c, argv, argc, op)) { free(op); return 0; }
@@ -1903,10 +1906,11 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   g_tmp += argc;
   int lengths = g_tmp + 1; g_tmp += argc;
   buf_puts(b, "({ ");
-  emit_concat_hold(c, recv, rt, 0, fresh, tr, b);
+  emit_concat_hold(c, recv, rt, boxed_recv, fresh && !boxed_recv, tr, b);
   for (int i = 0; i < argc; i++) {
     op[i].arr = base + i;
-    emit_concat_hold(c, argv[i], op[i].conv_mi >= 0 ? op[i].obj_ty : op[i].repr.as_ty, op[i].boxed, 0, base + i, b);
+    emit_concat_hold(c, argv[i], op[i].conv_mi >= 0 ? op[i].obj_ty : op[i].repr.as_ty,
+                     op[i].conv_mi >= 0 ? op[i].obj_boxed : op[i].boxed, 0, base + i, b);
   }
   /* A sole nonnil typed operand has no later conversion. Keep its pure
      length read beside its hold, as on the typed route. A nullable operand
@@ -1916,19 +1920,42 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   /* Argument expressions have run. This guard precedes the boxed
      conversions below, even for an empty concat. Nonempty appends test
      frozen again if a callback has frozen the receiver. */
-  if (repr_of(c, recv).may_nil) buf_printf(b, " if (!_t%d) sp_nil_recv(\"concat\");", tr);
-  buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", tr, tr, tr, array_frozen_cls(rt));
+  if (boxed_recv) {
+    buf_printf(b, " if (!(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
+                  " sp_raise_nomethod(sp_nomethod_msg(\"concat\", _t%d));"
+                  " if (sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d);", tr, tr, tr, tr, tr);
+  }
+  else {
+    if (repr_of(c, recv).may_nil) buf_printf(b, " if (!_t%d) sp_nil_recv(\"concat\");", tr);
+    buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", tr, tr, tr, array_frozen_cls(rt));
+  }
   for (int i = 0; i < argc; i++) {
     int tv = base + i;
     const char *ak = arr_kind(op[i].repr.as_ty);
     if (op[i].conv_mi >= 0) {
-      char self[24];
+      char self[128];
       Buf call = {0};
-      snprintf(self, sizeof self, "_t%d", tv);
+      if (op[i].obj_boxed)
+        snprintf(self, sizeof self, "((sp_%s *)_t%d.v.p)", c->classes[ty_object_class(op[i].obj_ty)].c_name, tv);
+      else snprintf(self, sizeof self, "_t%d", tv);
       emit_to_ary_dispatch(c, id, ty_object_class(op[i].obj_ty), self, &call);
       tv = op[i].arr = ++g_tmp;
       buf_puts(b, " "); emit_ctype(c, op[i].repr.as_ty, b);
-      buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d);", tv, call.p ? call.p : "NULL", tv);
+      buf_printf(b, " _t%d = ", tv);
+      if (!op[i].boxed) buf_puts(b, call.p ? call.p : "NULL");
+      else if (!is_scalar_ret(op[i].conv_ty)) buf_printf(b, "((void)(%s), sp_box_nil())", call.p);
+      else emit_boxed_text(c, op[i].conv_ty, call.p, b);
+      buf_printf(b, "; SP_GC_ROOT%s(_t%d);", op[i].boxed ? "_RBVAL" : "", tv);
+      if (op[i].boxed) {
+        int name = ++g_tmp;
+        char original[24]; snprintf(original, sizeof original, "_t%d", base + i);
+        buf_printf(b, " if (!(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id))) {"
+                      " const char *_t%d = sp_poly_class_name(", tv, tv, name);
+        if (op[i].obj_boxed) buf_puts(b, original);
+        else emit_boxed_text(c, op[i].obj_ty, original, b);
+        buf_printf(b, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %%s to Array (%%s#to_ary gives %%s)\","
+                      " _t%d, _t%d, sp_poly_class_name(_t%d))); }", name, name, tv);
+      }
       free(call.p);
     }
     if (op[i].boxed) {
@@ -1971,8 +1998,11 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
     int ti = ++g_tmp;
     int same = !op[i].boxed && at == rt;
     int num = rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY;
-    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
-               ti, ti, lengths + i, ti, k, num ? (same ? "_o" : "_nilable") : "", tr);
+    if (boxed_recv)
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {", ti, ti, lengths + i, ti);
+    else
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
+                 ti, ti, lengths + i, ti, k, num ? (same ? "_o" : "_nilable") : "", tr);
     Buf el = {0};
     if (same) buf_printf(&el, "sp_%sArray_%s(_t%d, _t%d)", ak, num ? "oget" : "get", tv, ti);
     else if (op[i].boxed) {
@@ -1994,12 +2024,18 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
       if (onum) buf_printf(&el, "%s(%s)", at == TY_INT_ARRAY ? "sp_box_oint" : "sp_box_ofloat", get);
       else emit_boxed_text(c, ty_array_elem(at), get, &el);
     }
-    if (same || rt == TY_POLY_ARRAY) buf_puts(b, el.p);
+    if (boxed_recv) {
+      int te = ++g_tmp;
+      buf_printf(b, " sp_RbVal _t%d = %s; if (_t%d.cls_id == SP_BUILTIN_SYM_ARRAY)"
+                    " sp_IntArray_push((sp_IntArray *)_t%d.v.p, sp_bm_arg_sym(_t%d));"
+                    " else sp_poly_ary_append(_t%d, _t%d);", te, el.p, tr, tr, te, tr, te);
+    }
+    else if (same || rt == TY_POLY_ARRAY) buf_puts(b, el.p);
     else if (rt == TY_INT_ARRAY) buf_printf(b, "sp_poly_elem_i(%s)", el.p);
     else if (rt == TY_FLOAT_ARRAY) buf_printf(b, "sp_poly_elem_f(%s)", el.p);
     else emit_unbox_text(c, ty_array_elem(rt), el.p, b);
     free(el.p);
-    buf_puts(b, ");");
+    buf_puts(b, boxed_recv ? " }" : ");");
     if (boxed_bulk) buf_puts(b, " }");
   }
   free(op);

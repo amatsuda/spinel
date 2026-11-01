@@ -201,6 +201,7 @@ static int cplan_called_before_def(Compiler *c, int id, int mi) {
    (as in CRuby)? The plan, the inference and the emitter ask it alike. */
 int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
+  if (mi >= 0 && nt_int(nt, c->scopes[mi].def_node, "concat_builtin_version", 0)) return 1;
   /* concat keeps the builtin until Array's definition has run, whether
      or not this call supplies a block. Use the same load-order fact as
      the existing String case, not another method lookup. */
@@ -4120,7 +4121,7 @@ static int ver_entry_emit(Compiler *c, int rcls, int sg, const char *name, int a
 static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int mi, int ar) {
   ElabVersion vs[VER_MAX_ARMS];
   DispArm arm[VER_MAX_ARMS];
-  int to[VER_MAX_ARMS], na = 0, blk = c->scopes[mi].blk_param || c->scopes[mi].yields, dc, same = 1;
+  int to[VER_MAX_ARMS], na = 0, blk = c->scopes[mi].blk_param || c->scopes[mi].yields, dc, same = 1, fallback = mi;
   int spliced = c->scopes[mi].yields;
   char sel[VER_MAX_ARMS][32];
   int nv = elab_chain_versions(c, rcls, sg, name, vs, VER_MAX_ARMS);
@@ -4134,10 +4135,11 @@ static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int m
     ver_cell_name(vs[i].hist, sel[na]);
     arm[na] = (DispArm){ sel[na], vs[i].n, name, vs[i].hist + 1 };
     to[na++] = s;
+    if (nt_int(c->nt, c->scopes[s].def_node, "concat_builtin_version", 0)) fallback = s;
     same &= ver_same_source(c->nt, c->scopes[s].def_node, c->scopes[mi].def_node);
   }
   if (nv < 2 || !na || same) return -1;
-  return ver_entry_emit(c, rcls, sg, name, ar, blk, spliced, arm, to, na, mi, -1);
+  return ver_entry_emit(c, rcls, sg, name, ar, blk, spliced, arm, to, na, fallback, -1);
 }
 /* The entry's def, its arms' calls pinned to to[] and its else arm's to
    els_to, beside els_to's def; or, given els, that else arm, pinned to

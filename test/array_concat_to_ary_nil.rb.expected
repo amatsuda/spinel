@@ -1,0 +1,4 @@
+TypeError
+"can't convert ConcatNilSource to Array (ConcatNilSource#to_ary gives NilClass)"
+[0]
+[:convert]
