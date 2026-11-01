@@ -105,3 +105,58 @@ class H4
   end
 end
 p H4.new.run
+
+# A keyword argument or a double splat that acts runs before the block
+# argument is looked up, and its value reaches the call.
+class W6
+  def initialize(t) = @t = t
+  def keep(x, memo) = (puts("#{@t}#{x}"); memo)
+end
+class H6
+  def initialize = (@w = W6.new("a"); @arr = [3, 1])
+  def fresh = @w = W6.new("a")
+  def h = {z: 1}
+  def chg = (@w = W6.new("b"); {z: 1})
+  def run
+    p @arr.each_with_object(k: chg, &@w.method(:keep))
+    fresh
+    p @arr.each_with_object(k: h, &@w.method(:keep))
+    p @arr.each_with_object(**chg, &@w.method(:keep))
+    fresh
+    p @arr.each_with_object(**h, &@w.method(:keep))
+    p @arr.each_with_object(k: 1, **chg, &@w.method(:keep))
+    fresh
+    b = [1]
+    p b.each_with_object(**(b = [2]; {z: 1}), &@w.method(:keep))
+    x = @arr.each_with_object(k: chg, &@w.method(:keep))
+    p x
+  end
+end
+H6.new.run
+
+# What the arguments read ahead of a keyword value or double splat that
+# acts (the receiver too) is read before it runs; what follows it, after.
+class H7
+  def initialize = fresh
+  def fresh = (@x = 1; @w = W6.new("a"); @arr = [3, 1]; @hh = {q: 1})
+  def chg = (@x = 2; @w = W6.new("b"); @arr = [5]; @hh = {q: 2}; 9)
+  def run
+    p @arr.each_with_object(a: @x, b: chg, &@w.method(:keep))
+    fresh
+    p @arr.each_with_object(a: @x, b: chg, c: @x, &@w.method(:keep))
+    fresh
+    p @arr.each_with_object(**@hh, k: chg, &@w.method(:keep))
+    fresh
+    p @arr.each_with_object(k: chg, **@hh, &@w.method(:keep))
+    fresh
+    p @arr.each_with_object("s" => @x, b: chg, &@w.method(:keep))
+    fresh
+    p @arr.each_with_object(a: @x, **(chg; {z: @x}), &@w.method(:keep))
+    fresh
+    a = 1
+    p @arr.each_with_object(a: a, b: (a = 2; 9), &@w.method(:keep))
+    x = @arr.each_with_object(a: @x, b: chg, &@w.method(:keep))
+    p x
+  end
+end
+H7.new.run

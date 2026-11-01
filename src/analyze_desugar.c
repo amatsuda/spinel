@@ -9419,47 +9419,70 @@ static int fwd_hoist_temp(Compiler *c, int id, int k, int e, int *stm, int *ns) 
   stm[(*ns)++] = w;
   return r;
 }
+/* The last element of keyword argument a whose evaluation acts: a double
+   splat's hash, an element's key or value, or a non-pair; else -1 */
+static int fwd_kw_last_acting(const NodeTable *nt, int a) {
+  int en = 0, last = -1;
+  const int *el = nt_arr(nt, a, "elements", &en);
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode ? bo_may_act(nt, nt_ref(nt, el[e], "value"))
+        : nt_kind(nt, el[e]) != NK_AssocNode || bo_may_act(nt, nt_ref(nt, el[e], "key")) || bo_may_act(nt, nt_ref(nt, el[e], "value")))
+      last = e;
+  return last;
+}
 /* Does evaluating argument a of a call act: a splat's expression, a
-   keyword argument's keys and values, or the argument itself? */
+   keyword argument's keys and values (a double splat's hash too), or the
+   argument itself? */
 static int fwd_arg_acts(const NodeTable *nt, int a) {
   NodeKind k = nt_kind(nt, a);
   if (k == NK_SplatNode) return bo_may_act(nt, nt_ref(nt, a, "expression"));
-  if (k != NK_KeywordHashNode) return bo_may_act(nt, a);
-  int en = 0; const int *el = nt_arr(nt, a, "elements", &en);
-  for (int e = 0; e < en; e++)
-    if (nt_kind(nt, el[e]) != NK_AssocNode || bo_may_act(nt, nt_ref(nt, el[e], "key")) || bo_may_act(nt, nt_ref(nt, el[e], "value")))
-      return 1;
-  return 0;
+  return k == NK_KeywordHashNode ? fwd_kw_last_acting(nt, a) >= 0 : bo_may_act(nt, a);
+}
+/* Does part x of an argument go into a temp: when it acts, or, read ahead of
+   a later part that acts (early), when that part may change what it reads:
+   anything but a literal, self or a constant (a local too: a later part may
+   write it)? */
+static int fwd_part_hoists(Compiler *c, int x, int early) {
+  return bo_may_act(c->nt, x) || (early && (nt_kind(c->nt, x) == NK_LocalVariableReadNode || !fwd_stable_operand(c, x)));
 }
 /* ...its temps: the argument itself, a splat's expression (the argument
-   becomes `*tmp`), a keyword argument's keys and values, in order; the
-   argument now. stm has room for the writes (fwd_arg_slots). */
+   becomes `*tmp`), a keyword argument's keys and values and a double
+   splat's hash (`**tmp`), in order; the argument now. A part ahead of the
+   first `early` elements (all of a plain or splat argument for early > 0)
+   is read early (fwd_part_hoists). stm has room for the writes
+   (fwd_arg_slots). */
 static int fwd_arg_slots(const NodeTable *nt, int a) {
   int en = 0;
   if (nt_kind(nt, a) == NK_KeywordHashNode) nt_arr(nt, a, "elements", &en);
   return 1 + 2 * en;
 }
-static int fwd_arg_hoist(Compiler *c, int id, int k, int a, int *stm, int *ns) {
+static int fwd_arg_hoist(Compiler *c, int id, int k, int a, int early, int *stm, int *ns) {
   NodeTable *nt = (NodeTable *)c->nt;
   NodeKind ak = nt_kind(nt, a);
   if (ak == NK_SplatNode) {
     int ex = nt_ref(nt, a, "expression");
-    if (bo_may_act(nt, ex)) nt_node_set_ref(nt, a, "expression", fwd_hoist_temp(c, id, k, ex, stm, ns));
+    if (fwd_part_hoists(c, ex, early > 0)) nt_node_set_ref(nt, a, "expression", fwd_hoist_temp(c, id, k, ex, stm, ns));
     return a;
   }
   if (ak == NK_KeywordHashNode) {
     int en = 0; const int *el = nt_arr(nt, a, "elements", &en);
     for (int e = 0; e < en; e++) {
+      if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {   /* `**opts`: its hash */
+        int v = nt_ref(nt, el[e], "value");
+        if (fwd_part_hoists(c, v, e < early)) nt_node_set_ref(nt, el[e], "value", fwd_hoist_temp(c, id, k * 64 + 2 * e, v, stm, ns));
+        continue;
+      }
       if (nt_kind(nt, el[e]) != NK_AssocNode) continue;
       int key = nt_ref(nt, el[e], "key"), val = nt_ref(nt, el[e], "value");
-      if (bo_may_act(nt, key)) nt_node_set_ref(nt, el[e], "key", fwd_hoist_temp(c, id, k * 64 + 2 * e, key, stm, ns));
-      if (bo_may_act(nt, val)) nt_node_set_ref(nt, el[e], "value", fwd_hoist_temp(c, id, k * 64 + 2 * e + 1, val, stm, ns));
+      if (fwd_part_hoists(c, key, e < early || (e == early && bo_may_act(nt, val))))
+        nt_node_set_ref(nt, el[e], "key", fwd_hoist_temp(c, id, k * 64 + 2 * e, key, stm, ns));
+      if (fwd_part_hoists(c, val, e < early)) nt_node_set_ref(nt, el[e], "value", fwd_hoist_temp(c, id, k * 64 + 2 * e + 1, val, stm, ns));
     }
     return a;
   }
-  return bo_may_act(nt, a) ? fwd_hoist_temp(c, id, k, a, stm, ns) : a;
+  return fwd_part_hoists(c, a, early > 0) ? fwd_hoist_temp(c, id, k, a, stm, ns) : a;
 }
-static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex, int order) {
+static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex, int order, int **ahead, int *nahead) {
   NodeTable *nt = (NodeTable *)c->nt;
   char tn[48];
   snprintf(tn, sizeof tn, "__fwdc_%s", comp_node_tag(c, id));
@@ -9497,9 +9520,28 @@ static void fwd_hoist_callable(Compiler *c, int id, int blk, int *ex, int order)
   }
   int last = recv;
   if (order && (bo_may_act(nt, recv) || (arg_acts && (recv_written || !fwd_stable_operand(c, recv))))) last = fwd_hoist_temp(c, id, 0, recv, stm, &ns);
-  for (int k = 0; k < ac; k++) nav[k] = fwd_arg_hoist(c, id, k + 1, av[k], stm, &ns);
+  int kw_acts = 0;
+  for (int k = 0; k < ac; k++) kw_acts |= nt_kind(nt, av[k]) == NK_KeywordHashNode && fwd_arg_acts(nt, av[k]);
+  /* with the temps ahead of the call, what an argument reads ahead of the
+     last part that acts is read there too, in source order, as CRuby reads
+     it before that part runs; the parts after it are read by the call */
+  int lk = -1, le = -1;
+  for (int k = 0; kw_acts && k < ac; k++)
+    if (fwd_arg_acts(nt, av[k])) { lk = k; le = fwd_kw_last_acting(nt, av[k]); }
+  for (int k = 0; k < ac; k++) nav[k] = fwd_arg_hoist(c, id, k + 1, av[k], k < lk ? INT_MAX : k == lk ? le : 0, stm, &ns);
   if (ac) nt_node_set_arr(nt, args, "arguments", nav, ac);
   stm[ns++] = w;
+  if (kw_acts) {
+    /* the iterator's lowering builds a keyword hash as statements ahead of
+       the call's expression, which would read the temps of a receiver's
+       parentheses before they are assigned: the temps go ahead of the whole
+       call (fwd_wrap_call) */
+    nt_node_set_ref(nt, owner, "receiver", last);
+    if (nt_int(nt, id, "enum_self_result", -1) == recv) nt_node_set_int(nt, id, "enum_self_result", last);
+    *ahead = stm; *nahead = ns;
+    free(nav);
+    return;
+  }
   stm[ns++] = last;
   int body = nt_new_node(nt, "StatementsNode");
   nt_node_set_arr(nt, body, "body", stm, ns);
@@ -9636,6 +9678,24 @@ static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
   return 0;
 }
 
+/* Call `id` moves to `call`, a node the caller made of `kind`, and `id`
+   becomes a node of `kind` for the caller to give its children: the nodes
+   around `id` keep their number for what stands there, and what the load
+   record knows of the call follows it (elab_swap_nodes). `id` keeps the
+   call's place (line, file, column) and the marks of a computed send's arm
+   (dyn_arm, dyn_name), which the dispatch finds its arms by. */
+static void fwd_move_call(Compiler *c, int id, int call, const char *kind) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0), col = nt_int(nt, id, "node_col", -1);
+  elab_swap_nodes(c, id, call);
+  nt_node_reset(nt, id, kind);
+  if (nt_str(nt, call, "dyn_name")) {
+    nt_node_set_int(nt, id, "dyn_arm", 1);
+    nt_node_set_str(nt, id, "dyn_name", nt_str(nt, call, "dyn_name"));
+  }
+  if (line > 0) { nt_node_set_int(nt, id, "node_line", line); nt_node_set_int(nt, id, "node_file", file); }
+  if (col >= 0) nt_node_set_int(nt, id, "node_col", col);
+}
 /* `recv.m(args) { |x| yield x }` -- a builtin given the enclosing method's
    own block -- becomes `block_given? ? <that call> : recv.m(args)`: the
    method is spliced into each of its sites, where block_given? is known, and
@@ -9665,14 +9725,9 @@ static void fwd_branch_on_callable(Compiler *c, int id, int cx) {
     nt_node_set_ref(nt, pred, "arguments", -1);
     nt_node_set_ref(nt, pred, "block", -1);
   }
-  /* the call moves to `ifn`'s number, the conditional takes `id`'s */
-  elab_swap_nodes(c, id, ifn);
+  /* the call moves to a number of its own, the conditional takes `id`'s */
   int call = ifn;
-  nt_node_reset(nt, id, "IfNode");
-  if (nt_str(nt, call, "dyn_name")) {
-    nt_node_set_int(nt, id, "dyn_arm", 1);
-    nt_node_set_str(nt, id, "dyn_name", nt_str(nt, call, "dyn_name"));
-  }
+  fwd_move_call(c, id, call, "IfNode");
   nt_node_set_arr(nt, then, "body", &call, 1);
   nt_node_set_arr(nt, other, "body", &noblk, 1);
   nt_node_set_ref(nt, els, "statements", other);
@@ -9831,6 +9886,24 @@ static int fwd_own_block_to_inplace_iter(Compiler *c, int id, int anon, int ex, 
   int own = anon || (ex >= 0 && nt_kind(nt, ex) == NK_LocalVariableReadNode && ms && ms->blk_param &&
                      nt_str(nt, ex, "name") && sp_streq(nt_str(nt, ex, "name"), ms->blk_param));
   return own && fwd_method_called_blockless(c, ms);
+}
+
+/* The statements stm[0..n) run, in turn, ahead of call `id`, which stays the
+   last of the parentheses that take its place (and its number): the exchange
+   fwd_branch_on_callable makes for its conditional (fwd_move_call). */
+static void fwd_wrap_call(Compiler *c, int id, int *stm, int n) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int base = nt->count, encl = c->nscope[id];
+  int call = nt_new_node(nt, "ParenthesesNode"), body = nt_new_node(nt, "StatementsNode");
+  if (call < 0 || body < 0) return;
+  fwd_move_call(c, id, call, "ParenthesesNode");
+  stm[n] = call;
+  nt_node_set_arr(nt, body, "body", stm, n + 1);
+  nt_node_set_ref(nt, id, "body", body);
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+  if (line > 0) { nt_node_set_int(nt, body, "node_line", line); nt_node_set_int(nt, body, "node_file", file); }
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
 }
 
 int desugar_value_callable_forwards(Compiler *c) {
@@ -10102,7 +10175,11 @@ int desugar_value_callable_forwards(Compiler *c) {
     else if (ty_is_hash(rt)) wrap_pair = 0;   /* each_key/each_value: the bare key/value */
 
     int base = nt->count;
-    if (hoist) fwd_hoist_callable(c, id, blk, &ex, ex >= 0 && nt_kind(nt, ex) == NK_CallNode && !bo_may_act(nt, ex));
+    /* (the temps ahead of the call, wrapped round it at the end of the
+       round: the exits below that skip the wrap are node-table exhaustion,
+       where nt_new_node aborts, so none is taken with temps pending) */
+    int *ahead = NULL, nahead = 0;
+    if (hoist) fwd_hoist_callable(c, id, blk, &ex, ex >= 0 && nt_kind(nt, ex) == NK_CallNode && !bo_may_act(nt, ex), &ahead, &nahead);
     int fill_test = -1;
     if (fill_nilable) {
       /* the callable is read once, into the temp the test assigns */
@@ -10226,6 +10303,7 @@ int desugar_value_callable_forwards(Compiler *c) {
     /* a splat beside the forward was kept whole while the block was an
        `&` (a block goes on one arm only); the literal now spreads it */
     else if (anon) expand_static_splat_args(c, id, id + 1);
+    if (ahead) { fwd_wrap_call(c, id, ahead, nahead); free(ahead); }
     changed = 1;
   }
   free(calls);
