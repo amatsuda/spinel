@@ -5994,6 +5994,13 @@ int infer_global_const_types(Compiler *c) {
       continue;
     }
     if (!lv) continue;
+    /* A constant narrow_object_arrays made an object table keeps that kind,
+       as a narrowed local does: the pass vetted every write of it, and a
+       write of `Array.new(n) { Obj.new }` is built at the slot's kind
+       (emit_ptr_array_build) although its own type is the poly array.
+       Unifying with that type widened the constant every round and the
+       narrowing put it back, so the fixpoint never settled. */
+    if (ty_is_obj_array(lv->oa_pin) && lv->type == lv->oa_pin && ty_is_array(vt)) continue;
     TyKind merged = keep_general_array(lv->type, vt) ? lv->type : ty_unify(lv->type, vt);
     if (merged != lv->type) { lv_set_type(lv, merged); changed = 1; }
   }

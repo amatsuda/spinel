@@ -20921,6 +20921,12 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       if (repr_of_slot(c, lv).elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
       else emit_poly_array_from(c, v, b);
     }
+    /* `NONE = Array.new(n) { Obj.new }` into a constant narrow_object_arrays
+       made an object table: the constructor builds in place at the slot's
+       kind, as a local's and an ivar's write already do. Without it the
+       call was emitted at its own poly type and the write refused, since
+       no conversion keeps a poly array in an sp_PtrArray slot. */
+    else if (ty_is_ptr_array(lv->type) && emit_ptr_array_build(c, v, lv->type, b)) { }
     else emit_coerce(c, v, lv->type, CO_HOLD, isg ? "a global variable write" : "a constant write", b);
     buf_puts(b, ";\n");
     if (!isg && lv->init_guarded) {
