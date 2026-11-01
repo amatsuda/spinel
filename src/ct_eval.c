@@ -31,6 +31,10 @@ void ct_env_ran(CtEnv *e, const char *cls, const char *meth) {
   e->nran++;
 }
 
+int ct_same_string(const CtVal *a, const CtVal *b) {
+  return a->k == CT_VALUE && b->k == CT_VALUE && a->mv.k == MV_STR && b->mv.k == MV_STR && a->mv.s == b->mv.s;
+}
+
 static CtFx *ct_fx(CtEnv *e, CtFxKind k, int site) {
   e->fx = ct_grow(e->fx, &e->cfx, e->nfx + 1, sizeof *e->fx);
   CtFx *f = &e->fx[e->nfx++];
