@@ -12477,8 +12477,7 @@ static void arity_names(char *out, size_t n, const char *pre, const char *const 
 int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t n) {
   const NodeTable *nt = c->nt;
   ClassInfo *k = &c->classes[ci];
-  int cdn = k->def_node;
-  if (cdn >= 0 && nt_kind(nt, cdn) == NK_ModuleNode) return 0;
+  if (class_def_is_module(nt, k->def_node)) return 0;
   msg[0] = 0;
   if (initm < 0) {
     if (k->is_struct) {
@@ -12512,8 +12511,7 @@ int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t
     for (int p = ci, guard = 0; p >= 0 && guard < 256; p = c->classes[p].parent, guard++) {
       int dn = c->classes[p].def_node;
       if (dn < 0) return 0;
-      if (c->classes[p].parent < 0 && nt_kind(nt, dn) == NK_ClassNode &&
-          nt_ref(nt, dn, "superclass") >= 0) return 0;
+      if (c->classes[p].parent < 0 && class_def_super(nt, dn) >= 0) return 0;
     }
     arity_message(msg, n, argc, 0, 0, NULL);
     return 1;
@@ -12994,10 +12992,8 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
     /* No initialize at all: `k.new(*[])` constructs, and any element is one
        argument too many. */
     if (initm < 0) {
-      int mdn = c->classes[ci].def_node;
-      NodeKind mdk = nt_kind(nt, mdn);
       if (spl < 0 || !splat_operand_ok(c, spl) ||
-          (mdk == NK_ModuleNode) || class_is_exc_subclass(c, ci) ||
+          class_def_is_module(nt, c->classes[ci].def_node) || class_is_exc_subclass(c, ci) ||
           comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) continue;
       int tsa = ++g_tmp;
       buf_printf(b, "case %d: { sp_PolyArray *_t%d = ", ci, tsa);
@@ -14562,7 +14558,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   }
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ||
       (rk == NK_LocalVariableReadNode && class_var_static_ci(c, recv) >= 0) ||
-      (rk == NK_CallNode && is_struct_call(c, recv))) {
+      (rk == NK_CallNode && is_struct_call(nt, recv))) {
     int ci = rk == NK_LocalVariableReadNode ? class_var_static_ci(c, recv)
            : rk == NK_CallNode ? anon_struct_ci_for_value(c, recv)
                                                     : const_node_class_index(c, recv);
@@ -15563,7 +15559,7 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
     if (mrk == NK_ConstantReadNode || mrk == NK_ConstantPathNode)
       mci = const_node_class_index(c, recv);
     else if (mrk == NK_LocalVariableReadNode ||
-             (mrk == NK_CallNode && is_struct_call(c, recv)))
+             (mrk == NK_CallNode && is_struct_call(nt, recv)))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) {
@@ -18179,8 +18175,8 @@ static int refl_own_vis(Compiler *c, int ci, int si, const char *m) {
 int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m) {
   const NodeTable *nt = c->nt;
   int dn = c->classes[ci].def_node;
-  if (!c->classes[ci].is_struct || dn < 0 || nt_kind(nt, dn) != NK_ClassNode) return 0;
-  int sup = nt_ref(nt, dn, "superclass");
+  if (!c->classes[ci].is_struct || !class_def_is_class(nt, dn)) return 0;
+  int sup = class_def_super(nt, dn);
   int args = sup >= 0 && nt_kind(nt, sup) == NK_CallNode ? nt_ref(nt, sup, "arguments") : -1;
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -21514,7 +21510,7 @@ static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *
   if (cid < 0 || cid >= c->nclasses || cplan_cmethod_visible(c, id, cid, vnm)) return 0;
   int vis = comp_cmethod_vis_declared(c, cid, vnm, NULL);
   const char *vrn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
-  int is_mod = nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode;
+  int is_mod = class_def_is_module(nt, c->classes[cid].def_node);
   buf_puts(b, "(");
   { int vac; const int *vav = call_args(nt, id, &vac);
     for (int k = 0; k < vac; k++) { buf_puts(b, "(void)("); emit_expr(c, vav[k], b); buf_puts(b, "), "); } }
@@ -22772,7 +22768,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               if (!cplan_cmethod_visible(c, id, ccls[k], nm)) {
                 int vis = comp_cmethod_vis_declared(c, ccls[k], nm, NULL);
                 const char *vrn = class_ruby_name(c, ccls[k]) ? class_ruby_name(c, ccls[k]) : c->classes[ccls[k]].name;
-                int is_mod = nt_kind(nt, c->classes[ccls[k]].def_node) == NK_ModuleNode;
+                int is_mod = class_def_is_module(nt, c->classes[ccls[k]].def_node);
                 buf_printf(b, "(sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s %s\")[1])), sp_box_nil()) : ",
                            vis == SP_VIS_PRIVATE ? "private" : "protected", nm, is_mod ? "module" : "class", vrn);
                 continue;
@@ -23203,19 +23199,13 @@ if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
 }
 
 
-/* Whether user class k was written as a module (`module M`). */
-static int class_is_module_def(Compiler *c, int k) {
-  NodeKind dk = nt_kind(c->nt, c->classes[k].def_node);
-  return dk == NK_ModuleNode;
-}
-
 /* Whether an instance of user class k is_a? user class or module `cid`:
    cid is k, a superclass of it, or a module k or a
    superclass includes. The runtime class tests of a boxed value list the
    classes this answers yes for. */
 int class_isa_user(Compiler *c, int k, int cid) {
   if (k == cid || is_descendant(c, k, cid)) return 1;
-  return class_is_module_def(c, cid) && !class_is_module_def(c, k) &&
+  return class_def_is_module(c->nt, c->classes[cid].def_node) && !class_def_is_module(c->nt, c->classes[k].def_node) &&
          class_includes_module(c, k, cid);
 }
 
@@ -30818,7 +30808,7 @@ void emit_bound_method_call(Compiler *c, int id, int recv, int target, Buf *b) {
 int bind_owner_mismatch(Compiler *c, int target, TyKind ot) {
   Scope *tm = &c->scopes[target];
   int cid = tm->class_id;
-  if (cid < 0 || tm->is_cmethod || class_is_module_def(c, cid)) return 0;
+  if (cid < 0 || tm->is_cmethod || class_def_is_module(c->nt, c->classes[cid].def_node)) return 0;
   return !class_isa_user(c, ty_object_class(ot), cid);
 }
 

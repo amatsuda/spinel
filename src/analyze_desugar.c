@@ -374,8 +374,7 @@ int desugar_bare_object_reopen_calls(Compiler *c) {
     int cls = sc ? sc->class_id : -1;
     if (sc && sc->is_cmethod) continue;
     if (cls >= 0) {
-      int dn = c->classes[cls].def_node;
-      if (cls == obj || (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode)) continue;
+      if (cls == obj || class_def_is_module(c->nt, c->classes[cls].def_node)) continue;
       if (call_target(c, id, cls, nm, 0, NULL) >= 0) continue;
     }
     /* at the top level self is main, an Object; a top-level `def` of the
@@ -19025,7 +19024,7 @@ int desugar_struct_block_anonymous(Compiler *c) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) continue;
     int val = nt_ref(nt, id, "value");
-    if (!is_struct_call(c, val)) continue;
+    if (!is_struct_call(nt, val)) continue;
     int blk = nt_ref(nt, val, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     nt_node_set_int(nt, id, "class_new_anonymous", k == NK_ConstantWriteNode ? 1 : 2);
@@ -19110,7 +19109,7 @@ int desugar_inline_struct_blocks(Compiler *c) {
   int n0 = nt->count, changed = 0, serial = 0;
   int *parent = NULL;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode || !is_struct_call(c, id)) continue;
+    if (nt_kind(nt, id) != NK_CallNode || !is_struct_call(nt, id)) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     if (!parent) {
@@ -20301,10 +20300,10 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
     }
     else if (ck == NK_ConstantWriteNode) {   /* Name = Struct.new(...) do ... end */
       cls = nt_str(nt, cn, "name");
-      body = class_def_body(c, cn);
+      body = class_def_body(nt, cn);
     }
     else if (ck == NK_LocalVariableWriteNode) {   /* k = Struct.new(...) do ... end: base is self */
-      body = class_def_body(c, cn);
+      body = class_def_body(nt, cn);
     }
     else continue;
     if ((!cls && ck != NK_LocalVariableWriteNode) || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
@@ -20561,7 +20560,7 @@ int desugar_class_body_object_acts(Compiler *c) {
     NodeKind wk = nt_kind(nt, w);
     if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
     int val = nt_ref(nt, w, "value");
-    int blk = is_struct_call(c, val) ? nt_ref(nt, val, "block") : -1;
+    int blk = is_struct_call(nt, val) ? nt_ref(nt, val, "block") : -1;
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) changed |= cb_give_self(nt, nt_ref(nt, blk, "body"), NULL, 1, NULL);
   }
   if (changed) comp_grow_node_arrays(c);
@@ -20764,7 +20763,7 @@ static void inh_note_hook(InhIndex *ix, const NodeTable *nt, int e, int body) {
 static int inh_struct_body(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_ConstantWriteNode) return -1;
-  int body = class_def_body(c, id);
+  int body = class_def_body(nt, id);
   return body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? body : -1;
 }
 

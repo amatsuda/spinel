@@ -712,7 +712,7 @@ const char *superclass_builtin_exc_name(const NodeTable *nt, int sc) {
 }
 int class_inherits_builtin_exception(Compiler *c, int ci) {
   for (int k = ci; k >= 0; k = c->classes[k].parent)
-    if (superclass_builtin_exc_name(c->nt, nt_ref(c->nt, c->classes[k].def_node, "superclass")))
+    if (superclass_builtin_exc_name(c->nt, class_def_super(c->nt, c->classes[k].def_node)))
       return 1;
   return 0;
 }
@@ -1136,7 +1136,7 @@ int class_var_static_ci(Compiler *c, int node) {
   NodeKind ty_k = nt_kind(nt, node);
   /* an inline `Struct.new(...)` / `Data.define(...)` receiver resolves to the
      anon class synthesized for that call node (#2682) */
-  if (ty_k == NK_CallNode && is_struct_call(c, node))
+  if (ty_k == NK_CallNode && is_struct_call(nt, node))
     return anon_struct_ci_for_value(c, node);
   if (ty_k != NK_LocalVariableReadNode) return -1;
   const char *vn = nt_str(nt, node, "name");
@@ -1159,7 +1159,7 @@ int class_var_static_ci(Compiler *c, int node) {
              ? const_node_class_index(c, val) : -1;
     /* k = Struct.new(:a, :b): resolve to the anonymous struct class that
        register_structs synthesized for this write (keyed by def_node) */
-    if (ci < 0 && is_struct_call(c, val)) {
+    if (ci < 0 && is_struct_call(nt, val)) {
       for (int k = comp_class_of_def(c, w); k >= 0; k = comp_class_def_next(c, k))
         if (c->classes[k].is_anon_struct) { ci = k; break; }
     }
@@ -4100,7 +4100,7 @@ int class_value_bind_call_target(Compiler *c, int ci, const char *sym, int *arml
   if (mi < 0) return -1;
   const ClassInfo *k = &c->classes[ci];
   Scope *tm = &c->scopes[mi];
-  if (k->is_value_type || (k->def_node >= 0 && nt_kind(c->nt, k->def_node) == NK_ModuleNode) ||
+  if (k->is_value_type || class_def_is_module(c->nt, k->def_node) ||
       tm->yields || (tm->blk_param && tm->blk_param[0])) {
     if (armless) *armless = 1;
     return -1;
@@ -5120,7 +5120,7 @@ static int si_class_may_stop(Compiler *c, int ref, int depth) {
     ClassInfo *ci = &c->classes[k];
     if (ci->name && (sp_streq(ci->name, "StopIteration") || sp_streq(ci->name, "ClosedQueueError"))) return 1;
     if (ci->parent >= 0) { k = ci->parent; continue; }
-    int sup = ci->def_node >= 0 ? nt_ref(c->nt, ci->def_node, "superclass") : -1;
+    int sup = class_def_super(c->nt, ci->def_node);
     if (sup < 0) return 0;
     NodeKind sk = nt_kind(c->nt, sup);
     if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) return 1;

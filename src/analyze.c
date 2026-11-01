@@ -635,8 +635,7 @@ typedef struct {
 
 static int cr_live_gated(Compiler *c, int k) {
   const ClassInfo *ci = &c->classes[k];
-  int dn = ci->def_node;
-  return k != c->toplevel_class && dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ClassNode &&
+  return k != c->toplevel_class && class_def_is_class(c->nt, ci->def_node) &&
          !ci->is_builtin_const && !ci->is_native_class && !ci->is_struct && !ci->is_data &&
          !ci->is_anon_struct && !ci->cext_layout && !ci->cext_extension;
 }
@@ -1814,8 +1813,7 @@ void compute_instantiated(Compiler *c, int early) {
       /* main's ivars live on the Toplevel pseudo-class, which is never built */
       if (k == c->toplevel_class) continue;
       /* a module has no instances, whatever `klass.new` can reach */
-      { int dn = c->classes[k].def_node;
-        if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) continue; }
+      if (class_def_is_module(nt, c->classes[k].def_node)) continue;
       c->classes[k].instantiated = 1;
     }
   for (int k = 0; k < c->nclasses; k++) {
@@ -7588,7 +7586,7 @@ static int *inline_struct_owner(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     NodeKind wk = nt_kind(nt, id);
     if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
-    int bbody = class_def_body(c, id);
+    int bbody = class_def_body(nt, id);
     if (bbody < 0) continue;
     char an[48];
     const char *cname = nt_str(nt, id, "name");
@@ -16444,7 +16442,7 @@ static int narrow_object_arrays(Compiler *c) {
         all keep the slot boxed. */
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cl = &c->classes[ci];
-    if (cl->def_node < 0 || nt_kind(nt, cl->def_node) == NK_ModuleNode) continue;
+    if (cl->def_node < 0 || class_def_is_module(nt, cl->def_node)) continue;
     if (cl->is_struct || cl->is_data || cl->is_native_class || cl->is_value_type) continue;
     for (int iv = 0; iv < cl->nivars; iv++) {
       const char *ivn = cl->ivars[iv];
@@ -16669,7 +16667,7 @@ static int narrow_object_arrays(Compiler *c) {
       Scope *sc = comp_scope_of(c, id);
       int own = (sc && !sc->is_cmethod && !in_blk[id] && sc->class_id >= 0 && sc->class_id < c->nclasses &&
                  c->classes[sc->class_id].def_node >= 0 &&
-                 nt_kind(nt, c->classes[sc->class_id].def_node) != NK_ModuleNode) ? sc->class_id : -1;
+                 !class_def_is_module(nt, c->classes[sc->class_id].def_node)) ? sc->class_id : -1;
       if (own >= 0) {
         int i = OA_IVSLOT(own, nm);
         if (i >= 0) sl[i].alive = 0;
@@ -17717,7 +17715,7 @@ static TyKind isa_narrow_type(Compiler *c, const char *cn, const Scope *s) {
   int ci = is_builtin_class_name(cn) || is_builtin_module_name(cn) ? -1 : comp_class_index(c, cn);
   if (ci >= 0) {
     const ClassInfo *k = &c->classes[ci];
-    if (!(k->def_node >= 0 && nt_kind(c->nt, k->def_node) == NK_ClassNode &&
+    if (!(class_def_is_class(c->nt, k->def_node) &&
           !k->is_builtin_const && !k->is_native_class && k->ary_root <= 0 &&
           !class_has_subclass(c, ci)))
       return TY_UNKNOWN;
@@ -25992,7 +25990,7 @@ static int an_super_reaches_object(Compiler *c, int cid, const char *nm) {
   const NodeTable *nt = c->nt;
   for (int k = cid; k >= 0; k = c->classes[k].parent) {
     ClassInfo *ci = &c->classes[k];
-    if (ci->is_struct || ci->ary_root > 0 || ci->def_node < 0 || nt_kind(nt, ci->def_node) != NK_ClassNode) return 0;
+    if (ci->is_struct || ci->ary_root > 0 || !class_def_is_class(nt, ci->def_node)) return 0;
     /* (an attr_reader of the name answers its ivar's String) */
     if (k != cid && (an_defines_instance_method(c, k, nm) || comp_is_reader(ci, nm))) return 0;
     for (int i = 0; i < ci->nincluded_mods; i++) {
@@ -26002,7 +26000,7 @@ static int an_super_reaches_object(Compiler *c, int cid, const char *nm) {
     for (int i = 0; i < ci->nincluded_mod_names; i++)
       if (!sp_streq(ci->included_mod_names[i], "Comparable") && !sp_streq(ci->included_mod_names[i], "Enumerable")) return 0;
     if (ci->parent < 0) {
-      int sup = nt_ref(nt, ci->def_node, "superclass");
+      int sup = class_def_super(nt, ci->def_node);
       if (sup >= 0 && !(nt_kind(nt, sup) == NK_ConstantReadNode && sp_streq(nt_str(nt, sup, "name"), "Object"))) return 0;
     }
   }
@@ -30280,12 +30278,11 @@ static int dyn_site_misses(Compiler *c, int n, int mi) {
   }
   /* a class value never reaches an instance method of a class */
   if (by_const && comp_ntype(c, recv0) == TY_CLASS && !m->is_cmethod && m->class_id >= 0 &&
-      c->classes[m->class_id].def_node >= 0 &&
-      nt_kind(nt, c->classes[m->class_id].def_node) == NK_ClassNode)
+      class_def_is_class(nt, c->classes[m->class_id].def_node))
     return 1;
   if (m->is_cmethod || m->class_id < 0) return 0;
   ClassInfo *ci = &c->classes[m->class_id];
-  if (ci->def_node < 0 || nt_kind(nt, ci->def_node) != NK_ClassNode || is_builtin_class_name(ci->name))
+  if (!class_def_is_class(nt, ci->def_node) || is_builtin_class_name(ci->name))
     return 0;
   int recv = nt_ref(nt, n, "receiver");
   if (recv < 0) return 0;
@@ -30950,7 +30947,7 @@ static int dyn_site_may_reach(Compiler *c, int n, int mi) {
   Scope *m = &c->scopes[mi];
   if (m->is_cmethod || m->class_id < 0) return 1;
   ClassInfo *mc = &c->classes[m->class_id];
-  if (mc->def_node < 0 || nt_kind(nt, mc->def_node) != NK_ClassNode) return 1;
+  if (!class_def_is_class(nt, mc->def_node)) return 1;
   if (is_builtin_class_name(mc->name) || sp_streq(mc->name, "Object") || sp_streq(mc->name, "BasicObject"))
     return 1;
   int recv = nt_ref(nt, n, "receiver");
@@ -35051,7 +35048,7 @@ int new_recv_every_class(Compiler *c, int recv) {
   if (recv < 0) return 0;
   NodeKind rk = nt_kind(c->nt, recv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) return 0;
-  if (rk == NK_CallNode && is_struct_call(c, recv)) return 0;
+  if (rk == NK_CallNode && is_struct_call(c->nt, recv)) return 0;
   if (self_class_static_ci(c, recv) >= 0 || class_var_static_ci(c, recv) >= 0) return 0;
   TyKind rt = infer_type(c, recv);
   return rt == TY_CLASS || rt == TY_POLY;
@@ -44260,8 +44257,7 @@ static void rewrite_ivar_reflection_supers(Compiler *c) {
    constant would not */
 static int cm_alias_has_subclass(Compiler *c, int ci) {
   for (int k = 0; k < c->nclasses; k++) {
-    int dn = c->classes[k].def_node;
-    int sc = dn >= 0 && k != ci ? nt_ref(c->nt, dn, "superclass") : -1;
+    int sc = k != ci ? class_def_super(c->nt, c->classes[k].def_node) : -1;
     const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
     if (sn && sp_streq(sn, c->classes[ci].name)) return 1;
   }
@@ -47422,7 +47418,7 @@ int refuse_superclass_exprs_at(Compiler *c, LowerCtx *lc, int id) {
   if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) return 0;
   const char *what = nt_type(ntc, sc);
   if (sk == NK_CallNode) {
-    if (is_struct_call(c, sc)) return 0;
+    if (is_struct_call(c->nt, sc)) return 0;
     int rv = nt_ref(ntc, sc, "receiver");
     const char *mn = nt_str(ntc, sc, "name");
     /* `class RetryOptions < Options.new(:max, :interval)` where Options <
@@ -52911,7 +52907,7 @@ static void an_phase_value_types(Compiler *c) {
        builtin parent leaves ci->parent == -1); without this, an Exception
        subclass with a scalar ivar was wrongly returned by value and never
        got a struct (#1415). */
-    if (ci->def_node >= 0 && nt_ref(c->nt, ci->def_node, "superclass") >= 0) continue;
+    if (class_def_super(c->nt, ci->def_node) >= 0) continue;
     int scalar = 1;
     for (int j = 0; j < ci->nivars; j++) {
       TyKind t = ci->ivar_types[j];

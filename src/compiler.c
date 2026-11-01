@@ -2848,7 +2848,7 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
          :shellwords`, or `extend self`). An instance method's lookup (2)
          reads the instance aliases only. */
       /* ... but not over a class method the module defines itself */
-      int mod = ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode &&
+      int mod = class_def_is_module(c->nt, ci->def_node) &&
                 !(sg == 1 && comp_cmethod_in_class(c, cid, name) >= 0);
       for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--) {
         int asg = ci->alias_sg && ci->alias_sg[i];
@@ -3649,11 +3649,9 @@ static void cv_build(Compiler *c) {
   if (!v || !nonval || !par) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int all = 0, rel = 0, cls_call = 0, owner = 0, methods = 0;
   for (int k = 0; k < nk; k++) {
-    int dn = c->classes[k].def_node;
-    NodeKind dk = dn >= 0 && dn < nn ? nt_kind(nt, dn) : NK_NONE;
     int named_struct = (c->classes[k].is_struct || c->classes[k].is_data) && !c->classes[k].is_anon_struct &&
                        !c->classes[k].is_native_class && !c->classes[k].is_singleton_of;
-    if (((dk != NK_ClassNode && dk != NK_ModuleNode) && !named_struct) || c->classes[k].is_singleton_of ||
+    if ((!(class_def_is_class(nt, c->classes[k].def_node) || class_def_is_module(nt, c->classes[k].def_node)) && !named_struct) || c->classes[k].is_singleton_of ||
         c->classes[k].is_native_class || class_is_prim_reopen(c, k))
       v[k] = 1;
   }
@@ -3738,8 +3736,8 @@ static void cv_build(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_ConstantPathNode, n) if (!nonval[n]) cv_mark_name(c, v, nt_str(nt, n, "name"));
   for (int k = 0; k < nk; k++) {
     int dn = c->classes[k].def_node;
-    if (dn < 0 || dn >= nn || (nt_kind(nt, dn) != NK_ClassNode && nt_kind(nt, dn) != NK_ModuleNode)) continue;
-    if (cv_self_value(nt, nonval, nt_ref(nt, dn, "body"), nt_kind(nt, dn) == NK_ModuleNode)) cv_mark_tree(c, v, k);
+    if (!class_def_opens_frame(nt, dn)) continue;
+    if (cv_self_value(nt, nonval, class_def_body(nt, dn), class_def_is_module(nt, dn))) cv_mark_tree(c, v, k);
   }
   /* a named Struct.new / Data.define block is a class body: `self` read as a
      value in it, or in its `def self.x`, names the class, and a subclass
@@ -3774,8 +3772,7 @@ static void cv_build(Compiler *c) {
     cv_self_answers(c, v, nt_ref(nt, nt_root(nt, r), "statements"), -1, 1, 0);
   if (owner && methods) all = 1;
   for (int k = 0; k < nk; k++) {
-    int dn = c->classes[k].def_node;
-    if (all || (cls_call && !(dn >= 0 && dn < nn && nt_kind(nt, dn) == NK_ModuleNode))) v[k] = 1;
+    if (all || (cls_call && !class_def_is_module(nt, c->classes[k].def_node))) v[k] = 1;
     if (rel && c->classes[k].parent >= 0) v[k] = v[c->classes[k].parent] = 1;
     for (int e = 0; rel && e < c->classes[k].nincluded_mods; e++) v[c->classes[k].included_mods[e]] = 1;
     for (int e = 0; rel && e < c->classes[k].nextended_mods; e++) v[c->classes[k].extended_mods[e]] = 1;
@@ -4671,7 +4668,7 @@ int comp_main_method(Compiler *c, const char *name) {
    defined; the Object/Kernel default arms must NOT serve it (#2703). */
 int class_is_blank_slate(Compiler *c, int ci) {
   for (int k = ci; k >= 0; k = c->classes[k].parent) {
-    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
+    int sc = class_def_super(c->nt, c->classes[k].def_node);
     const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
     if (sn && sp_streq(sn, "BasicObject")) return 1;
     if (sn && c->classes[k].parent < 0) return 0;   /* rooted at another builtin */
@@ -4935,8 +4932,7 @@ int comp_super_parent(Compiler *c, int class_id, int is_cmethod) {
   if (p >= 0 || is_cmethod) return p;
   int obj = comp_core_class(c, CORE_OBJECT);
   if (obj < 0 || obj == class_id) return -1;
-  int dn = c->classes[class_id].def_node;
-  if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) return -1;
+  if (class_def_is_module(c->nt, c->classes[class_id].def_node)) return -1;
   return obj;
 }
 
@@ -5205,7 +5201,7 @@ int self_class_static_ci(Compiler *c, int recv) {
   if (!cn || !sp_streq(cn, "class") || cr < 0 || nt_kind(nt, cr) != NK_SelfNode) return -1;
   Scope *s = comp_scope_of(c, recv);
   int cid = s ? s->class_id : -1;
-  if (cid < 0 || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
+  if (cid < 0 || class_def_is_module(nt, c->classes[cid].def_node)) return -1;
   for (int j = 0; j < c->nclasses; j++) if (c->classes[j].parent == cid) return -1;
   return cid;
 }
@@ -5223,7 +5219,7 @@ int allocate_on_own_class(Compiler *c, int id) {
   if (an) return -1;
   Scope *s = comp_scope_of(c, id);
   int cid = s ? s->class_id : -1;
-  if (cid < 0 || cid >= c->nclasses || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
+  if (cid < 0 || cid >= c->nclasses || class_def_is_module(nt, c->classes[cid].def_node)) return -1;
   int recv = nt_ref(nt, id, "receiver");
   if (s->is_cmethod) return (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) ? cid : -1;
   return self_class_base_ci(c, recv);
@@ -5237,7 +5233,7 @@ int self_class_base_ci(Compiler *c, int recv) {
   if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
   Scope *s = comp_scope_of(c, recv);
   int cid = s ? s->class_id : -1;
-  if (cid < 0 || cid >= c->nclasses || s->is_cmethod || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
+  if (cid < 0 || cid >= c->nclasses || s->is_cmethod || class_def_is_module(nt, c->classes[cid].def_node)) return -1;
   const char *rn = nt_str(nt, recv, "name");
   int rr = nt_ref(nt, recv, "receiver");
   return rn && sp_streq(rn, "class") && rr >= 0 && nt_kind(nt, rr) == NK_SelfNode ? cid : -1;

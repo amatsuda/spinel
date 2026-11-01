@@ -1052,7 +1052,7 @@ static int lr_class_of(Compiler *c, const LrDef *d) {
   NodeKind k = d ? nt_kind(c->nt, d->node) : NK_NilNode;
   if (k == NK_ClassNode || k == NK_ModuleNode) return elab_header_class(c, d->node, NULL, NULL);
   if (k != NK_ConstantWriteNode) return LR_UNKNOWN_CLASS;
-  if (class_def_body(c, d->node) >= 0) return lr_builder_class(c, d->node);
+  if (class_def_body(c->nt, d->node) >= 0) return lr_builder_class(c, d->node);
   int v = nt_ref(c->nt, d->node, "value");
   NodeKind vk = v >= 0 ? nt_kind(c->nt, v) : NK_NilNode;
   LoadRecord *r = c->lrec;
@@ -1234,7 +1234,7 @@ static void lr_frame(ElabRec *x, int e) {
     cls = nt_kind(nt, ex) == NK_SelfNode ? cls : lr_class_ref_at(x->c, ex, NULL);
     sg = LR_FS_SCLASS;
   }
-  else if ((k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) && class_def_body(x->c, node) >= 0) {
+  else if ((k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) && class_def_body(x->c->nt, node) >= 0) {
     /* `X = Struct.new(:a) do`: the class registration homes there, once it
        has; a block recorded before is recorded again then (r->builders) */
     cls = lr_builder_class(x->c, node); sg = 0;
@@ -1893,7 +1893,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
   if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) &&
       x->fc[e] >= 0 && x->fc[e] != fc) {   /* a body the class runs */
     LrClass *kc = lr_class(r, x->fc[e]);
-    int body = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, node, "body") : class_def_body(x->c, node);
+    int body = class_def_body(x->c->nt, node);
     int cp = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, node, "constant_path") : -1;
     /* the first opening defines its constant: in its entity's owner;
        where that is not known, in the lexical scope for a name, in the
@@ -1906,7 +1906,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
         lr_const_scope_owner(x->c, e) : lr_const_owner(x->c->classes[x->fc[e]].enclosing_class);
       lr_write(r, ELAB_CONST, owner, lr_written_name(nt, cp), node, 0, may);
     }
-    int sc = k == NK_ClassNode ? nt_ref(nt, node, "superclass") : -1;
+    int sc = class_def_super(nt, node);
     if (kc && sc >= 0 && !kc->has_sup) { kc->sup = lr_class_ref_at(x->c, sc, NULL); kc->sup_ref = sc; kc->has_sup = 1; }
     if (kc) { kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open); kc->open[kc->nopen++] = (LrOpen){ node, body }; }
   }
@@ -2265,7 +2265,7 @@ static int lr_def_on_object(const NodeTable *nt, int def) {
 /* The block of the class builder class ci is made by (`X = Struct.new(:a)
    do`), -1 for a class no builder makes */
 static int lr_builder_body(Compiler *c, int ci) {
-  int d = c->classes[ci].def_node, body = d >= 0 ? class_def_body(c, d) : -1;
+  int d = c->classes[ci].def_node, body = d >= 0 ? class_def_body(c->nt, d) : -1;
   NodeKind k = d >= 0 ? nt_kind(c->nt, d) : NK_NilNode;
   return k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode ? body : -1;
 }
@@ -2654,10 +2654,9 @@ static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, int vis, 
 static int lr_super(Compiler *c, int cls) {
   if (cls < 0 || cls >= c->nclasses) return LR_UNKNOWN_CLASS;
   LrClass *k = lr_class(c->lrec, cls);
-  int d = c->classes[cls].def_node;
   if (k && k->has_sup && lr_later(c, &k->sup, k->sup_ref) >= 0) return k->sup;   /* the record's, which it has while it is made */
   if (c->classes[cls].parent >= 0) return c->classes[cls].parent;
-  return d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? LR_UNKNOWN_CLASS : LR_MAIN;
+  return class_def_is_module(c->nt, c->classes[cls].def_node) ? LR_UNKNOWN_CLASS : LR_MAIN;
 }
 
 /* Did mixin m of a class happen before p (late: in the load phase)?
@@ -2740,10 +2739,9 @@ static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod
    entry before its header. */
 static int lr_sg_tail_of(Compiler *c, int cls, int tail[5]) {   /* where in tail cls's starts */
   const LoadRecord *r = c->lrec;
-  int d = cls >= 0 ? c->classes[cls].def_node : -1;
   tail[0] = comp_core_class(c, CORE_CLASS_REOPEN), tail[1] = lr_core(r, CORE_MODULE), tail[2] = lr_core(r, CORE_OBJECT);
   tail[3] = LR_MAIN, tail[4] = lr_core(r, CORE_KERNEL);
-  return cls == LR_MAIN ? 2 : d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? 1 : 0;
+  return cls == LR_MAIN ? 2 : cls >= 0 && class_def_is_module(c->nt, c->classes[cls].def_node) ? 1 : 0;
 }
 static int lr_sg_tail(Compiler *c, int cls, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth, int *unsure) {
   int tail[5];
@@ -3812,10 +3810,9 @@ static int lr_chain_open(Compiler *c, int cls) {
     if (++d > 64) return 1;
     LrClass *k = lr_class(c->lrec, a);
     int dn = c->classes[a].def_node;
-    NodeKind dk = dn >= 0 ? nt_kind(c->nt, dn) : NK_NONE;
     if (k && k->has_sup) { if (lr_later(c, &k->sup, k->sup_ref) < 0) return 1; continue; }
-    if (c->classes[a].parent >= 0 || dk == NK_ModuleNode) continue;
-    if (dk != NK_ClassNode || nt_ref(c->nt, dn, "superclass") >= 0) return 1;
+    if (c->classes[a].parent >= 0 || class_def_is_module(c->nt, dn)) continue;
+    if (!class_def_is_class(c->nt, dn) || class_def_super(c->nt, dn) >= 0) return 1;
   }
   return 0;
 }
@@ -3827,8 +3824,7 @@ static int lr_new_makes_object(Compiler *c, int cls, const char *new_name) {
   if (cls < 0 || lr_named(c, new_name) || lr_chain_open(c, cls)) return 0;
   for (int a = cls, g = 0; g < 64; g++, a = lr_super(c, a)) {
     if (a == LR_MAIN || (a >= 0 && a == comp_core_class(c, CORE_OBJECT))) return 1;
-    int dn = a >= 0 && a < c->nclasses ? c->classes[a].def_node : -1;
-    if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) return 0;
+    if (!class_def_is_class(c->nt, a >= 0 && a < c->nclasses ? c->classes[a].def_node : -1)) return 0;
   }
   return 0;
 }
@@ -3872,7 +3868,7 @@ int elab_call_method(Compiler *c, int id, int cls, const char *name, int sg) {
   /* a class's singleton chain passes Object's and BasicObject's singletons
      before Class's instance methods */
   int d0 = cls >= 0 ? c->classes[cls].def_node : -1;
-  for (int i = 0; o == ELAB_NO && sg && d0 >= 0 && nt_kind(c->nt, d0) != NK_ModuleNode && i < 2; i++) {
+  for (int i = 0; o == ELAB_NO && sg && d0 >= 0 && !class_def_is_module(c->nt, d0) && i < 2; i++) {
     int k = lr_core(r, i ? CORE_BASIC_OBJECT : CORE_OBJECT);
     if (k >= 0 && k != cls) o = elab_method_at(c, k, name, 1, p, NULL);
   }
@@ -4382,8 +4378,8 @@ int elab_rec_open(Compiler *c, int node, int cp, const char *cname, int encl) {
      from def_node's "superclass" ref, so prefer the opening that declares one;
      otherwise the superclass is lost and a subclass's overrides aren't
      dispatched against the right ancestor chain (matz/spinel#1477). */
-  else if (nt_ref(c->nt, node, "superclass") >= 0 && c->classes[ci].def_node >= 0 &&
-           nt_ref(c->nt, c->classes[ci].def_node, "superclass") < 0)
+  else if (class_def_super(c->nt, node) >= 0 && c->classes[ci].def_node >= 0 &&
+           class_def_super(c->nt, c->classes[ci].def_node) < 0)
     comp_class_set_def(c, ci, node);
   elab_header_opened(c, node, ci, made);
   return ci;
@@ -4880,7 +4876,7 @@ const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n) {
   *n = k ? k->nopen : 0;
   /* each body as the tree has it now: a pass after the walk may give an
      empty class its statements */
-  for (int i = 0; i < *n; i++) k->open[i].body = class_def_body(c, k->open[i].node);
+  for (int i = 0; i < *n; i++) k->open[i].body = class_def_body(c->nt, k->open[i].node);
   return k ? k->open : NULL;
 }
 
@@ -4903,7 +4899,7 @@ ElabBody *elab_all_bodies(Compiler *c, int *n) {
     for (int i = 0; i < no; i++) if (o[i].node == dn) { d = i; own = 1; }
     /* every class has its definition's body, an empty one too, also where
        the record holds no opening of it (a class a pass makes) */
-    if (!own) v[k++] = (ElabBody){ ci, class_def_body(c, dn) };
+    if (!own) v[k++] = (ElabBody){ ci, class_def_body(c->nt, dn) };
     for (int i = 0; i < no; i++) {
       if (i <= d) v[k++] = (ElabBody){ ci, o[i].body };
       else { rest[nr][0] = r->at[o[i].node]; rest[nr][1] = ci; rest[nr][2] = o[i].body; nr++; }
@@ -5493,7 +5489,7 @@ static int lr_reaches_object(Compiler *c, int cls) {
     if (a < 0 || a >= c->nclasses) return ELAB_UNKNOWN;
     int dn = c->classes[a].def_node;
     if (a == comp_core_class(c, CORE_BASIC_OBJECT) ||
-        (dn >= 0 ? nt_kind(c->nt, dn) == NK_ModuleNode : is_builtin_module_name(c->classes[a].name))) return ELAB_NO;
+        (dn >= 0 ? class_def_is_module(c->nt, dn) : is_builtin_module_name(c->classes[a].name))) return ELAB_NO;
     if (a == cls && c->classes[a].is_builtin_const) return ELAB_UNKNOWN;   /* (a path to a builtin class reads a top-level class of the leaf's name) */
     LrClass *k = lr_class(c->lrec, a);
     if (k && k->has_sup && lr_later(c, &k->sup, k->sup_ref) < 0) return lr_named_reach(c->nt, k->sup_ref);   /* a builtin superclass has no class here */

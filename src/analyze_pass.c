@@ -11269,7 +11269,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
          `Data.define(:a).new(a: v)`: the anon class synthesized for that
          call node. Left poly, a String member was a boxed copy that an
          append through its reader never reached. */
-      if (lci < 0 && nt_kind(nt, recv) == NK_CallNode && is_struct_constructor(name) && is_struct_call(c, recv))
+      if (lci < 0 && nt_kind(nt, recv) == NK_CallNode && is_struct_constructor(name) && is_struct_call(nt, recv))
         lci = class_var_static_ci(c, recv);
       if (lci >= 0 && !c->classes[lci].is_struct) lci = -1;
       if (((rty_k == NK_ConstantReadNode ||
@@ -13116,7 +13116,7 @@ static void refuse_class_body_next(Compiler *c) {
     NodeKind k = nt_kind(nt, id);
     int body = -1;
     if (k == NK_ClassNode || k == NK_ModuleNode) body = nt_ref(nt, id, "body");
-    else if (k == NK_CallNode && is_struct_call(c, id)) {
+    else if (k == NK_CallNode && is_struct_call(nt, id)) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) body = nt_ref(nt, blk, "body");
     }
