@@ -13257,7 +13257,10 @@ int desugar_conditional_defs(Compiler *c) {
                              arm, ng, disp_raise_no_method(nt, msg));
     free(arm);
     free(nm);
-    if (ng == 1) { nt_node_set_int(nt, def, "cond_lone_disp", 1); c->ncond_disp++; }   /* (a list of methods asks them: ver_list_held) */
+    /* the dispatcher answers the name before any arm's branch has run,
+       whatever the number of arms: a list of methods asks them
+       (ver_list_held) */
+    nt_node_set_int(nt, def, "cond_lone_disp", 1); c->ncond_disp++;
     cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, *g[0].vis ? fwd_new_call(nt, -1, g[0].vis, def) : def);
     serial += ng;
     free(base);

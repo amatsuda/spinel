@@ -1378,6 +1378,12 @@ spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_list_module.rb [promote] rc=1
 spinel: test/reject/runtime_condition_def_list_module.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_two_arms.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_list_two_arms.rb:10: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_list_two_arms.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_list_two_arms.rb:10: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_list_unrelated.rb [default] rc=1
 spinel: test/reject/runtime_condition_def_list_unrelated.rb:11: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
