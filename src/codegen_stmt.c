@@ -25221,6 +25221,20 @@ static char *iow_guarded_hash_rhs(Compiler *c, int v, TyKind rt, Buf *b, int *op
   g_pre = sv;
   return rb.p ? rb.p : strdup("");
 }
+/* The right side of a Hash slot's `||=` / `&&=` write, then the frozen
+   test the write takes (as `h[k] = v` and `h[k] += v` raise FrozenError,
+   #3001): the value first, as in CRuby, so its own error or side effect
+   comes before the FrozenError. Takes rhs and gives a new string. */
+static char *iow_frozen_hash_rhs(char *rhs, int ta, TyKind rt) {
+  if (!rhs || !rhs[0]) return rhs ? rhs : strdup("");
+  Buf w; memset(&w, 0, sizeof w);
+  int t = ++g_tmp;
+  const char *cls = hash_box_cls(rt);
+  buf_printf(&w, "({ __typeof__(%s) _t%d = (%s); if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })",
+             rhs, t, rhs, ta, ta, cls ? cls : "0", t);
+  free(rhs);
+  return w.p ? w.p : strdup("");
+}
 static void iow_guard_close(char *rhs, int open, Buf *b) {
   if (open) buf_puts(b, "; }");
   free(rhs);
@@ -25685,16 +25699,12 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       snprintf(rk, sizeof rk, "_t%d", tb); snprintf(sk, sizeof sk, "_t%d", tb);
     }
     const char *rs = ok ? "_okey" : "";
-    /* the write a frozen Hash refuses, as `h[k] = v` does (#3001) */
-    char frz[128];
-    snprintf(frz, sizeof frz, "{ if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", ta, ta, hash_box_cls(rt));
     if (vt == TY_POLY) {
-      buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) %s", is_or ? "!" : "", hn, ta, tb, frz);
+      buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) ", is_or ? "!" : "", hn, ta, tb);
       int open = 0;
-      char *rhs = iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open);
+      char *rhs = iow_frozen_hash_rhs(iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open), ta, rt);
       buf_printf(b, "sp_%sHash_set(_t%d, _t%d, %s)", hn, ta, tb, rhs);
       iow_guard_close(rhs, open, b);
-      buf_puts(b, "; }");
     }
     else {
       /* `h[k] ||= v` is `h[k] || (h[k] = v)`: it is the READ that decides, and
@@ -25708,13 +25718,12 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       if (oint_kind(vt)) buf_printf(b, "%s _t%d = sp_%sHash_oget%s(_t%d, %s); if (", oint_ctype(vt), tc, hn, rs, ta, rk);
       else buf_printf(b, "%s _t%d = sp_%sHash_get%s(_t%d, %s); if (", c_type_name(vt), tc, hn, rs, ta, rk);
       emit_slot_nil_test(c, vt, tc, is_or, b);
-      buf_printf(b, ") %s", frz);
+      buf_puts(b, ") ");
       int open = 0, oset = 0;
-      char *rhs = iow_guarded_hash_rhs(c, v, rt, b, &open, &oset);
+      char *rhs = iow_frozen_hash_rhs(iow_guarded_hash_rhs(c, v, rt, b, &open, &oset), ta, rt);
       /* (one-String mode: a String-valued Hash takes the value's bytes face) */
       buf_printf(b, "sp_%sHash_%s(_t%d, %s, %s%s%s)", hn, oset ? "oset" : "set", ta, sk, ONE_HV_O(hn), rhs, ONE_HV_C(hn));
       iow_guard_close(rhs, open, b);
-      buf_puts(b, "; }");
     }
     buf_puts(b, "; }\n");
     return;
