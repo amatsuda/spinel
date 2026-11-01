@@ -1,0 +1,13 @@
+1
+undefined method 's_off' for class C
+42
+undefined method 'cap_off' for an instance of C
+:then
+[1, 2]
+[3, nil]
+5
+[1, [2, 3]]
+:m
+undefined method 'm_off' for an instance of I
+:m
+undefined method 'm_off' for class E

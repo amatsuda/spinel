@@ -170,6 +170,7 @@ src/analyze_scope.c specialize_super_cmethod super, by its def's name
 src/analyze_scope.c super_lands_on_attr super, by its def's name
 src/call_plan.c cplan_define_method_early a defined method's own name
 src/call_plan.c cplan_resolve_super super, by its def's name
+src/call_plan.c cplan_super_target super, by its def's name
 src/call_plan.c cplan_super_chain_mi super, by its def's name
 src/codegen.c emit_method a scope's own name
 src/codegen.c emit_super super, by its def's name
@@ -277,3 +278,4 @@ src/codegen_util.c strbuf_reader_field_boxed the String sharing routes
 # Guard construction and callback reach read the table, not an ordinary call.
 src/analyze_pass.c cr_mark_implied the implicit-callback rows' method-table names
 src/call_plan.c ver_entries_build the current own body of each public name before entries are installed
+src/call_plan.c ver_named_one the method an includer holds of a module's open history's name, its copy's or its own

@@ -1247,7 +1247,9 @@ void compute_reachable(Compiler *c, int typed) {
   for (int t = 0; t < c->nscopes; t++) {
     sn_link[t] = -1;
     const char *tn = c->scopes[t].name;
-    if (!tn || c->scopes[t].entry != ENTRY_NONE) continue;   /* entries are reached by their bound calls or table routes */
+    /* entries are reached by their bound calls or table routes; a named
+       entry is the method by name */
+    if (!tn || (c->scopes[t].entry != ENTRY_NONE && c->scopes[t].entry != ENTRY_NAMED)) continue;
     int k = -1;
     if (sn_set.nb)
       for (int i = sn_set.head[sp_strhash(tn) % (unsigned)sn_set.nb]; i >= 0; i = sn_set.next[i])
@@ -48998,7 +49000,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      construction site is a call node, so both are known now. Recomputed
      after the fixpoint, when a dynamic `.new` can be told from a static one. */
   AN_STEP_V("compute_reachable", compute_reachable(c, 0));
-  ver_cells_write(c);
+  ver_cells_write(c, 0);
   compute_instantiated(c, 1);
 }
 
@@ -49540,6 +49542,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_method_call_runtime_name", desugar_method_call_runtime_name(c)); /* method(var).call(a) -> send(var, a) */
     ch |= AN_PASS("desugar_dynamic_send", desugar_dynamic_send(c));             /* recv.send(var, a) -> static name dispatch */
     ch |= AN_PASS("desugar_dynamic_method", desugar_dynamic_method(c));
+    ch |= AN_PASS("ver_entries_demand", ver_entries_demand(c));               /* a deferred history a call names now */
     ch |= AN_PASS("desugar_dynamic_respond_to", desugar_dynamic_respond_to(c));       /* recv.respond_to?(var) -> static name dispatch */
     ch |= AN_PASS("desugar_toplevel_instance_exec", desugar_toplevel_instance_exec(c));   /* top-level instance_exec(&b) -> b.call */
     ch |= AN_PASS("desugar_binding_lvget", desugar_binding_lvget(c));            /* binding.local_variable_get(:x) -> x.itself */

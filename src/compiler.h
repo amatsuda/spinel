@@ -476,11 +476,14 @@ typedef struct {
      entry. No lookup of the method by name answers it (sm_owns),
      only the calls call_target binds to it reach it. entry == ENTRY_TABLE is a
      general prepend guard: the table answers it under the ordinary name,
-     and its guard_behind names the hidden copy; main_n, codegen's
+     and its guard_behind names the hidden copy; ENTRY_NAMED the entry of a
+     history the load phase leaves open (elab_history_open), which is the
+     method by name: the table answers it, and the versions it arms are
+     replaced; main_n, codegen's
      number for a method of main's own whose name Object's methods have
      too (both are top-level functions in C) */
   unsigned char versioned, replaced;
-  enum { ENTRY_NONE, ENTRY_DISPATCH, ENTRY_TABLE } entry;
+  enum { ENTRY_NONE, ENTRY_DISPATCH, ENTRY_TABLE, ENTRY_NAMED } entry;
   int version_n, main_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
@@ -1703,6 +1706,12 @@ typedef struct {
      calls pinned to the method it runs */
   struct VerEntry { const char *name; int guard, cls, sg, ar, scope; } *ver_entries;
   int nver_entries;
+  int nver_refl;   /* the named entries whose name reflection does not answer (call_plan.c, ver_refl_named) */
+  /* the open histories no reader names yet, sorted by name (call_plan.c,
+     ver_named_one): made once a call names one, taken 1 when asked for and
+     2 once made (ver_entries_demand) */
+  struct VerDefer { const char *name; int cls, sg, taken; } *ver_defer;
+  int nver_defer;
   struct VerChain *ver_chain;   /* how many versions a class's chain holds of a name, by (class, side, name) (call_plan.c, ver_chain_count) */
   struct VerHold *ver_hold;   /* the holders of a name worth asking, by name (call_plan.c, ver_holders) */
   /* ...by name: ver_ix chains the entries of one (class, side, name, parameter

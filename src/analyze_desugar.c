@@ -12841,11 +12841,8 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     /* a block that becomes a class body only later (desugar_class_new_blocks):
        its defs are a class of their own, which cls -2 marks */
     int blk = nt_ref(nt, id, "block"), r = nt_ref(nt, id, "receiver");
-    const char *cn = nt_str(nt, id, "name");
     const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
-    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !cn || !rn ||
-        !((sp_streq(cn, "new") && (sp_streq(rn, "Class") || sp_streq(rn, "Module") || sp_streq(rn, "Struct"))) ||
-          (sp_streq(cn, "define") && sp_streq(rn, "Data")))) break;
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !is_class_builder(rn, nt_str(nt, id, "name"))) break;
     char p[1024];
     snprintf(p, sizeof p, "%s/#%d", x.path, id);
     x.path = p; x.cls = -2; x.cm = 0; x.top = -1; x.here = 0;
@@ -13030,9 +13027,7 @@ static int cdef_call_names(const NodeTable *nt, int id, const char *nm) {
 static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
   static const char *const makers[] = { "attr", "attr_reader", "attr_writer", "attr_accessor",
     "define_method", "alias_method", NULL };
-  if (builtin_object_method_known(nm) || builtin_method_known("Kernel", nm) ||
-      builtin_method_known("Object", nm) || builtin_method_known("Module", nm))
-    return 1;
+  if (builtin_every_object_answers(nm, 1)) return 1;
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k == NK_DefNode && id != own && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), nm)) return 1;
@@ -13052,16 +13047,33 @@ static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
   return 0;
 }
 
-/* `raise NoMethodError, msg`, a dispatcher's arm for no method */
-int disp_raise_no_method(NodeTable *nt, const char *msg) {
-  int ec = nt_new_node(nt, "ConstantReadNode"), em = nt_new_node(nt, "StringNode");
+/* `raise NoMethodError, msg`, a dispatcher's arm for no method; with
+   disp_raise_no_method_self, `raise NoMethodError, "<head>#{self.class}"`
+   (`#{self}` when !inst), which names the class of the object it runs on */
+static int disp_raise_with(NodeTable *nt, int em) {
+  int ec = nt_new_node(nt, "ConstantReadNode");
   nt_node_set_str(nt, ec, "name", "NoMethodError");
-  nt_node_set_str(nt, em, "content", msg);
   int ea[2] = { ec, em }, eargs = nt_new_node(nt, "ArgumentsNode");
   nt_node_set_arr(nt, eargs, "arguments", ea, 2);
   int raise = fwd_new_call(nt, -1, "raise", -1);
   nt_node_set_ref(nt, raise, "arguments", eargs);
   return raise;
+}
+int disp_raise_no_method(NodeTable *nt, const char *msg) {
+  int em = nt_new_node(nt, "StringNode");
+  nt_node_set_str(nt, em, "content", msg);
+  return disp_raise_with(nt, em);
+}
+int disp_raise_no_method_self(NodeTable *nt, const char *head, int inst) {
+  int em = nt_new_node(nt, "InterpolatedStringNode"), hd = nt_new_node(nt, "StringNode");
+  int es = nt_new_node(nt, "EmbeddedStatementsNode"), self = nt_new_node(nt, "SelfNode");
+  int who = inst ? fwd_new_call(nt, self, "class", -1) : self;
+  nt_node_set_str(nt, hd, "unescaped", head);
+  nt_node_set_str(nt, hd, "content", head);
+  nt_node_set_ref(nt, es, "statements", cdef_stmts(nt, who));
+  int parts[2] = { hd, es };
+  nt_node_set_arr(nt, em, "parts", parts, 2);
+  return disp_raise_with(nt, em);
 }
 
 /* `callee(<args>)`, a dispatcher arm's call: the dispatcher's ar required
@@ -13092,6 +13104,27 @@ int disp_forward_call(NodeTable *nt, const char *callee, int ar, int blk) {
   }
   return call;
 }
+/* ...and `super(<args>)`, the same arguments passed on to the method the
+   ancestors answer; `method_missing(:name, <args>)` */
+int disp_super_call(NodeTable *nt, int ar, int blk) {
+  int call = disp_forward_call(nt, "super", ar, blk), sup = nt_new_node(nt, "SuperNode");
+  nt_node_set_ref(nt, sup, "arguments", nt_ref(nt, call, "arguments"));
+  nt_node_set_ref(nt, sup, "block", nt_ref(nt, call, "block"));
+  return sup;
+}
+int disp_method_missing_call(NodeTable *nt, const char *name, int ar, int blk) {
+  int call = disp_forward_call(nt, "method_missing", ar, blk), args = nt_ref(nt, call, "arguments"), n = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+  int *nv = malloc(sizeof(int) * (size_t)(n + 1)), sym = nt_new_node(nt, "SymbolNode");
+  if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  nt_node_set_str(nt, sym, "value", name);
+  nv[0] = sym;
+  if (n) memcpy(nv + 1, av, sizeof(int) * (size_t)n);
+  if (args < 0) nt_node_set_ref(nt, call, "arguments", args = nt_new_node(nt, "ArgumentsNode"));
+  nt_node_set_arr(nt, args, "arguments", nv, n + 1);
+  free(nv);
+  return call;
+}
 
 /* A dispatcher: a def named `name` (on self when sg) at `like`'s place,
    whose body is
@@ -13109,8 +13142,8 @@ int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, in
                    const DispArm *arm, int narm, int els) {
   char pn[32];
   int def = fwd_new_node_like(nt, like, "DefNode");
-  int chain = nt_new_node(nt, "ElseNode");
-  nt_node_set_ref(nt, chain, "statements", cdef_stmts(nt, els));
+  int chain = narm ? nt_new_node(nt, "ElseNode") : els;   /* (no arm: the else arm is the body) */
+  if (narm) nt_node_set_ref(nt, chain, "statements", cdef_stmts(nt, els));
   for (int k = narm - 1; k >= 0; k--) {
     int call = disp_forward_call(nt, arm[k].callee, ar, blk);
     int ifn = nt_new_node(nt, "IfNode");
@@ -13172,22 +13205,17 @@ int desugar_conditional_defs(Compiler *c) {
        reaches the method the def would have overridden. */
     /* a lone def is chosen by a condition of its own class body; one in a
        class that a condition defines is that class's for good */
-    /* in a Class.new block the lowering would want the name the class does
-       not have yet: a lone def there is refused, and a group left as it was */
-    if (g[0].cls == -2) {
-      if (ng == 1 && g[0].here) cdef_refuse(nt, d0, "cond_def_class_new");
-      free(base);
-      continue;
-    }
-    if (ng == 1 && !g[0].here) { free(base); continue; }
-    if (ng == 1 && cdef_name_inherited(nt, base, d0)) {
-      /* which method answers when the branch did not run is not known
-         here: refused, rather than the def standing whatever the
-         condition said */
-      cdef_refuse(nt, d0, "cond_def_override");
-      free(base);
-      continue;
-    }
+    /* a lone def of a name another method answers, and every def in a
+       Class.new, Module.new, Struct.new or Data.define block (where the
+       lowering would want the name the class does not have yet), are left
+       to the load record: the open history's entry runs what answers when
+       the branch did not run (ver_named_else). Such a lone def under an
+       `if` of its body is marked cond_lone: what the entry cannot answer
+       for it is refused (ver_named_one, ver_refl_named) */
+    int left = g[0].cls == -2 || (ng == 1 && !g[0].here);
+    if (!left && ng == 1 && cdef_name_inherited(nt, base, d0)) left = 2;
+    if (ng == 1 && g[0].here && (g[0].cls == -2 || left == 2)) nt_node_set_int(nt, d0, "cond_lone", 1);
+    if (left) { free(base); continue; }
     if (bad || (ng >= 2 && same)) { free(base); continue; }
     if (ng == 1) {
       char **nn = realloc(lone, sizeof(char *) * (size_t)(nlone + 1));
@@ -13210,6 +13238,7 @@ int desugar_conditional_defs(Compiler *c) {
       snprintf(nm[k], sizeof nm[k], "%s#__cond%d", base, serial + k + 1);
       arm[k] = (DispArm){ sel, k + 1, nm[k], 0 };
       nt_set_str(nt, g[k].def, "name", nm[k]);
+      nt_node_set_int(nt, g[k].def, "cond_arm", 1);   /* (its own history is no open entry's: ver_named_one) */
       cdef_method_name(nt, nt_ref(nt, g[k].def, "parameters"), base);
       cdef_method_name(nt, nt_ref(nt, g[k].def, "body"), base);
       int wk = fwd_new_node_like(nt, g[k].def, "GlobalVariableWriteNode");

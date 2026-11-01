@@ -1,0 +1,23 @@
+[:pre, :a]
+5
+1
+2
+true
+true
+[:q]
+[:k]
+true
+undefined method 'q' for an instance of D
+true
+[:hash, :m]
+1
+7
+true
+1
+:j
+:n
+2
+2
+0
+:km
+:km

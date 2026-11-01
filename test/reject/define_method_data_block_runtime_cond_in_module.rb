@@ -1,4 +1,4 @@
-# spinel: reject-subclass: a define_method under a condition only the run time decides
+# spinel: reject-subclass: a method defined under a condition only the run time decides is not answered for
 module Box
   D = Data.define(:a) do
     if ENV["NOPE"]

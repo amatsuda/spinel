@@ -543,10 +543,10 @@ spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments ot
 == test/reject/def_delegators_splat.rb [promote] rc=1
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
 == test/reject/define_method_data_block_runtime_cond_in_module.rb [default] rc=1
-spinel: test/reject/define_method_data_block_runtime_cond_in_module.rb:5: a define_method under a condition only the run time decides, in a Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: test/reject/define_method_data_block_runtime_cond_in_module.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/define_method_data_block_runtime_cond_in_module.rb [promote] rc=1
-spinel: test/reject/define_method_data_block_runtime_cond_in_module.rb:5: a define_method under a condition only the run time decides, in a Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: test/reject/define_method_data_block_runtime_cond_in_module.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/define_method_each_integer_name.rb [default] rc=1
 spinel: test/reject/define_method_each_integer_name.rb:3: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
@@ -661,16 +661,16 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/define_method_proc_ref_in_method.rb:8: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result), or with a Proc or Method passed as its body, is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/define_method_struct_block_runtime_cond.rb [default] rc=1
-spinel: test/reject/define_method_struct_block_runtime_cond.rb:4: a define_method under a condition only the run time decides, in a Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: test/reject/define_method_struct_block_runtime_cond.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/define_method_struct_block_runtime_cond.rb [promote] rc=1
-spinel: test/reject/define_method_struct_block_runtime_cond.rb:4: a define_method under a condition only the run time decides, in a Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: test/reject/define_method_struct_block_runtime_cond.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/define_method_struct_block_runtime_cond_in_class.rb [default] rc=1
-spinel: test/reject/define_method_struct_block_runtime_cond_in_class.rb:4: a define_method under a condition only the run time decides, in a Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: test/reject/define_method_struct_block_runtime_cond_in_class.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/define_method_struct_block_runtime_cond_in_class.rb [promote] rc=1
-spinel: test/reject/define_method_struct_block_runtime_cond_in_class.rb:4: a define_method under a condition only the run time decides, in a Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: test/reject/define_method_struct_block_runtime_cond_in_class.rb:7: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/defined_super_builtin_singleton.rb [default] rc=1
 spinel: test/reject/defined_super_builtin_singleton.rb:6: unsupported defined?(super) where the method super reaches is not known at compile time: node N (DefinedNode)
@@ -1326,23 +1326,23 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
 == test/reject/retry_in_ensure.rb [promote] rc=1
 spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
-== test/reject/runtime_condition_def_class_new.rb [default] rc=1
-spinel: test/reject/runtime_condition_def_class_new.rb:7: a def under a condition only the run time decides, in a Class.new, Module.new, Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+== test/reject/runtime_condition_def_initialize_in_block.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_initialize_in_block.rb:7: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
-== test/reject/runtime_condition_def_class_new.rb [promote] rc=1
-spinel: test/reject/runtime_condition_def_class_new.rb:7: a def under a condition only the run time decides, in a Class.new, Module.new, Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+== test/reject/runtime_condition_def_initialize_in_block.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_initialize_in_block.rb:7: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
-== test/reject/runtime_condition_def_over_accessor.rb [default] rc=1
-spinel: test/reject/runtime_condition_def_over_accessor.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+== test/reject/runtime_condition_def_module_includers.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_module_includers.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
-== test/reject/runtime_condition_def_over_accessor.rb [promote] rc=1
-spinel: test/reject/runtime_condition_def_over_accessor.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+== test/reject/runtime_condition_def_module_includers.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_module_includers.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
-== test/reject/runtime_condition_def_override.rb [default] rc=1
-spinel: test/reject/runtime_condition_def_override.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+== test/reject/runtime_condition_def_private_super.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_private_super.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
-== test/reject/runtime_condition_def_override.rb [promote] rc=1
-spinel: test/reject/runtime_condition_def_override.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+== test/reject/runtime_condition_def_private_super.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_private_super.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/runtime_condition_def_respond_to.rb [default] rc=1
 spinel: test/reject/runtime_condition_def_respond_to.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md

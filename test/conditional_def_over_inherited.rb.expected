@@ -1,0 +1,12 @@
+10
+11
+true
+"named"
+:a
+:inherited
+3
+2
+undefined method 'm' for an instance of Bare
+undefined method 'dm' for an instance of Holder
+:base
+undefined method 'am' for an instance of #<Class:0x>

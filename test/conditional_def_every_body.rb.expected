@@ -1,0 +1,14 @@
+1
+undefined method 'off' for an instance of Plain
+3
+undefined method 'dm_off' for an instance of Plain
+2
+undefined method 'off' for an instance of S
+3
+undefined method 'dm_off' for an instance of S
+20
+undefined method 'off' for an instance of D
+:k
+undefined method 'off' for an instance of K
+:kd
+undefined method 'dm_off' for an instance of K

@@ -568,6 +568,9 @@ int is_dir_blockless_iter(const char *n);  /* foreach each_child: an Enumerator 
 int is_kernel_module_name(const char *n);
 int is_kernel_module_function(const char *n);
 int builtin_object_method_known(const char *m);   /* one of Object's own methods every object answers */
+int is_method_presence_query(const char *n); /* 1: respond_to? *method_defined? (public_)instance_method (public_)method; 2: (public_)instance_methods (public_)methods */
+int builtin_every_object_answers(const char *m, int cmeth); /* Object's own, Kernel's, Object's; with cmeth Module's too */
+int builtin_class_id_answers(int id, const char *m, int cmeth); /* the builtin class of cls_id id, or one above it, has m (cmeth: a class method) */
 /* Does a builtin answer `name` on a self of the kind: main (Kernel's,
    Object's and main's own methods), a module (also Module's) or a class
    (also Class's)? */

@@ -8,6 +8,7 @@
 #include "call_plan.h"
 #include "repr.h"
 #include "codegen_call_arms.h"
+#include "implicit_calls.h"
 
 static CallPlan *g_cp_memo = NULL;
 static unsigned char *g_cp_have = NULL;
@@ -120,22 +121,32 @@ int cplan_super_chain_mi(Compiler *c, int id, Scope *s, int par, const char *nam
                                CT_REACH | (s->is_cmethod ? CT_CMETHOD : 0), NULL) : -1;
 }
 
-static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
-  Scope *s = comp_scope_of(c, id);
-  if (!s || s->class_id < 0 || !s->name) return;
+/* The method `super` in method scope s reaches, for call id (-1: a super
+   no call stands for, an open history's entry's else arm), and in *at the
+   class it is found from: the next method of s's prepend chain
+   (comp_super_shadow), else the parent chain's (cplan_super_chain_mi); -1
+   for none, *at -1 when s has a prepend chain. */
+int cplan_super_target(Compiler *c, int id, Scope *s, int *at) {
   const char *shadow = comp_super_shadow(c, s);
   if (shadow) {
-    int mi = s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
-                           : comp_method_in_class(c, s->class_id, shadow);
-    if (mi >= 0) cplan_set(p, mi, s->class_id, UC_SUPER, CP_DIRECT);
-    return;
+    *at = -1;
+    int mi = s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow) : comp_method_in_class(c, s->class_id, shadow);
+    if (mi >= 0) *at = s->class_id;
+    return mi;
   }
   int par = comp_super_parent(c, s->class_id, s->is_cmethod);
   const char *uname = comp_super_name(c, par, comp_scope_def_name(c, s), s->is_cmethod);
-  if (!uname) return;
-  int mi = cplan_super_chain_mi(c, id, s, par, uname);
-  if (mi >= 0) cplan_set(p, mi, par, UC_SUPER, CP_DIRECT);
-  else if (s->is_cmethod &&
+  *at = par;
+  return uname ? cplan_super_chain_mi(c, id, s, par, uname) : -1;
+}
+
+static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
+  Scope *s = comp_scope_of(c, id);
+  if (!s || s->class_id < 0 || !s->name) return;
+  int par, mi = cplan_super_target(c, id, s, &par);
+  if (mi >= 0) { cplan_set(p, mi, par, UC_SUPER, CP_DIRECT); return; }
+  const char *uname = comp_super_shadow(c, s) ? NULL : comp_super_name(c, par, comp_scope_def_name(c, s), s->is_cmethod);
+  if (uname && s->is_cmethod &&
            builtin_super_cmethod_known(c->classes[s->class_id].name, uname) &&
            (par < 0 || comp_cmethod_in_chain(c, par, uname, NULL) < 0)) {
     cplan_set(p, -1, s->class_id, UC_SUPER, CP_REFUSE);
@@ -807,6 +818,10 @@ static int ver_plain_arity(Compiler *c, int s) {   /* -1: not only required posi
   int def = c->scopes[s].def_node, pn = def >= 0 && nt_kind(nt, def) == NK_DefNode ? nt_ref(nt, def, "parameters") : -2, n = 0;
   const char *arrs[] = { "optionals", "posts", "keywords" };
   if (pn == -1) return 0;
+  if (pn == -2 && def >= 0 && nt_kind(nt, def) == NK_CallNode && is_define_method_name(nt_str(nt, def, "name"))) {   /* a define_method's block: its scope's parameters (walk_scope) */
+    const Scope *sc = &c->scopes[s];
+    return sc->rest_idx < 0 && sc->kwrest_idx < 0 && !sc->blk_param && sc->nrequired == sc->nparams ? sc->nparams : -1;
+  }
   if (pn < 0 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0) return -1;
   for (int i = 0; i < 3; i++) {
     nt_arr(nt, pn, arrs[i], &n);
@@ -2144,6 +2159,25 @@ static int cplan_recv_own_member(Compiler *c, int id, const char *name) {
   return ty_is_object(rt) && comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE;
 }
 
+/* Does presence query id (is_method_presence_query, kind pq) ask about a
+   named entry whose name answers before a version ran, of a history
+   holding a version marked cond_lone (a lone def under an `if` the
+   lowering leaves to the record, a define_method a Struct or Data block
+   may not run): a list, or a name not literal or of such an entry
+   (cond_def_refl)? */
+static int ver_refl_named(Compiler *c, int id, int pq) {
+  int args = nt_ref(c->nt, id, "arguments"), an = 0;
+  if (!c->nver_refl || !pq) return 0;
+  if (pq == 2) return 1;
+  if (args >= 0) nt_arr(c->nt, args, "arguments", &an);
+  const char *q = an ? method_sym_arg(c, id) : NULL;
+  for (int i = 0; an && q && i < c->nver_entries; i++) {
+    const struct VerEntry *e = &c->ver_entries[i];
+    if (e->guard == 2 && e->scope >= 0 && nt_int(c->nt, c->scopes[e->scope].def_node, "cond_def_refl", 0) && sp_streq(e->name, q))
+      return 1;
+  }
+  return an && !q;
+}
 /* the limit the call's shape names, and in *lx how a user method exempts it */
 static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *buf, size_t cap) {
   *stop = 1;
@@ -2155,16 +2189,13 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (!name) return NULL;
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_capture", 0) && cplan_reachable(c, id))
     return "Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md";
-  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_class_new", 0) && cplan_reachable(c, id))
-    return "a def under a condition only the run time decides, in a Class.new, Module.new, "
-           "Struct.new or Data.define block, is not supported: write the class with `class`; "
-           "see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "cond_def_override", 0) && cplan_reachable(c, id))
     return "a def under a condition only the run time decides, of a name another method answers "
            "(a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did "
            "not run is not known at compile time; see docs/limitations.md";
-  if ((nt_int(nt, id, "cond_def_reflect", 0) ||
-       (nt_int(nt, id, "cond_def_reflect_list", 0) && !cplan_recv_own_member(c, id, name))) &&
+  int pq = c->nver_refl ? is_method_presence_query(name) : 0;
+  if ((nt_int(nt, id, "cond_def_reflect", 0) || (pq == 1 && ver_refl_named(c, id, pq)) ||
+       ((nt_int(nt, id, "cond_def_reflect_list", 0) || ver_refl_named(c, id, pq & 2)) && !cplan_recv_own_member(c, id, name))) &&
       cplan_reachable(c, id))
     return "a method defined under a condition only the run time decides is not answered for by "
            "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "
@@ -2188,9 +2219,6 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
-  if (is_raise_alias(name) && nt_int(nt, id, "struct_cond_dm", 0) && cplan_reachable(c, id))
-    return "a define_method under a condition only the run time decides, in a Struct.new or "
-           "Data.define block, is not supported: write the class with `class`; see docs/limitations.md";
   if (cplan_computed_ivar_get(c, id, name))
     return sp_streq(name, "instance_variable_set")
       ? "Object#instance_variable_set with a non-literal name on a receiver that may be an instance "
@@ -3984,8 +4012,24 @@ static void ver_pin(Compiler *c, int node, int scope) {
   for (; i > 0 && c->ver_pins[i - 1].node > node; i--) c->ver_pins[i] = c->ver_pins[i - 1];
   c->ver_pins[i] = (struct VerPin){ node, scope };
 }
+/* statement g put in statement list `list` at its statement `at` (after it
+   when after) */
+static void ver_list_put(NodeTable *nt, int list, int at, int after, int g) {
+  int n = 0, j = 0;
+  const int *st = nt_arr(nt, list, "body", &n);
+  while (j < n && st[j] != at) j++;
+  if (j == n) { fprintf(stderr, "spinel: internal: a statement put beside another is not in its statement list\n"); exit(1); }
+  int *ns = malloc(sizeof(int) * (size_t)(n + 1));
+  if (!ns) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  j += after;
+  memcpy(ns, st, sizeof(int) * (size_t)j);
+  ns[j] = g;
+  memcpy(ns + j + 1, st + j, sizeof(int) * (size_t)(n - j));
+  nt_node_set_arr(nt, list, "body", ns, n + 1);
+  free(ns);
+}
 static int ver_entry_emit(Compiler *c, int rcls, int sg, const char *name, int ar, int blk, int spliced,
-                          const DispArm *arm, const int *to, int na, int els_to);
+                          const DispArm *arm, const int *to, int na, int els_to, int els);
 static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int mi, int ar) {
   ElabVersion vs[VER_MAX_ARMS];
   DispArm arm[VER_MAX_ARMS];
@@ -4006,16 +4050,18 @@ static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int m
     same &= ver_same_source(c->nt, c->scopes[s].def_node, c->scopes[mi].def_node);
   }
   if (nv < 2 || !na || same) return -1;
-  return ver_entry_emit(c, rcls, sg, name, ar, blk, spliced, arm, to, na, mi);
+  return ver_entry_emit(c, rcls, sg, name, ar, blk, spliced, arm, to, na, mi, -1);
 }
 /* The entry's def, its arms' calls pinned to to[] and its else arm's to
-   els_to, beside els_to's def */
+   els_to, beside els_to's def; or, given els, that else arm, pinned to
+   nothing */
 static int ver_entry_emit(Compiler *c, int rcls, int sg, const char *name, int ar, int blk, int spliced,
-                          const DispArm *arm, const int *to, int na, int els_to) {
+                          const DispArm *arm, const int *to, int na, int els_to, int els) {
   NodeTable *nt = (NodeTable *)c->nt;
+  int pin = els < 0, like = c->scopes[els_to].def_node;
   /* The shared arms end in one fallback, not tests that repeat it. */
-  while (na > 0 && to[na - 1] == els_to) na--;
-  int els = disp_forward_call(nt, c->scopes[els_to].name, ar, blk), like = c->scopes[els_to].def_node;
+  while (pin && na > 0 && to[na - 1] == els_to) na--;
+  if (pin) els = disp_forward_call(nt, c->scopes[els_to].name, ar, blk);
   int def = disp_def_build(nt, like, name, sg, ar, blk, arm, na, els);
   int body = nt_ref(nt, def, "body"), e = c->nscopes;
   /* walked as the def it is, beside that def: its scope, its receiver and
@@ -4030,7 +4076,7 @@ static int ver_entry_emit(Compiler *c, int rcls, int sg, const char *name, int a
   comp_touch_scope(c->scopes[e].idx);
   for (int k = 0, at = ver_first_stmt(nt, body); k < na; k++, at = nt_ref(nt, at, "subsequent"))
     ver_pin(c, ver_first_stmt(nt, nt_ref(nt, at, "statements")), to[k]);
-  ver_pin(c, els, els_to);
+  if (pin) ver_pin(c, els, els_to);
   return e;
 }
 /* The guard entry of mi, a copy a later prepend puts in front of a method
@@ -4050,7 +4096,428 @@ static int guard_entry_make(Compiler *c, int mi, int ar) {
   /* Cloned forwarding bodies retain the hidden name even when the clone
      has no pin in the original entry's node index. */
   for (int k = 0; k < n - 1; k++) arm[k].callee = c->scopes[to[k]].name;
-  return ver_entry_emit(c, m->class_id, m->is_cmethod, comp_scope_user_name(m), ar, blk, spliced, arm, to, n - 1, to[n - 1]);
+  return ver_entry_emit(c, m->class_id, m->is_cmethod, comp_scope_user_name(m), ar, blk, spliced, arm, to, n - 1, to[n - 1], -1);
+}
+static void ver_entry_add(Compiler *c, struct VerEntry e) {
+  if (!(c->nver_entries & (c->nver_entries - 1)) &&
+      !(c->ver_entries = realloc(c->ver_entries, sizeof *c->ver_entries * (size_t)(c->nver_entries ? 2 * c->nver_entries : 1)))) {
+    fprintf(stderr, "spinel: out of memory\n"); exit(1);
+  }
+  c->ver_entries[c->nver_entries++] = e;
+}
+/* The entry of a history the load phase leaves open (elab_history_open):
+   the method by name (ENTRY_NAMED), the same if-chain over the history's
+   own versions, each a def's or a define_method's scope (the block stays
+   a closure where it stands), hidden behind it (Scope.replaced); its else
+   arm, for no version run yet, what the chain answers past the history
+   (ver_named_else). With refuse, the entry is a raise flagged so, refused
+   (feature_limit) as "cond_def_override" (ver_named_add). Spelled as its versions
+   are: a later prepend's shadow name, which the prepend chain's super
+   reaches. Kept in the entries as guard 2 for its cells' writes, under
+   hcls, the history's class. Every history is asked first and its entry
+   made after the last ask (VerNamed), so that a made entry's nodes
+   rebuild no ask's parent map. */
+/* What an open history's entry runs when no version has run yet, decided
+   for every history before any entry is made (ver_named_kind):
+   VK_SUPER the method super reaches; VK_IVAR an inherited reader's
+   instance variable; VK_MM method_missing; VK_TEXT Kernel's to_s or
+   inspect through super(); VK_NOMETHOD NoMethodError; VK_KEEP no entry,
+   where none of these is CRuby's answer: the history keeps the handling
+   it had (its last version taken as run) */
+enum { VK_SUPER, VK_IVAR, VK_MM, VK_TEXT, VK_NOMETHOD, VK_KEEP };
+typedef struct {
+  int cls, sg, hcls, nv, ar, blk, els, espl, refl, atdef;   /* (espl: the else arm lets a spliced block through, ver_else_block; refl: ver_refl_named; atdef: ver_named_refuse_defs) */
+  const char *name, *refuse;
+  ElabVersion vs[VER_MAX_ARMS];
+  int to[VER_MAX_ARMS];
+} VerNamed;
+/* (sup: the method scopes a super of the program reaches; vc: the names
+   bare calls name, sorted; rn: the names a call, a super, a Symbol or
+   String a call is handed (not define_method's, nor a presence question's, which
+   answers from the final methods), an alias or a `&:sym` names, sorted;
+   demand: asked for the deferred histories a call names now) */
+typedef struct { Compiler *c; VerNamed *v; int n; const unsigned char *sup; int nsup; const char **vc; int nvc; const char **rn; int nrn, demand;
+  int *mh, *mn, *mk, *seen, *cps, stamp; unsigned long long *bydef; } VerNamedAsks;   /* (ver_mixers_build: the mixins by module, a mark per class side, the scopes by def) */
+static int ver_named_else(Compiler *c, const VerNamed *w);
+static void ver_named_make(Compiler *c, const VerNamed *w) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  DispArm arm[VER_MAX_ARMS];
+  char sel[VER_MAX_ARMS][32];
+  const int *to = w->to;
+  int spliced = w->espl, nv = w->nv;
+  char *spell = NULL;
+  for (int i = 0; i < nv; i++) {
+    spliced &= c->scopes[to[i]].yields || !c->scopes[to[i]].blk_param;   /* (one with no &b lets it go no further) */
+    ver_cell_name(w->vs[i].hist, sel[i]);
+    arm[i] = (DispArm){ sel[i], w->vs[i].n, w->name, w->vs[i].hist + 1 };
+    if (c->scopes[to[i]].shadow == SHADOW_PREP && !spell) spell = strdup(c->scopes[to[i]].name);
+  }
+  int els, like = c->scopes[to[nv - 1]].def_node;
+  if (w->refuse) nt_node_set_int(nt, els = disp_raise_no_method(nt, w->name), w->refuse, 1);
+  else els = ver_named_else(c, w);
+  /* (at the last version, where a refusal names it) */
+  static const char *const at[] = { "node_line", "node_file", "node_col" };
+  for (int i = 0; i < 3; i++) nt_node_set_int(nt, els, at[i], nt_int(nt, like, at[i], 0));
+  int e = ver_entry_emit(c, w->cls, w->sg, w->name, w->ar, w->blk, spliced, arm, to, w->refuse ? 0 : nv, to[nv - 1], els);
+  c->scopes[e].entry = ENTRY_NAMED;
+  if (w->refl) { nt_node_set_int(nt, c->scopes[e].def_node, "cond_def_refl", 1); c->nver_refl++; }
+  if (spell) {
+    char *u = c->scopes[e].name;
+    c->scopes[e].name = spell;
+    comp_scope_set_shadow(c, e, SHADOW_PREP, u);
+    free(u);
+  }
+  for (int i = 0; i < nv; i++) { c->scopes[to[i]].replaced = 1; comp_touch_scope(c->scopes[to[i]].idx); }
+  /* (an includer's: under the module's instance side) */
+  ver_entry_add(c, (struct VerEntry){ comp_scope_user_name(&c->scopes[e]), 2, w->hcls, w->hcls == w->cls ? w->sg : 0, w->ar, e });
+}
+/* ...its else arm, as ver_named_kind decided: NoMethodError's message
+   names the receiver's class by its Ruby name, read at run time when cls
+   has subclasses, is a module or is a Class.new class (which may have no
+   name, or take one only at run time) */
+static int ver_named_else(Compiler *c, const VerNamed *w) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *name = w->name;
+  int cls = w->cls, sg = w->sg, nd = 0;
+  char msg[512];
+  switch (w->els) {
+  case VK_SUPER: return disp_super_call(nt, w->ar, w->blk);
+  case VK_TEXT: return disp_super_call(nt, 0, 0);
+  case VK_MM: return disp_method_missing_call(nt, name, w->ar, w->blk);
+  case VK_IVAR: {
+    char iv[256];
+    int rd = nt_new_node(nt, "InstanceVariableReadNode");
+    snprintf(iv, sizeof iv, "@%s", name);
+    nt_node_set_str(nt, rd, "name", iv);
+    return rd;
+  }
+  default: break;
+  }
+  int mod = cls >= 0 && comp_class_is_module(c, &c->classes[cls]);
+  if (cls >= 0) comp_descendants(c, cls, &nd);
+  if (cls < 0) snprintf(msg, sizeof msg, "undefined method '%s' for main", name);
+  else if (nd || (mod && !sg) || comp_class_anonymous(c, cls)) {
+    snprintf(msg, sizeof msg, "undefined method '%s' for %s", name, sg ? "class " : "an instance of ");
+    return disp_raise_no_method_self(nt, msg, !sg);
+  }
+  else if (sg) snprintf(msg, sizeof msg, "undefined method '%s' for %s %s", name, mod ? "module" : "class", class_ruby_name(c, cls));
+  else snprintf(msg, sizeof msg, "undefined method '%s' for an instance of %s", name, class_ruby_name(c, cls));
+  return disp_raise_no_method(nt, msg);
+}
+/* Does a method the entry's else arm cannot run answer `name` on cls's
+   side sg: a builtin's that every object (class, module) answers, cls's
+   builtin superclass's or an included builtin module's, cls's own reader,
+   or a Struct or Data member in its chain? */
+static int ver_other_answers(Compiler *c, int cls, int sg, const char *name) {
+  int dc = -1, mod = cls >= 0 && comp_class_is_module(c, &c->classes[cls]);
+  if (builtin_every_object_answers(name, sg) || is_object_receiver_handoff(name) || is_method_missing_name(name) ||
+      is_implicitly_private_name(name) || (sg && is_class_plain_query(name)) ||
+      builtin_self_method_known(name, !sg ? BSELF_MAIN : mod ? BSELF_MODULE : BSELF_CLASS)) return 1;
+  if (cls < 0) return 0;
+  if (builtin_class_id_answers(class_builtin_parent(c, cls), name, sg)) return 1;
+  if (sg) return 0;
+  if (comp_reader_in_chain(c, cls, name, &dc) && dc >= 0 && (dc == cls || c->classes[dc].is_struct || c->classes[dc].is_data)) return 1;
+  for (int k = cls; k >= 0; k = c->classes[k].parent) {
+    int nmx = 0;
+    const LrMixin *mx = elab_class_mixins(c, k, &nmx);
+    for (int j = 0; j < nmx; j++) {
+      int r = mx[j].ref;
+      NodeKind rk = r >= 0 ? nt_kind(c->nt, r) : NK_NilNode;
+      const char *mn = mx[j].kind == LR_INCLUDE && mx[j].mod < 0 && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) ? nt_str(c->nt, r, "name") : NULL;
+      if (mn && is_builtin_module_name(mn) && builtin_instance_method_known(mn, name)) return 1;
+    }
+  }
+  return 0;
+}
+/* The else kind of the entry of history hist (cls's side sg, versions
+   to[0..nv), taking ar arguments and a block when blk): VK_KEEP when a
+   super of the program reaches a version (its NoMethodError would read
+   as a call's, not super's), or another method answers the name
+   (ver_other_answers), or the record's chain holds a version behind the
+   history that super does not reach (an earlier include's, which the
+   include path chains only behind what reaches super); else, in that
+   order, what super reaches (cplan_super_target) and an inherited
+   reader, each when it has the versions' visibility vis (VK_KEEP when
+   not: CRuby's lookup finds it and refuses the call), method_missing, NoMethodError, but VK_KEEP for a name a bare call
+   names, which CRuby answers with NameError there (the entry, shared by
+   every call, does not see the call's form) */
+static int ver_name_cmp(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
+static void ver_name_add(const char ***v, int *n, const char *name) {
+  if (!name) return;
+  if (!(*n & (*n - 1)) && !(*v = realloc(*v, sizeof **v * (size_t)(*n ? 2 * *n : 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  (*v)[(*n)++] = name;
+}
+static int ver_named_kind(const VerNamedAsks *q, int cls, int sg, const char *name, const int *to, int nv, int hist, int vis, int ar, int blk) {
+  Compiler *c = q->c;
+  ElabVersion cv[VER_MAX_ARMS];
+  int par = comp_super_parent(c, cls, sg), mc = cls >= 0 ? cls : comp_core_class(c, CORE_OBJECT), at, st, last = -1, nc;
+  for (int i = 0; i < nv; i++) if (to[i] < q->nsup && q->sup[to[i]]) return VK_KEEP;
+  if (cls >= 0 && (st = cplan_super_target(c, -1, &c->scopes[to[nv - 1]], &at)) >= 0) {
+    /* (a module's copy has the visibility the module's own table gives it) */
+    int sc = c->scopes[st].class_id, om = c->scopes[st].origin_module_ci - 1;
+    int sv = om >= 0 ? comp_method_vis(&c->classes[om], name) : sg ? comp_cmethod_vis_declared(c, sc, name, NULL) : comp_method_vis_in_chain(c, sc, name);
+    return sc >= 0 && sv == vis ? VK_SUPER : VK_KEEP;
+  }
+  if (!sg && cls >= 0 && !ar && !blk && (is_inspect_name(name) || is_to_s_name(name)) && builtin_every_object_answers(name, 0)) return VK_TEXT;
+  if (ver_other_answers(c, cls, sg, name)) return VK_KEEP;
+  if (par >= 0 && !sg && !ar && !blk && comp_reader_in_chain(c, par, name, NULL)) return comp_method_vis_in_chain(c, par, name) == vis ? VK_IVAR : VK_KEEP;
+  nc = elab_chain_versions(c, cls, sg, name, cv, VER_MAX_ARMS);
+  for (int j = 0; j < nc; j++) if (cv[j].hist == hist) last = j;
+  if (last < nc - 1) return VK_KEEP;
+  if (mc >= 0 && (sg ? comp_cmethod_in_chain(c, mc, "method_missing", NULL) : comp_method_in_chain(c, mc, "method_missing", NULL)) >= 0) return VK_MM;
+  return q->nvc && bsearch(&name, q->vc, (size_t)q->nvc, sizeof *q->vc, ver_name_cmp) ? VK_KEEP : VK_NOMETHOD;
+}
+/* Does the method the else arm els calls (super's target, method_missing)
+   take a block, which the entry then passes on (1), and is it spliced, a
+   block it is given flowing in like a yield (2)? */
+static int ver_else_block(Compiler *c, int cls, int sg, int last, int els) {
+  int at, t = -1, mc = cls >= 0 ? cls : comp_core_class(c, CORE_OBJECT);
+  if (els == VK_SUPER) t = cplan_super_target(c, -1, &c->scopes[last], &at);
+  else if (els == VK_MM && mc >= 0)
+    t = sg ? comp_cmethod_in_chain(c, mc, "method_missing", NULL) : comp_method_in_chain(c, mc, "method_missing", NULL);
+  return t < 0 || !(c->scopes[t].blk_param || c->scopes[t].yields) ? 0 : c->scopes[t].yields ? 2 : 1;
+}
+/* Does define_method call `dm` take keyword parameters, which its scope
+   does not bind (the call sites bind keywords from a DefNode's)? */
+static int ver_dm_keywords(const NodeTable *nt, int dm) {
+  int b = nt_kind(nt, dm) == NK_CallNode ? nt_ref(nt, dm, "block") : -1, bp = b >= 0 ? nt_ref(nt, b, "parameters") : -1, n = 0;
+  int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  if (pn >= 0) nt_arr(nt, pn, "keywords", &n);
+  return pn >= 0 && (n || nt_ref(nt, pn, "keyword_rest") >= 0);
+}
+/* Does node n stand in a class, module or singleton class body with a
+   rescue clause, whose statements no code runs (outside a method body)? */
+static int ver_in_unrun_body(const Compiler *c, const int *par, int n) {
+  for (int a = par[n]; a >= 0 && par[a] >= 0; a = par[a]) {
+    NodeKind k = nt_kind(c->nt, a), pk = nt_kind(c->nt, par[a]);
+    if (k == NK_DefNode) return 0;
+    if (k == NK_BeginNode && (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_SingletonClassNode)) return 1;
+  }
+  return 0;
+}
+/* Does node n stand in a rescue clause of a program whose root records
+   dropped_require: the inline model dropped a require CRuby's LoadError
+   would have left, so whether any rescue clause runs is not known (and its
+   defs keep their static handling)? */
+static int ver_in_dropped_rescue(const Compiler *c, const int *par, int n) {
+  if (!nt_int(c->nt, c->nt->root_id, "dropped_require", 0)) return 0;
+  for (int a = par[n]; a >= 0; n = a, a = par[a])
+    if (nt_kind(c->nt, a) == NK_RescueNode && n == nt_ref(c->nt, a, "statements")) return 1;
+  return 0;
+}
+/* ...for one open history, asked (its entry made after every ask), with
+   its else kind (ver_named_kind): none for a history holding a version no
+   arm calls (an undef, a copy, an alias, an accessor), one whose cell
+   write has no statement of its own (a def in a value position of its
+   statement) or would not run (in a class body with a rescue clause,
+   which no code runs, at any depth), a define_method whose block takes
+   keywords, versions of more than one visibility, an initialize (which
+   the constructor binds by name), or an else kind VK_KEEP: the table's
+   answer stays, the last version taken as run. None for an arm of a
+   dispatcher desugar_conditional_defs made, and none for a history no
+   held mark keeps whose name nothing can read (ver_name_read) until a
+   call names it (ver_entries_demand): no entry, cell
+   or rename stands where no call reaches them. A history holding a version
+   marked cond_lone (a lone def under an `if` that pass leaves to the
+   record, a define_method a Struct or Data block may not run,
+   fix_struct_block_scopes) refuses where it would have none
+   ("cond_def_override"); its entry's name is not answered by reflection
+   (ver_refl_named). A module's instance history arms each class (each
+   side) whose chain holds it (elab_chain_versions, through modules that
+   include the module too), through that class's copies of the versions
+   (include_module_methods), when the history is the chain's nearest and
+   the class's table answers with the last copy; a held history that some
+   such class cannot arm (a prepend's chain, the class's own method in
+   front) is refused at its versions instead (ver_named_refuse_defs).
+   The entry takes the caller's block for a version that yields or takes
+   one, and for super's target or method_missing when it takes one
+   (ver_else_block), to pass it on. */
+static void ver_named_add(VerNamedAsks *q, int cls, int sg, const char *name, const ElabVersion *vs, const int *to, int nv,
+                          const char *refuse, int hcls, int held) {
+  Compiler *c = q->c;
+  int blk = 0, ar = ver_arity(c, -1, to, nv), els = VK_NOMETHOD, eb;
+  for (int i = 0; i < nv; i++) blk |= c->scopes[to[i]].blk_param || c->scopes[to[i]].yields;
+  if (!refuse) els = ver_named_kind(q, cls, sg, name, to, nv, vs[0].hist, vs[0].v->vis, ar, blk);
+  if (els == VK_KEEP && !held) return;
+  if (els == VK_KEEP) refuse = "cond_def_override";
+  eb = refuse ? 0 : ver_else_block(c, cls, sg, to[nv - 1], els);
+  blk |= eb != 0;
+  if (!(q->n & (q->n - 1)) && !(q->v = realloc(q->v, sizeof *q->v * (size_t)(q->n ? 2 * q->n : 1)))) {
+    fprintf(stderr, "spinel: out of memory\n"); exit(1);
+  }
+  VerNamed *w = &q->v[q->n++];
+  *w = (VerNamed){ cls, sg, hcls, nv, ar, blk, els, blk && eb != 1, !refuse && held, 0, name, refuse, { { 0 } }, { 0 } };
+  memcpy(w->vs, vs, sizeof *vs * (size_t)nv);
+  memcpy(w->to, to, sizeof *to * (size_t)nv);
+}
+/* (built once, at the first module's history: every mixin's class, listed
+   under its module, and the scopes in def_node order, each its def_node
+   above its index) */
+static int ver_bydef_cmp(const void *a, const void *b) {
+  unsigned long long x = *(const unsigned long long *)a, y = *(const unsigned long long *)b;
+  return x < y ? -1 : x > y;
+}
+static int ver_int_cmp(const void *a, const void *b) { return (*(const int *)a > *(const int *)b) - (*(const int *)a < *(const int *)b); }
+static void ver_mixers_build(VerNamedAsks *q) {
+  Compiler *c = q->c;
+  int nm = 0, nk = c->nclasses + 1;
+  for (int k = -1; k < c->nclasses; k++) { int n = 0; elab_class_mixins(c, k, &n); nm += n; }
+  q->mh = malloc(sizeof(int) * (size_t)nk); q->mn = malloc(sizeof(int) * (size_t)(nm + 1)); q->mk = malloc(sizeof(int) * (size_t)(nm + 1));
+  q->seen = calloc((size_t)nk, sizeof(int)); q->cps = calloc((size_t)nk * 2, sizeof(int)); q->bydef = malloc(sizeof *q->bydef * (size_t)(c->nscopes + 1));
+  if (!q->mh || !q->mn || !q->mk || !q->seen || !q->cps || !q->bydef) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nk; k++) q->mh[k] = -1;
+  nm = 0;
+  for (int k = -1; k < c->nclasses; k++) {
+    int n = 0, m;
+    const LrMixin *mx = elab_class_mixins(c, k, &n);
+    for (int j = 0; j < n; j++)
+      if ((m = elab_mixin_module(c, &mx[j])) >= 0) { q->mk[nm] = k; q->mn[nm] = q->mh[m]; q->mh[m] = nm++; }
+  }
+  for (int s = 0; s < c->nscopes; s++) q->bydef[s] = (unsigned long long)(unsigned)c->scopes[s].def_node << 32 | (unsigned)s;
+  qsort(q->bydef, (size_t)c->nscopes, sizeof *q->bydef, ver_bydef_cmp);
+}
+/* Can a call reach method `name` (a singleton's when sg) by its name: one
+   names it, or CRuby's syntax or a builtin calls it back? (A send of a name
+   only the run time knows reaches it through the arms the fixpoint makes,
+   ver_entries_demand.) */
+static int ver_name_read(const VerNamedAsks *q, const char *name, int sg) {
+  return method_name_implicitly_invoked(name) || ic_core_callback(name, sg) ||
+         (q->nrn && bsearch(&name, q->rn, (size_t)q->nrn, sizeof *q->rn, ver_name_cmp));
+}
+/* the first deferred history of name, the others of the name after it, or NULL */
+static struct VerDefer *ver_defer_first(Compiler *c, const char *name) {
+  struct VerDefer *d = c->nver_defer && name ? bsearch(&name, c->ver_defer, (size_t)c->nver_defer, sizeof *d, ver_name_cmp) : NULL;
+  while (d && d > c->ver_defer && sp_streq(d[-1].name, name)) d--;
+  return d;
+}
+/* the deferred history (cls, sg, name) at taken t, or NULL */
+static struct VerDefer *ver_defer_find(Compiler *c, int cls, int sg, const char *name, int t) {
+  for (struct VerDefer *d = ver_defer_first(c, name); d && d < c->ver_defer + c->nver_defer && sp_streq(d->name, name); d++)
+    if (d->cls == cls && d->sg == sg && d->taken == t) return d;
+  return NULL;
+}
+/* (a held history no entry can stand for: refused at its marked versions, ver_named_refuse_defs) */
+static void ver_named_refuse_at(VerNamedAsks *q, int cls, int sg, const char *name) {
+  if (!(q->n & (q->n - 1)) && !(q->v = realloc(q->v, sizeof *q->v * (size_t)(q->n ? 2 * q->n : 1)))) {
+    fprintf(stderr, "spinel: out of memory\n"); exit(1);
+  }
+  q->v[q->n++] = (VerNamed){ .cls = cls, .sg = sg, .hcls = cls, .atdef = 1, .name = name, .refuse = "cond_def_override" };
+}
+static void ver_named_one(void *arg, int cls, int sg, const char *name) {
+  VerNamedAsks *q = arg;
+  Compiler *c = q->c;
+  const int *par = comp_parent_map(c);
+  ElabVersion vs[VER_MAX_ARMS], cv[VER_MAX_ARMS];
+  const char *refuse = NULL;
+  int to[VER_MAX_ARMS], nv = cls < -1 ? -1 : elab_history_versions(c, cls, sg, name, vs, VER_MAX_ARMS), na = 0, bad = 0, held = 0, dc;
+  int mod = cls >= 0 && !sg && comp_class_is_module(c, &c->classes[cls]), vis0 = nv > 0 ? vs[0].v->vis : 0;
+  for (int i = 0; i < nv; i++) {
+    const LrDef *d = vs[i].v;
+    int s = d->kind == LR_DEF || d->kind == LR_DEFINE_METHOD ? d->scope : 0, st = d->node;
+    while (st >= 0 && par[st] >= 0 && nt_kind(c->nt, par[st]) != NK_StatementsNode) st = par[st];   /* (its cell write's, ver_cells_write) */
+    if (nt_int(c->nt, d->node, "cond_arm", 0) || ver_in_dropped_rescue(c, par, d->node)) return;
+    held |= nt_int(c->nt, d->node, "cond_lone", 0) != 0;
+    if (s <= 0 || c->scopes[s].class_id != cls || c->scopes[s].is_cmethod != sg || (!mod && c->scopes[s].is_transplanted_source) ||
+        st < 0 || par[st] < 0 || (d->may == LR_MAY_IN && st != d->node) || ver_in_unrun_body(c, par, d->node) ||
+        (d->kind == LR_DEFINE_METHOD && ver_dm_keywords(c->nt, d->node)) || d->vis != vis0) { bad = 1; continue; }
+    vs[na] = vs[i];
+    to[na++] = s;
+  }
+  int can = na && !bad && !is_initialize_name(name);   /* (the constructor binds the initialize it calls by name) */
+  struct VerDefer *df = q->demand && !held && can ? ver_defer_find(c, cls, sg, name, 1) : NULL;
+  if (q->demand && !df) return;
+  if (df) df->taken = 2;
+  else if (!held && can && !ver_name_read(q, name, sg)) {   /* (made once a call names it, ver_entries_demand) */
+    if (!(c->nver_defer & (c->nver_defer - 1)) &&
+        !(c->ver_defer = realloc(c->ver_defer, sizeof *c->ver_defer * (size_t)(c->nver_defer ? 2 * c->nver_defer : 1)))) {
+      fprintf(stderr, "spinel: out of memory\n"); exit(1);
+    }
+    c->ver_defer[c->nver_defer++] = (struct VerDefer){ name, cls, sg, 0 };
+    return;
+  }
+  else if (!held && !can) return;
+  if (bad) refuse = "cond_def_override";
+  nv = na;
+  if (held && (!na || is_initialize_name(name))) { ver_named_refuse_at(q, cls, sg, name); return; }
+  if (!mod) { ver_named_add(q, cls, sg, name, vs, to, nv, refuse, cls, held); return; }
+  /* (a module's: asked of every includer first, armed only when no held includer fails) */
+  int fail = 0, n0 = q->n, hn = elab_history_versions(c, cls, 0, name, cv, VER_MAX_ARMS), nk = 1, wide = 0, *ks;
+  const int core[] = { CORE_OBJECT, CORE_BASIC_OBJECT, CORE_KERNEL, CORE_MODULE, CORE_CLASS };
+  if (!q->mh) ver_mixers_build(q);
+  if (!(ks = malloc(sizeof(int) * (size_t)(c->nclasses + 2)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  q->seen[cls + 1] = ++q->stamp;
+  ks[0] = cls;
+  /* (the classes whose chains may hold it: the module's mixers, through the
+     modules that mix it in, and their descendants, a class's own taken
+     when its parent's are not; every class, when main, Object or a core
+     class or module mixes it in) */
+  for (int h = 0, nd, y, p; h < nk; h++) {
+    p = ks[h] >= 0 ? c->classes[ks[h]].parent : -1;
+    const int *d = ks[h] >= 0 && (p < 0 || q->seen[p + 1] != q->stamp) ? comp_descendants(c, ks[h], &nd) : (nd = 0, NULL);
+    for (int j = 0; j < (int)(sizeof core / sizeof *core); j++) wide |= ks[h] == comp_core_class(c, core[j]);
+    for (int e = ks[h] >= 0 ? q->mh[ks[h]] : -1, m = 0; e >= 0 || m < nd; e >= 0 ? (e = q->mn[e]) : m++)
+      if (q->seen[(y = e >= 0 ? q->mk[e] : d[m]) + 1] != q->stamp) { q->seen[y + 1] = q->stamp; wide |= y < 0; ks[nk++] = y; }
+  }
+  if (!wide) qsort(ks, (size_t)nk, sizeof *ks, ver_int_cmp);
+  for (int i = 0; i < nv; i++) {   /* (the sides of the classes that hold a copy of a version, under any spelling) */
+    unsigned long long key = (unsigned long long)(unsigned)c->scopes[to[i]].def_node << 32;
+    int lo = 0, hi = c->nscopes;
+    while (lo < hi) { int mid = (lo + hi) / 2; if (q->bydef[mid] < key) lo = mid + 1; else hi = mid; }
+    for (int s = 0; lo < c->nscopes && q->bydef[lo] >> 32 == key >> 32; lo++)
+      if ((s = (int)(q->bydef[lo] & 0xffffffff)) != to[i] && c->scopes[s].class_id >= 0)
+        q->cps[2 * c->scopes[s].class_id + 2 + (c->scopes[s].is_cmethod != 0)] = q->stamp;
+  }
+  for (int h = 0, n = wide ? c->nclasses + 1 : nk; h < n; h++)
+    for (int ksg = 0, k = wide ? h - 1 : ks[h]; ksg < 2; ksg++) {
+      int kto[VER_MAX_ARMS], i = 0, nc;
+      if (k >= 0 && !ksg && comp_class_is_module(c, &c->classes[k])) continue;
+      nc = elab_chain_versions(c, k, ksg, name, cv, VER_MAX_ARMS);
+      for (int j = 0; j < nc; j++) i += cv[j].hist == vs[0].hist;   /* (its versions, each once unless the module is mixed in again) */
+      if (nc < 0) {   /* (a chain the record cannot hold: failed when it mixes the module in itself) */
+        int nmx = 0;
+        const LrMixin *mx = elab_class_mixins(c, k, &nmx);
+        for (int j = 0; j < nmx; j++) fail |= (mx[j].kind == LR_EXTEND) == ksg && elab_mixin_module(c, &mx[j]) == cls;
+      }
+      if (!i) continue;
+      int once = i == hn, near = cv[0].hist == vs[0].hist;
+      i = 0;
+      if (once && near)
+        for (; i < nv && (kto[i] = comp_method_version(c, k, name, ksg, vs[i].v->node, &dc)) >= 0 && dc == k; i++) {}
+      /* (behind the class's own method, which reaches them only through the copies the include path puts behind it, inc_super_reached) */
+      if (once && !near && q->cps[2 * k + 2 + ksg] != q->stamp) continue;
+      int mi = ksg ? comp_cmethod_in_class(c, k, name) : comp_method_in_class(c, k, name);
+      if (i == nv && mi >= 0 && c->scopes[mi].def_node == c->scopes[kto[nv - 1]].def_node)
+        ver_named_add(q, k, ksg, name, vs, kto, nv, refuse, cls, held);
+      else fail = 1;
+    }
+  free(ks);
+  if (!fail || !held) return;
+  q->n = n0;
+  ver_named_refuse_at(q, cls, 0, name);
+}
+/* ...and a held history no entry can stand for (an initialize, which
+   the constructor binds by name; one with no version an arm can call; a
+   module's that some class holding it cannot arm, its chain holding the
+   history behind another method, a prepend's or the class's own, or apart
+   from the class's copies): refused where the lowering refused it, ahead
+   of each version marked cond_lone ("cond_def_override", feature_limit) */
+static void ver_named_refuse_defs(Compiler *c, const VerNamed *w) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  static const char *const at[] = { "node_line", "node_file", "node_col" };
+  ElabVersion vs[VER_MAX_ARMS];
+  int nv = elab_history_versions(c, w->cls, w->sg, w->name, vs, VER_MAX_ARMS);
+  for (int i = 0; i < nv; i++) {
+    const int *par = comp_parent_map(c);
+    int d = vs[i].v->node, st = d, n0 = nt->count, r;
+    if (!nt_int(nt, d, "cond_lone", 0)) continue;
+    while (st >= 0 && par[st] >= 0 && nt_kind(nt, par[st]) != NK_StatementsNode) st = par[st];
+    if (st < 0 || par[st] < 0) continue;
+    nt_node_set_int(nt, r = disp_raise_no_method(nt, w->name), w->refuse, 1);
+    for (int j = 0; j < 3; j++) nt_node_set_int(nt, r, at[j], nt_int(nt, d, at[j], 0));
+    comp_grow_node_arrays(c);
+    for (int k = n0; k < nt->count; k++) c->nscope[k] = c->nscope[st];
+    ver_list_put(nt, par[st], st, 0, r);
+  }
 }
 int ver_entry_targets(const Compiler *c, int e, int *out, int *tests) {
   const NodeTable *nt = c->nt;
@@ -4059,6 +4526,7 @@ int ver_entry_targets(const Compiler *c, int e, int *out, int *tests) {
     if (tests) tests[n] = nt_kind(nt, at) == NK_IfNode ? nt_ref(nt, at, "predicate") : -1;
     out[n++] = ct_pin_of(c, ver_first_stmt(nt, nt_ref(nt, at, "statements")));
   }
+  if (n > 1 && out[n - 1] < 0 && c->scopes[e].entry == ENTRY_NAMED) out[n - 1] = out[n - 2];
   return n;
 }
 typedef struct { int guard, cls, sg, mi, ar; const char *name; } VerNeed;
@@ -4190,7 +4658,7 @@ static void ver_entries_index(Compiler *c) {
     c->ver_ix_next[i] = c->ver_ix[b];
     c->ver_ix[b] = i;
     c->ver_names_next[i] = -1;
-    if (e->scope < 0) continue;
+    if (e->scope < 0 || e->guard == 2) continue;   /* (an open history's entry is the table's answer) */
     int dup = 0;
     for (int j = c->ver_names[m]; j >= 0 && !dup; j = c->ver_names_next[j]) {
       const struct VerEntry *v = &c->ver_entries[j];
@@ -4198,6 +4666,45 @@ static void ver_entries_index(Compiler *c) {
     }
     if (!dup) { c->ver_names_next[i] = c->ver_names[m]; c->ver_names[m] = i; }
   }
+}
+/* Asks every open history (elab_open_histories) and makes the entries of
+   those a reader names: at the build, each a call names (the others are
+   deferred, Compiler.ver_defer); with demand, the deferred ones taken */
+static void ver_named_asks(Compiler *c, int demand) {
+  const NodeTable *nt = c->nt;
+  unsigned char *sup = calloc((size_t)c->nscopes + 1, 1);
+  if (!sup) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0, n0 = nt->count, at; id < n0; id++) {   /* (the methods a super reaches, asked once a super) */
+    NodeKind k = nt_kind(nt, id);
+    Scope *s = (k == NK_SuperNode || k == NK_ForwardingSuperNode) ? comp_scope_of(c, id) : NULL;
+    int t = s && s->class_id >= 0 && s->name ? cplan_super_target(c, id, s, &at) : -1;
+    if (t >= 0 && t < c->nscopes) sup[t] = 1;
+  }
+  const char **vc = NULL;
+  int nvc = 0;
+  const char **rn = NULL;
+  int nrn = 0;
+  for (int id = 0, n0 = nt->count; id < n0; id++) {   /* (the names bare calls name, and those VerNamedAsks.rn holds) */
+    NodeKind k = nt_kind(nt, id);
+    const char *cn[2];
+    int nn = call_node_names(c, id, cn), ac = 0, sym = k == NK_AliasMethodNode ? nt_ref(nt, id, "old_name") : k == NK_BlockArgumentNode ? nt_ref(nt, id, "expression") : -1;
+    for (int i = 0; i < nn; i++) ver_name_add(&rn, &nrn, cn[i]);
+    if (sym >= 0 && nt_kind(nt, sym) == NK_SymbolNode) ver_name_add(&rn, &nrn, nt_str(nt, sym, "value"));
+    if (k != NK_CallNode || !nn || !cn[0]) continue;
+    if (nt_vcall(nt, id)) ver_name_add(&vc, &nvc, cn[0]);
+    const int *av = call_args(nt, id, &ac);
+    int pq = is_method_presence_query(cn[0]) == 1 && !is_method_object_maker(cn[0]);
+    for (int i = 0; i < ac && !is_define_method_name(cn[0]) && !pq; i++)
+      ver_name_add(&rn, &nrn, nt_kind(nt, av[i]) == NK_SymbolNode ? nt_str(nt, av[i], "value") :
+                              nt_kind(nt, av[i]) == NK_StringNode ? nt_str(nt, av[i], "content") : NULL);
+  }
+  if (nvc) qsort(vc, (size_t)nvc, sizeof *vc, ver_name_cmp);
+  if (nrn) qsort(rn, (size_t)nrn, sizeof *rn, ver_name_cmp);
+  VerNamedAsks q = { c, NULL, 0, sup, c->nscopes, vc, nvc, rn, nrn, demand, NULL, NULL, NULL, NULL, NULL, 0, NULL };
+  elab_open_histories(c, ver_named_one, &q);
+  for (int i = 0; i < q.n; i++) if (!q.v[i].atdef) ver_named_make(c, &q.v[i]);
+  for (int i = 0; i < q.n; i++) if (q.v[i].atdef) ver_named_refuse_defs(c, &q.v[i]);
+  free(q.v); free(sup); free(vc); free(rn); free(q.mh); free(q.mn); free(q.mk); free(q.seen); free(q.cps); free(q.bydef);
 }
 void ver_entries_build(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -4221,6 +4728,10 @@ void ver_entries_build(Compiler *c) {
                   ver_arity(c, -1, to, guard_chain(c, s, to, NULL, NULL)), name };
     if (!ver_need_has(c, &o, w)) ver_need_add(&o, w);
   }
+  /* the open histories' entries first: the table answers them, and no call
+     of their names asks an entry of the chain behind them */
+  ver_named_asks(c, 0);
+  if (c->nver_defer) qsort(c->ver_defer, (size_t)c->nver_defer, sizeof *c->ver_defer, ver_name_cmp);
   for (int id = 0, n0 = nt->count; id < n0; id++)
     for (int i = 0, nn = call_node_names(c, id, names); i < nn; i++) {
       if (!names[i]) continue;
@@ -4236,11 +4747,7 @@ void ver_entries_build(Compiler *c) {
   for (int i = 0; i < o.n; i++) {
     int e = o.v[i].guard ? guard_entry_make(c, o.v[i].mi, o.v[i].ar)
                          : ver_entry_make(c, o.v[i].cls, o.v[i].sg, o.v[i].name, o.v[i].mi, o.v[i].ar);
-    if (!(c->nver_entries & (c->nver_entries - 1)) &&
-        !(c->ver_entries = realloc(c->ver_entries, sizeof *c->ver_entries * (size_t)(c->nver_entries ? 2 * c->nver_entries : 1)))) {
-      fprintf(stderr, "spinel: out of memory\n"); exit(1);
-    }
-    c->ver_entries[c->nver_entries++] = (struct VerEntry){ e >= 0 ? c->scopes[e].name : o.v[i].name, o.v[i].guard, o.v[i].cls, o.v[i].sg, o.v[i].ar, e };
+    ver_entry_add(c, (struct VerEntry){ e >= 0 ? c->scopes[e].name : o.v[i].name, o.v[i].guard, o.v[i].cls, o.v[i].sg, o.v[i].ar, e });
   }
   free(o.v); free(o.ix);
   free(ver_pre_tab); ver_pre_tab = NULL; ver_pre_n = 0; ver_pre_nb = 0;   /* (the asks' memo lives for one build) */
@@ -4260,32 +4767,26 @@ void ver_entries_build(Compiler *c) {
   free(gc);
   c->ver_built = 1;
 }
-/* `cell = v` put in statement list `list` at its statement `at` (after it
-   when after), in at's scope: the write, for the caller to record as the
-   load record records a write (elab_record_write) */
-int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int v) {
+/* `cell = v`, in at's scope and on its line (ver_cell_put places it) */
+static int ver_cell_node(Compiler *c, const char *cell, int at, int v) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n = 0, j = 0, line = (int)nt_int(nt, at, "node_line", 0);
-  int tv = nt_new_int(nt, v), g = nt_new_node(nt, "GlobalVariableWriteNode");
+  int line = (int)nt_int(nt, at, "node_line", 0), tv = nt_new_int(nt, v), g = nt_new_node(nt, "GlobalVariableWriteNode");
   nt_node_set_str(nt, g, "name", cell);
   nt_node_set_ref(nt, g, "value", tv);
   nt_node_set_int(nt, tv, "node_line", line);
   nt_node_set_int(nt, g, "node_line", line);
-  const int *st = nt_arr(nt, list, "body", &n);
-  while (j < n && st[j] != at) j++;
-  if (j == n) { fprintf(stderr, "spinel: internal: a cell write's statement is not in its statement list\n"); exit(1); }
-  int *ns = malloc(sizeof(int) * (size_t)(n + 1));
-  if (!ns) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  j += after;
-  memcpy(ns, st, sizeof(int) * (size_t)j);
-  ns[j] = g;
-  memcpy(ns + j + 1, st + j, sizeof(int) * (size_t)(n - j));
-  nt_node_set_arr(nt, list, "body", ns, n + 1);
-  free(ns);
   /* (the cell holds an Integer from the entry file's first statement on, and nothing can read it before: its seed) */
   comp_gvar_intern(c, cell + 1)->gvar_seeded = 2;
   comp_grow_node_arrays(c);
   c->nscope[g] = c->nscope[tv] = c->nscope[at];
+  return g;
+}
+/* `cell = v` put in statement list `list` at its statement `at` (after it
+   when after), in at's scope: the write, for the caller to record as the
+   load record records a write (elab_record_write) */
+int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int v) {
+  int g = ver_cell_node(c, cell, at, v);
+  ver_list_put((NodeTable *)c->nt, list, at, after, g);
   return g;
 }
 /* ...and the cells' writes: after each statement that makes a version an
@@ -4295,54 +4796,116 @@ int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int
    the entry file's first statement (unless that statement makes one of the
    cell's versions), so that the cell holds an Integer wherever an entry
    reads it. Each recorded as the load record records a
-   write (elab_record_write). */
-typedef struct { int stmt, node, n, hist; } VerWrite;
-void ver_cells_write(Compiler *c) {
-  const NodeTable *nt = c->nt;
+   write (elab_record_write). An open history's entry (guard 2) arms its
+   own history's versions. The writes are placed list by list, one rebuild
+   of each list's statements: ahead of a statement in the order made, after
+   it in the reverse order, as one insertion at a time placed them. */
+typedef struct { int list, stmt, node, n, hist, after, k, g; } VerWrite;
+static int ver_write_cmp(const void *a, const void *b) {
+  const VerWrite *x = a, *y = b;
+  if (x->list != y->list) return x->list < y->list ? -1 : 1;
+  if (x->stmt != y->stmt) return x->stmt < y->stmt ? -1 : 1;
+  if (x->after != y->after) return x->after - y->after;
+  return x->after ? y->k - x->k : x->k - y->k;
+}
+void ver_cells_write(Compiler *c, int from) {
+  NodeTable *nt = (NodeTable *)c->nt;
   ElabVersion vs[VER_MAX_ARMS];
   VerWrite *w = NULL;
-  int nw = 0, nz = 0, top = prog_root_stmts(c, 0), ntop = 0;
+  int nw = 0, top = prog_root_stmts(c, 0), ntop = 0, nh = 0;
   const int *par = c->nver_entries ? comp_parent_map(c) : NULL, *first = top >= 0 ? nt_arr(nt, top, "body", &ntop) : NULL;
-  for (int i = 0; i < c->nver_entries; i++) {
+  unsigned char *seen = c->nver_entries ? calloc((size_t)nt->count + 1, 1) : NULL;
+  if (c->nver_entries && !seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = from; i < c->nver_entries; i++) {
     const struct VerEntry *e = &c->ver_entries[i];
     /* (not only the entries reached now: a send's arms, made in the fixpoint, reach methods whose calls bind entries this first pass leaves unreached) */
     if (e->scope < 0) continue;
     int arms[VER_MAX_ARMS + 1], tests[VER_MAX_ARMS + 1];
-    int na = e->guard ? ver_entry_targets(c, e->scope, arms, tests) : 0;
-    int nv = elab_chain_versions(c, e->cls, e->sg, e->name, vs, VER_MAX_ARMS);
+    int na = e->guard == 1 ? ver_entry_targets(c, e->scope, arms, tests) : 0;
+    int nv = e->guard == 2 ? elab_history_versions(c, e->cls, e->sg, e->name, vs, VER_MAX_ARMS)
+                           : elab_chain_versions(c, e->cls, e->sg, e->name, vs, VER_MAX_ARMS);
     for (int j = 0; j < nv; j++) {
-      if (e->guard) {
+      if (e->guard == 1) {
         int reads = 0;
         for (int k = 0; k < na; k++)
           reads |= nt_int(nt, tests[k], "ver_hist", 0) == vs[j].hist + 1;
         if (!reads) continue;   /* prepend cells are written at their statements */
       }
-      int node = vs[j].v->node, st = node, dup = 0;
+      int node = vs[j].v->node, st = node;
       while (st >= 0 && par[st] >= 0 && nt_kind(nt, par[st]) != NK_StatementsNode) st = par[st];
-      for (int k = 0; k < nw && !dup; k++) dup = w[k].node == node;
-      if (dup || st < 0 || par[st] < 0) continue;
+      if (seen[node] || st < 0 || par[st] < 0) continue;
+      seen[node] = 1;
       if (!(nw & (nw - 1)) && !(w = realloc(w, sizeof *w * (size_t)(nw ? 2 * nw : 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      w[nw++] = (VerWrite){ st, node, vs[j].v->kind == LR_REMOVE ? 0 : vs[j].n, vs[j].hist };
+      NodeKind sk = nt_kind(nt, st);
+      /* (ahead of a def, an alias or an undef, which runs no program code: after one that ends a branch, the write would be the branch's value) */
+      w[nw++] = (VerWrite){ par[st], st, node, vs[j].v->kind == LR_REMOVE ? 0 : vs[j].n, vs[j].hist,
+                            sk != NK_DefNode && sk != NK_AliasMethodNode && sk != NK_UndefNode, 0, -1 };
+      if (vs[j].hist >= nh) nh = vs[j].hist + 1;
     }
   }
-  int *made = malloc(sizeof(int) * (size_t)(2 * nw + 1)), at0 = ntop ? first[0] : -1;
-  for (int k = 0; k < nw; k++) {
+  free(seen);
+  /* the zero writes: one per cell, at its first write, none where the first statement writes it */
+  unsigned char *hz = calloc((size_t)nh + 1, 1);
+  int at0 = ntop ? first[0] : -1, nz = 0;
+  VerWrite *all = malloc(sizeof *all * (size_t)(2 * nw + 1));
+  if (!hz || !all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nw; k++) if (w[k].stmt == at0) hz[w[k].hist] = 1;
+  for (int k = 0; k < nw; k++) {   /* (made in the order one insertion at a time made them) */
     char cell[32];
-    int z = at0 >= 0;
     ver_cell_name(w[k].hist, cell);
-    for (int j = 0; j < nw && z; j++)   /* (one per cell; none where the first statement writes it) */
-      z = w[j].hist != w[k].hist || (j >= k && w[j].stmt != at0);
-    if (z) made[nw + nz++] = ver_cell_put(c, cell, top, at0, 0, 0);
-    NodeKind sk = nt_kind(nt, w[k].stmt);
-    /* (ahead of a def, an alias or an undef, which runs no program code: after one that ends a branch, the write would be the branch's value) */
-    int after = sk != NK_DefNode && sk != NK_AliasMethodNode && sk != NK_UndefNode;
-    made[k] = ver_cell_put(c, cell, par[w[k].stmt], w[k].stmt, after, w[k].n);
+    if (at0 >= 0 && !hz[w[k].hist]) {
+      hz[w[k].hist] = 1;
+      all[nz] = (VerWrite){ top, at0, -1, 0, w[k].hist, 0, nz, ver_cell_node(c, cell, at0, 0) };
+      nz++;
+    }
+    all[nz] = w[k];
+    all[nz].k = nz;
+    all[nz].g = ver_cell_node(c, cell, w[k].stmt, w[k].n);
+    nz++;
   }
-  for (int k = 0; k < nw + nz; k++) elab_record_write(c, made[k]);
-  free(made); free(w);
+  int *made = malloc(sizeof(int) * (size_t)(nz + 1)), nm = 0;   /* (recorded once placed: the version writes, then the zero writes) */
+  if (!made) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nz; k++) if (all[k].node >= 0) made[nm++] = all[k].g;
+  for (int k = 0; k < nz; k++) if (all[k].node < 0) made[nm++] = all[k].g;
+  qsort(all, (size_t)nz, sizeof *all, ver_write_cmp);
+  for (int k = 0, e; k < nz; k = e) {   /* each list once */
+    int n = 0, o = 0;
+    for (e = k; e < nz && all[e].list == all[k].list; e++) {}
+    const int *st = nt_arr(nt, all[k].list, "body", &n);
+    int *ns = malloc(sizeof(int) * (size_t)(n + e - k));
+    if (!ns) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int j = 0; j < n; j++) {
+      int lo = k, hi = e;   /* (the first write of st[j], by node) */
+      while (lo < hi) { int mid = (lo + hi) / 2; if (all[mid].stmt < st[j]) lo = mid + 1; else hi = mid; }
+      for (; lo < e && all[lo].stmt == st[j] && !all[lo].after; lo++) ns[o++] = all[lo].g;
+      ns[o++] = st[j];
+      for (; lo < e && all[lo].stmt == st[j]; lo++) ns[o++] = all[lo].g;
+    }
+    if (o != n + e - k) { fprintf(stderr, "spinel: internal: a cell write's statement is not in its statement list\n"); exit(1); }
+    nt_node_set_arr(nt, all[k].list, "body", ns, o);
+    free(ns);
+  }
+  for (int k = 0; k < nm; k++) elab_record_write(c, made[k]);
+  free(made); free(all); free(hz); free(w);
   /* (the versions kept before the writes are asked again) */
   free(c->ver_memo);
   c->ver_memo = NULL;
   c->ver_memo_cap = c->ver_memo_n = 0;
+}
+/* The deferred histories a call names now (desugar_dynamic_send makes an
+   arm per name a send of a run-time name may take, and a pass may retarget
+   a call in place): asked through the index of the calls by name, which
+   follows both (an_calls_named_first), their entries made and their cells
+   written now, as the build made the others' (ver_named_asks,
+   ver_cells_write). Changed when it made one. */
+int ver_entries_demand(Compiler *c) {
+  int any = 0, e0 = c->nver_entries;
+  for (int i = 0; i < c->nver_defer; i++)
+    if (!c->ver_defer[i].taken && an_calls_named_first(c, c->ver_defer[i].name) >= 0) any = c->ver_defer[i].taken = 1;
+  if (!any) return 0;
+  ver_named_asks(c, 1);
+  ver_entries_index(c);
+  ver_cells_write(c, e0);
+  return c->nver_entries > e0;
 }
 

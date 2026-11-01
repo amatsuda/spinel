@@ -6,6 +6,7 @@
 #include <string.h>
 #include "types.h"
 #include "builtin_names.h"
+#include "analyze_internal.h"
 
 int is_zip_name(const char *n) {
   return sp_streq(n, "zip");
@@ -1780,6 +1781,37 @@ int builtin_object_method_known(const char *m) {
     "object_id", "public_send", "respond_to?", "send", "__send__",
     "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
   return m && builtin_name_in(m, OBJM2);
+}
+
+/* A question whether a receiver has a method: of one by name (1), or a
+   list of its methods (2) */
+int is_method_presence_query(const char *n) {
+  static const char *const by_name[] = { "respond_to?", "method_defined?", "public_method_defined?",
+    "private_method_defined?", "protected_method_defined?", "instance_method", "public_instance_method",
+    "method", "public_method", NULL };
+  static const char *const lists[] = { "instance_methods", "public_instance_methods", "methods", "public_methods", NULL };
+  return builtin_name_in(n, by_name) ? 1 : builtin_name_in(n, lists) ? 2 : 0;
+}
+/* Does every object (with cmeth, every class and module too) answer m with
+   a builtin method: one of Object's own, Kernel's or Object's (Module's)? */
+int builtin_every_object_answers(const char *m, int cmeth) {
+  return builtin_object_method_known(m) || builtin_method_known("Kernel", m) || builtin_method_known("Object", m) ||
+         (cmeth && builtin_method_known("Module", m));
+}
+/* Does the builtin class of cls_id id (class_builtin_parent's answer), or
+   a builtin class above it, answer m with a method of its own (with
+   cmeth, a class method)? Every name the facts carry counts, the
+   instance-count rows (Exception#message, ...) included */
+int builtin_class_id_answers(int id, const char *m, int cmeth) {
+  for (int depth = 0; id && m && depth < 16; id = builtin_class_parent_id(id), depth++) {
+    const BuiltinClass *r = NULL;
+    for (int i = 0; (r = builtin_class_at(i)) && r->id != id; i++) {}
+    const char *nm[2] = { r ? r->name : NULL, r && (r->flags & BC_EXCEPTION) ? "Exception" : NULL };
+    for (int j = 0; j < 2; j++)
+      if (nm[j] && (cmeth ? builtin_cmethod_known(nm[j], m) : builtin_instance_method_known(nm[j], m))) return 1;
+    if (id == builtin_class_parent_id(id)) break;   /* (Object) */
+  }
+  return 0;
 }
 
 /* The names CRuby's own facts give Object, BasicObject, Kernel, Module and

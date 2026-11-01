@@ -8371,6 +8371,10 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   free(source);
   source = resolve_plain_requires(&graph, resolved, argv0, &fsl, &fsl_n);
   if (g_dump_load_graph) sp_load_graph_dump(&graph);
+  /* a require the splice dropped never raises the LoadError CRuby's does
+     (resolve_plain_requires), which the program root records below */
+  int dropped = 0;
+  for (int i = 0; i < graph.nspl; i++) dropped |= graph.spl[i].how == SP_LOAD_NONE;
   sp_load_graph_free(&graph);
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig", &fsl, &fsl_n);
@@ -8526,6 +8530,7 @@ else {
   out_nt = nt_new_table();
   node_counter = 0;
   out_nt->root_id = flatten(root);
+  if (dropped) nt_put_int(out_nt, out_nt->root_id, "dropped_require", 1);
   /* Issue #878: the source file path is a fact of the table, so `__dir__`
      and similar compile-time helpers can recover it even when the source
      contains no `__FILE__` reference. The id -> path table resolves each
