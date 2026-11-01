@@ -2016,8 +2016,8 @@ static int mf_body_blocks(const NodeTable *nt, int node, const char *base, int l
 static int mf_module_blocks(Compiler *c, int ci, const char *base, int len) {
   const NodeTable *nt = c->nt;
   for (int dn = 0; dn < nt->count; dn++) {
-    if (nt_kind(nt, dn) != NK_ModuleNode || mf_module_of(c, dn) != ci) continue;
-    int body = nt_ref(nt, dn, "body"), n = 0;
+    if (!class_def_is_module(nt, dn) || mf_module_of(c, dn) != ci) continue;
+    int body = class_def_body(nt, dn), n = 0;
     const int *b = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     for (int i = 0; i < n; i++)
       if (nt_kind(nt, b[i]) != NK_DefNode && mf_body_blocks(nt, b[i], base, len)) return 1;
@@ -2124,10 +2124,10 @@ void register_module_functions(Compiler *c) {
      `module_function` was never seen and its methods stayed instance-level --
      `M.helper(x)` then had no callee and refused to compile (#3969). */
   for (int dn = 0; dn < nt->count; dn++) {
-    if (nt_kind(nt, dn) != NK_ModuleNode) continue;
+    if (!class_def_is_module(nt, dn)) continue;
     int ci = mf_module_of(c, dn);
     if (ci < 0) continue;
-    int body = nt_ref(nt, dn, "body");
+    int body = class_def_body(nt, dn);
     if (body < 0) continue;
     int bn = 0;
     const int *stmts = nt_arr(nt, body, "body", &bn);
@@ -2278,6 +2278,42 @@ int is_struct_call(const NodeTable *nt, int val) {
    node table alone, so the passes ahead of the scope walk, which have no
    record yet, ask them too. A definition form that is not a ClassNode or
    ModuleNode joins here, in one place per fact. */
+
+/* The node kinds a definition can be, in the order a pass that iterates
+   every definition takes them: kind by kind (NT_FOREACH_KIND over each,
+   its ids ascending), the class headers, then the module headers. A loop
+   over them asks each node the fact it needs (class_def_opens_frame,
+   class_def_opens_cref, class_def_is_class, class_def_is_module). *n
+   receives the count. */
+const NodeKind *class_def_kinds(int *n) {
+  static const NodeKind kinds[] = { NK_ClassNode, NK_ModuleNode };
+  *n = (int)(sizeof kinds / sizeof kinds[0]);
+  return kinds;
+}
+
+/* The constant name a definition writes: a header's path's last name (its
+   C spelling, which the qualify passes may have renamed); NULL for none.
+   The name half of the accessors: the next step answers a class builder's
+   constant write too. */
+const char *class_def_name(const NodeTable *nt, int def_node) {
+  int cp = nt_ref(nt, def_node, "constant_path");
+  return cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+}
+
+/* ...when the definition writes it as a plain constant (`class X`), not
+   under a path (`class A::X`, `class ::X`): NULL otherwise. The next step
+   answers a builder's `X = Class.new` write too. */
+const char *class_def_bare_name(const NodeTable *nt, int def_node) {
+  int cp = nt_ref(nt, def_node, "constant_path");
+  return cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+}
+
+/* The body a definition's statements go in, set by a pass that rebuilds
+   it (a statement placed first, an accessor added): a header's "body". The
+   write half of class_def_body: the next step sets a builder's block's. */
+void class_def_set_body(NodeTable *nt, int def_node, int body) {
+  nt_node_set_ref(nt, def_node, "body", body);
+}
 
 /* The class body a definition node carries: a ClassNode's or ModuleNode's
    own, or the block of `Name = Struct.new(...) do ... end` (and
@@ -2624,9 +2660,9 @@ static int sg_ivar_home(Compiler *c, int n) {
   }
   const NodeTable *nt = c->nt;
   for (int k = 0; k < nt->count; k++) {
-    NodeKind kk = nt_kind(nt, k);
-    if ((kk == NK_ClassNode || kk == NK_ModuleNode || kk == NK_SingletonClassNode) &&
-        sg_contains_in(nt, nt_ref(nt, k, "body"), n, 0, 1)) return 0;
+    int kb = nt_kind(nt, k) == NK_SingletonClassNode ? nt_ref(nt, k, "body")
+             : class_def_opens_frame(nt, k) ? class_def_body(nt, k) : -1;
+    if (kb >= 0 && sg_contains_in(nt, kb, n, 0, 1)) return 0;
   }
   return 2;
 }
@@ -2636,10 +2672,9 @@ static int sg_body_class(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   int best = -1;
   for (int k = 0; k < nt->count; k++) {
-    NodeKind kk = nt_kind(nt, k);
-    if ((kk != NK_ClassNode && kk != NK_ModuleNode) || !sg_contains_in(nt, nt_ref(nt, k, "body"), n, 0, 1))
+    if (!class_def_opens_frame(nt, k) || !sg_contains_in(nt, class_def_body(nt, k), n, 0, 1))
       continue;
-    if (best < 0 || sg_contains_in(nt, nt_ref(nt, best, "body"), k, 0, 1)) best = k;
+    if (best < 0 || sg_contains_in(nt, class_def_body(nt, best), k, 0, 1)) best = k;
   }
   int ci = elab_header_class(c, best, NULL, NULL);
   return ci >= 0 ? ci : -1;
@@ -3514,8 +3549,8 @@ void register_structs(Compiler *c) {
       for (int p = 0; p < nt->count && !is_write_value; p++) {
         NodeKind pk = nt_kind(nt, p);
         if ((pk == NK_ConstantWriteNode || pk == NK_LocalVariableWriteNode ||
-             pk == NK_ClassNode) &&
-            (nt_ref(nt, p, "value") == id || nt_ref(nt, p, "superclass") == id))
+             class_def_is_class(nt, p)) &&
+            (nt_ref(nt, p, "value") == id || class_def_super(nt, p) == id))
           is_write_value = 1;
       }
       if (is_recv || !is_write_value) {
@@ -3528,8 +3563,8 @@ void register_structs(Compiler *c) {
       }
     }
     /* class X < Struct.new(:a, :b); ... end */
-    else if (ty_k == NK_ClassNode) {
-      int sup = nt_ref(nt, id, "superclass");
+    else if (class_def_is_class(nt, id)) {
+      int sup = class_def_super(nt, id);
       if (!is_struct_call(nt, sup)) continue;
       int ci = elab_header_class(c, id, NULL, NULL);
       if (ci >= 0) register_struct_members(c, &c->classes[ci], sup);
@@ -4734,15 +4769,15 @@ static unsigned native_share_kind(const char *kind) {
 
 void register_ffi_decls(Compiler *c) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_ModuleNode, id) {
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *mname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  for (int dh = 0; dh < ndk; dh++) NT_FOREACH_KIND(nt, dk[dh], id) {
+    const char *mname = class_def_is_module(nt, id) ? class_def_name(nt, id) : NULL;
     if (!mname) continue;
     /* A module that extends FFI::Library is the ffi gem's: its ffi_lib,
        attach_function, callback and typedef are runtime calls into the
        bundled package (packages/ffi), not this compile-time DSL. */
     if (comp_ffi_library_module(nt, mname)) continue;
-    int body = nt_ref(nt, id, "body");
+    int body = class_def_body(nt, id);
     int sn = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &sn) : NULL;
     /* Pre-scan for `native_lib "feat"`: its strict-require feature name is
@@ -4805,8 +4840,8 @@ void register_ffi_decls(Compiler *c) {
          reopen spelled with the same qualified path (the binding's own
          `class IO::Buffer ... end`) is the class and passes. */
       if (leaf != clsname) {
-        NT_FOREACH_KIND(nt, NK_ClassNode, ucn) {
-          int ucp = nt_ref(nt, ucn, "constant_path");
+        for (int dj = 0; dj < ndk; dj++) NT_FOREACH_KIND(nt, dk[dj], ucn) {
+          int ucp = class_def_is_class(nt, ucn) ? nt_ref(nt, ucn, "constant_path") : -1;
           NodeKind ucpk = nt_kind(nt, ucp);
           const char *ucpn = ucp >= 0 ? nt_str(nt, ucp, "name") : NULL;
           if (!ucpn || !sp_streq(ucpn, leaf)) continue;
@@ -6199,12 +6234,13 @@ static void refuse_builtin_subclass(Compiler *c, int at, const char *what, const
 
 static void check_builtin_subclasses(Compiler *c) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_ClassNode, id) {
-    int sc = nt_ref(nt, id, "superclass");
+  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  for (int dh = 0; dh < ndk; dh++) NT_FOREACH_KIND(nt, dk[dh], id) {
+    int sc = class_def_is_class(nt, id) ? class_def_super(nt, id) : -1;
     if (sc < 0) continue;
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL;  /* `A::OpenStruct`, not its key */
-    if (!cn && cp >= 0) cn = nt_str(nt, cp, "name");
+    if (!cn) cn = class_def_name(nt, id);
     const char *par = refused_builtin_superclass(c, sc);
     /* an Array or Hash subclass is supported (mark_array_subclasses), beside
        a reopen of its builtin too: the reopen's methods are the builtin's
@@ -8508,10 +8544,10 @@ void specialize_inherited_cls_new(Compiler *c) {
   if (body_cls) {
     for (int i = 0; i < node_count; i++) body_cls[i] = -1;
     for (int cn = 0; cn < node_count; cn++) {
-      if (nt_kind(nt, cn) != NK_ClassNode && nt_kind(nt, cn) != NK_ModuleNode) continue;
+      if (!class_def_opens_frame(nt, cn)) continue;
       int bci = elab_header_class(c, cn, NULL, NULL);
       if (bci < 0) continue;
-      int bd = nt_ref(nt, cn, "body");
+      int bd = class_def_body(nt, cn);
       int bn = 0;
       const int *bstmts = bd >= 0 ? nt_arr(nt, bd, "body", &bn) : NULL;
       for (int k = 0; k < bn; k++)

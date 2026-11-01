@@ -2214,6 +2214,9 @@ int is_plain_builtin_superclass(int id) {
 /* ---- the compile-time evaluation and its questions ---- */
 int is_class_const_name(const char *n) { return n && sp_streq(n, "Class"); }
 int is_module_const_name(const char *n) { return n && sp_streq(n, "Module"); }
+int is_hash_const_name(const char *n) { return n && sp_streq(n, "Hash"); }
+int is_erb_const_name(const char *n) { return n && sp_streq(n, "ERB"); }
+int is_ffi_registry_name(const char *n) { return n && sp_streq(n, "FFI__Registry"); }
 int is_hash_read_only(const char *n) {
   static const char *const R[] = { "each", "each_pair", "[]", "fetch", "key?", "has_key?", "include?",
     "member?", "key", "keys", "values", "size", "length", "empty?", "dig", "to_a", "frozen?", "freeze",

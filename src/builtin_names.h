@@ -720,6 +720,9 @@ int is_plain_builtin_superclass(int id);       /* BC_PLAIN or an exception: give
    analyze_ct.c) */
 int is_class_const_name(const char *n);    /* Class: the constant Class.new is called on */
 int is_module_const_name(const char *n);   /* Module: the constant Module.new is called on */
+int is_hash_const_name(const char *n);     /* Hash: the class a program's `class Hash` reopens */
+int is_erb_const_name(const char *n);      /* ERB: a class of the program's own by that name */
+int is_ffi_registry_name(const char *n);   /* FFI__Registry: the module the bundled ffi package defines */
 int is_hash_read_only(const char *n);      /* the Hash calls that read a table and leave it as it is */
 int is_to_a_name(const char *n);           /* to_a: the receiver's own Array, for an Array */
 int is_hash_self_answer(const char *n);    /* each each_pair each_key each_value freeze to_h: answer the Hash itself */

@@ -76,12 +76,12 @@ static int const_path_is(const NodeTable *nt, int node, const char *pn, const ch
    in a body of it, or through the path `pn::nm = v`? */
 static int program_writes_const_in(Compiler *c, const char *pn, const char *nm) {
   const NodeTable *nt = c->nt;
-  static const NodeKind bodies[] = { NK_ClassNode, NK_ModuleNode };
-  for (int i = 0; i < 2; i++)
-    NT_FOREACH_KIND(nt, bodies[i], d) {
-      int cp = nt_ref(nt, d, "constant_path");
-      if (cp < 0 || !sp_streq(nt_str(nt, cp, "name"), pn)) continue;
-      if (body_writes_const(nt, nt_ref(nt, d, "body"), nm)) return 1;
+  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  for (int dh = 0; dh < ndk; dh++)
+    NT_FOREACH_KIND(nt, dk[dh], d) {
+      const char *dn = class_def_opens_cref(nt, d) ? class_def_name(nt, d) : NULL;
+      if (!dn || !sp_streq(dn, pn)) continue;
+      if (body_writes_const(nt, class_def_body(nt, d), nm)) return 1;
     }
   static const NodeKind writes[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
                                      NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };

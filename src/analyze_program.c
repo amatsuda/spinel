@@ -708,9 +708,9 @@ void prog_refuse_loads(Compiler *c) {
     NT_FOREACH_KIND(nt, NK_ConstantPathNode, id)
       if (elab_autoload_scope_open(c, id))
         unsupported_feature(c, id, "--load-model=graph loads an autoload's file at its constant's first reference only later, for now");
-    NodeKind hk[] = { NK_ClassNode, NK_ModuleNode };
-    for (int hi = 0; hi < 2; hi++) NT_FOREACH_KIND(nt, hk[hi], id)
-      if (prog_header_scope_autoloaded(c, id))
+    int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+    for (int dh = 0; dh < ndk; dh++) NT_FOREACH_KIND(nt, dk[dh], id)
+      if ((class_def_is_class(nt, id) || class_def_is_module(nt, id)) && prog_header_scope_autoloaded(c, id))
         unsupported_feature(c, id, "--load-model=graph: a class header whose scope an autoload defines, for now");
   }
   int *parent = an_parent_map(nt);

@@ -1509,8 +1509,7 @@ static void lr_reopens_take(Compiler *c) {
   LoadRecord *r = c->lrec;
   for (int pass = 0; pass < 2; pass++)
     NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, n) {
-      int cp = nt_ref(nt, n, "constant_path");
-      const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      const char *nm = class_def_name(nt, n);
       if (!nm || !(is_builtin_class_name(nm) || is_builtin_module_const_name(nm))) continue;
       r->reopens = lr_grow(r->reopens, &r->creopens, r->nreopens, sizeof *r->reopens);
       if (!(r->reopens[r->nreopens++] = strdup(nm))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -2045,8 +2044,10 @@ static void lr_record_unplaced(Compiler *c) {
       lr_const_write(c, id, r->at[id], LR_UNKNOWN_CLASS, LR_FS_NONE, 1);
     }
   }
-  for (int q = 0; q < 2; q++)
-    NT_FOREACH_KIND(nt, q ? NK_ModuleNode : NK_ClassNode, id) {
+  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  for (int dh = 0; dh < ndk; dh++)
+    NT_FOREACH_KIND(nt, dk[dh], id) {
+      if (!class_def_opens_frame(nt, id)) continue;
       int e = id < r->n ? r->at[id] : -1, ci = elab_header_class(c, id, NULL, NULL);
       if ((e >= 0 && r->st[e].node == id) || ci < 0) continue;
       LrClass *kc = lr_class(r, ci);
@@ -2061,9 +2062,9 @@ static void lr_record_unplaced(Compiler *c) {
         at--;
       }
       memmove(kc->open + at + 1, kc->open + at, sizeof *kc->open * (size_t)(kc->nopen - at));
-      kc->open[at] = (LrOpen){ id, nt_ref(nt, id, "body") };
+      kc->open[at] = (LrOpen){ id, class_def_body(nt, id) };
       kc->nopen++;
-      if (nt_ref(nt, id, "body") >= 0) lr_body_defs(c, ci, nt_ref(nt, id, "body"), id);
+      if (class_def_body(nt, id) >= 0) lr_body_defs(c, ci, class_def_body(nt, id), id);
     }
 }
 

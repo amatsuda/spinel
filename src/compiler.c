@@ -292,8 +292,7 @@ void comp_node_pbases(Compiler *c) {
       }
       else if (ty[0] == 'S') nm = "sclass";
       else {
-        int cp = nt_ref(nt, k, "constant_path");
-        nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+        nm = class_def_name(nt, k);
       }
       const char *nw = nm && *nm ? nm : ty;
       char sp[64];
@@ -3534,22 +3533,22 @@ static void cv_nonval_args(const NodeTable *nt, unsigned char *nonval, int call)
    `X = private_class_method(:helper)` names the class X. Its answer is
    unused as a statement before the last of a list, and as the last of a
    class body whose class expression is unused itself; any other position
-   counts as used. cls is the enclosing class's constant path, discarded
-   whether n's own value is unused. */
-static void cv_self_answers(Compiler *c, unsigned char *v, int n, int cls, int discarded, int depth) {
+   counts as used. cls is the enclosing class's name, discarded whether n's
+   own value is unused. */
+static void cv_self_answers(Compiler *c, unsigned char *v, int n, const char *cls, int discarded, int depth) {
   const NodeTable *nt = c->nt;
   if (n < 0 || depth > 400) return;
   NodeKind k = nt_kind(nt, n);
-  if (k == NK_CallNode && !discarded && cls >= 0 && nt_ref(nt, n, "receiver") < 0 &&
+  if (k == NK_CallNode && !discarded && cls && nt_ref(nt, n, "receiver") < 0 &&
       is_class_self_answer(nt_str(nt, n, "name")))
-    cv_mark_name(c, v, nt_str(nt, cls, "name"));
+    cv_mark_name(c, v, cls);
   if (k == NK_StatementsNode) {
     int m = 0; const int *ids = nt_arr(nt, n, "body", &m);
     for (int j = 0; j < m; j++) cv_self_answers(c, v, ids[j], cls, j < m - 1 || discarded, depth + 1);
     return;
   }
-  int body = (k == NK_ClassNode || k == NK_ModuleNode) ? nt_ref(nt, n, "body") : -1;
-  int ncls = body >= 0 ? nt_ref(nt, n, "constant_path") : cls;
+  int body = class_def_opens_frame(nt, n) ? class_def_body(nt, n) : -1;
+  const char *ncls = body >= 0 ? class_def_name(nt, n) : cls;
   for (int i = 0; i < nt_num_refs(nt, n); i++) {
     int r = nt_ref_at(nt, n, i);
     if (r == body) cv_self_answers(c, v, r, ncls, discarded, depth + 1);
@@ -3752,11 +3751,11 @@ static void cv_build(Compiler *c) {
   /* (a reopened class's other bodies, and methods defined on a constant) */
   NT_FOREACH_KIND(nt, NK_ClassNode, n) {
     int p = nt_ref(nt, n, "constant_path");
-    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 0)) cv_mark_name_tree(c, v, nt_str(nt, p, "name"));
+    if (p >= 0 && cv_self_value(nt, nonval, class_def_body(nt, n), 0)) cv_mark_name_tree(c, v, class_def_name(nt, n));
   }
   NT_FOREACH_KIND(nt, NK_ModuleNode, n) {
     int p = nt_ref(nt, n, "constant_path");
-    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1)) cv_mark_name_tree(c, v, nt_str(nt, p, "name"));
+    if (p >= 0 && cv_self_value(nt, nonval, class_def_body(nt, n), 1)) cv_mark_name_tree(c, v, class_def_name(nt, n));
   }
   NT_FOREACH_KIND(nt, NK_DefNode, n) {
     int r = nt_ref(nt, n, "receiver");
@@ -3769,7 +3768,7 @@ static void cv_build(Compiler *c) {
       cv_mark_name(c, v, nt_str(nt, e, "name"));
   }
   for (int r = 0; r < nt_nroots(nt); r++)   /* each file's top level */
-    cv_self_answers(c, v, nt_ref(nt, nt_root(nt, r), "statements"), -1, 1, 0);
+    cv_self_answers(c, v, nt_ref(nt, nt_root(nt, r), "statements"), NULL, 1, 0);
   if (owner && methods) all = 1;
   for (int k = 0; k < nk; k++) {
     if (all || (cls_call && !class_def_is_module(nt, c->classes[k].def_node))) v[k] = 1;
