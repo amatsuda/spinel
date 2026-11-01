@@ -658,6 +658,24 @@ int desugar_blk_param_writes_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
+/* The statement of method body `bb` a copy prepended to it swaps numbers
+   with, so the write-type fold (ascending ids) meets the copy's write ahead
+   of the reads it feeds: the first that is not a def, a class or a module.
+   None of those reads a local of the body, and the passes that take a def's
+   subtree as the id range [def, fwd_subtree_max] need the def numbered
+   ahead of its children; swapped with a write numbered after the whole
+   body it was not, and a `...` forwarder that opened the body forwarded
+   nothing (its range was empty). -1 when no statement qualifies or the
+   first is numbered above the write. */
+static int bpw_swap_partner(const NodeTable *nt, const int *bb, int bn, int wr) {
+  for (int j = 0; j < bn; j++) {
+    NodeKind k = nt_kind(nt, bb[j]);
+    if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) continue;
+    return bb[j] < wr ? j : -1;
+  }
+  return -1;
+}
+
 /* A `*rest` parameter the body assigns (`args = args.first`, the usual
    background-job `perform(*args)`) gave the parameter the union of the
    packed Array and what the body stores, so the method took an sp_RbVal
@@ -723,12 +741,14 @@ int desugar_rest_param_writes_at(Compiler *c, LowerCtx *lc, int id) {
      the write-type fold (ascending ids) took the body's `args = args.first`
      read of the copy before the copy's own write re-typed it each round,
      and alternated between two answers until the round cap (#6491). The
-     copy takes the first statement's number, and that statement the
-     copy's. */
-  if (bn > 0 && bb[0] < wr) {
-    int first = bb[0];
+     copy takes the number of the first statement that is not a def (a def
+     keeps its subtree in preorder, bpw_swap_partner), and that statement
+     the copy's. */
+  int sw = bpw_swap_partner(nt, bb, bn, wr);
+  if (sw >= 0) {
+    int first = bb[sw];
     elab_swap_nodes(c, first, wr);
-    nb[0] = first; nb[1] = wr;
+    nb[0] = first; nb[sw + 1] = wr;
   }
   nt_node_set_arr(nt, body, "body", nb, bn + 1);
   free(nb);
@@ -12135,13 +12155,16 @@ int desugar_builder_block_param_at(Compiler *c, LowerCtx *lc, int id) {
     nb[0] = wr;
     if (bn) memcpy(nb + 1, bb, sizeof(int) * (size_t)bn);
     /* numbered after the body, the write would come after the reads it
-       feeds in the write-type fold, which visits writes in node order: it
-       takes the first statement's number, and that statement takes its
-       (#6491) */
-    if (bn > 0 && bb[0] < wr) {
-      elab_swap_nodes(c, nb[1], wr);
-      nb[0] = nb[1]; nb[1] = wr;
-    }
+       feeds in the write-type fold, which visits writes in node order
+       (#6491): it takes the parameter node's number, which preorder puts
+       ahead of the body and which the block's parameter list, dropped
+       below, no longer needs. The body's statements keep their numbers:
+       a def that opens the body stays in preorder, as the `...`
+       forwarding scans that take a def's subtree as the id range need,
+       and a statement that writes a local stays ahead of the local's
+       reads. */
+    elab_swap_nodes(c, rq, wr);
+    nb[0] = rq;
     nt_node_set_arr(nt, body, "body", nb, bn + 1);
     free(nb);
   }
