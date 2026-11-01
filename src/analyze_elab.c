@@ -1097,6 +1097,7 @@ static int lr_class_ref_at(Compiler *c, int node, int *core) {
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NilNode;
   if (core) *core = -1;
   if (k != NK_ConstantPathNode && k != NK_ConstantReadNode) return LR_UNKNOWN_CLASS;
+  if (c->lrec->plan_depth) lr_plan_place(c, node, 0);
   const char *nm = lr_written_name(nt, node);
   int o, ci, pc = LR_MAIN;
   if (k == NK_ConstantReadNode && !lr_root_read(nt, node)) o = lr_const_at(c, node, nm, elab_point_of(c, node), &d, LR_KEY_CONST);
