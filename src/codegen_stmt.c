@@ -20355,10 +20355,11 @@ static void emit_cpath_recv_name(Compiler *c, const char *name, int t, Buf *b, i
              name, name, t, name);
 }
 
-/* A class builder's write (`X = Class.new do ... end`, `P = Struct.new(:a)
-   do ... end`), whose class the record holds (elab_builder_class): the
-   block's statements run here, with the class anonymous, then the write
-   names it */
+/* A class builder's write (`X = Class.new do ... end`, `A::B = Module.new
+   do ... end`, `P = Struct.new(:a) do ... end`), whose class the record
+   holds (elab_builder_class): the block's statements run here, with the
+   class anonymous, then the write names it. A path write's namespace is a
+   class or module of the program (class_def_builder), read for nothing. */
 static void emit_builder_write(Compiler *c, int id, Buf *b, int indent) {
   int sci = elab_builder_class(c, id);
   emit_class_body_stmts(c, sci, class_def_body(c->nt, id), b, indent);
@@ -20948,6 +20949,12 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
        operator/or/and path-write forms. */
     int tgt = nt_ref(nt, id, "target");
     const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+    /* `A::B = Class.new do ... end`: the class the record holds for the
+       write, made there (emit_builder_write) */
+    if (elab_builder_class(c, id) >= 0) {
+      emit_builder_write(c, id, b, indent);
+      return 1;
+    }
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     if (!cv || cv->type == TY_UNKNOWN) { unsupported(c, id, "constant path write"); return 1; }
     int v = nt_ref(nt, id, "value");

@@ -629,14 +629,16 @@ static int prog_autoload_file_shared(const Compiler *c, const AutoloadRegistrati
   return 0;
 }
 
-/* Is a class or module header's scope, some parent segment of its path
-   (`class Outer::Box`, or `Outer::Box.include(M)`, which the desugaring
-   made such a header), a constant an autoload defines? CRuby runs the file
-   at the header, before the class opens; the scope walk registers the
-   class at the header, without the scope the file makes. */
+/* Is a class or module definition's scope, some parent segment of its path
+   (`class Outer::Box`, `Outer::Box = Class.new do ... end`, or
+   `Outer::Box.include(M)`, which the desugaring made such a header), a
+   constant an autoload defines? CRuby runs the file at the definition,
+   before the class opens; the scope walk registers the class there,
+   without the scope the file makes. */
 static int prog_header_scope_autoloaded(Compiler *c, int id) {
-  int cp = nt_ref(c->nt, id, "constant_path");
-  for (int p = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1; p >= 0;
+  int cp = class_def_path(c->nt, id);
+  NodeKind ck = cp >= 0 ? nt_kind(c->nt, cp) : NK_NONE;
+  for (int p = ck == NK_ConstantPathNode || ck == NK_ConstantPathTargetNode ? nt_ref(c->nt, cp, "parent") : -1; p >= 0;
        p = nt_kind(c->nt, p) == NK_ConstantPathNode ? nt_ref(c->nt, p, "parent") : -1)
     if (elab_autoload_read(c, p)) return 1;
   return 0;

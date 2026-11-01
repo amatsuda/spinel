@@ -1237,9 +1237,11 @@ static void lr_frame(ElabRec *x, int e) {
     cls = nt_kind(nt, ex) == NK_SelfNode ? cls : lr_class_ref_at(x->c, ex, NULL);
     sg = LR_FS_SCLASS;
   }
-  else if ((k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) && class_def_body(x->c->nt, node) >= 0) {
-    /* `X = Struct.new(:a) do`: the class registration homes there, once it
-       has; a block recorded before is recorded again then (r->builders) */
+  else if ((k == NK_ConstantWriteNode || k == NK_ConstantPathWriteNode || k == NK_LocalVariableWriteNode) &&
+           class_def_body(x->c->nt, node) >= 0) {
+    /* `X = Struct.new(:a) do`, `A::B = Class.new do`: the class registration
+       homes there, once it has; a block recorded before is recorded again
+       then (r->builders) */
     cls = lr_builder_class(x->c, node); sg = 0;
     if (cls == LR_UNKNOWN_CLASS) x->r->builders++;
   }
@@ -1892,8 +1894,8 @@ static void lr_record_stmt(ElabRec *x, int e) {
   unsigned char *vs = f >= 0 ? &x->vs[f] : &x->vmain[s->file];
   NodeKind k = nt_kind(nt, node);
   lr_frame(x, e);
-  if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) &&
-      x->fc[e] >= 0 && x->fc[e] != fc) {   /* a body the class runs */
+  if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_ConstantWriteNode || k == NK_ConstantPathWriteNode ||
+       k == NK_LocalVariableWriteNode) && x->fc[e] >= 0 && x->fc[e] != fc) {   /* a body the class runs */
     LrClass *kc = lr_class(r, x->fc[e]);
     int body = class_def_body(x->c->nt, node);
     int cp = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, node, "constant_path") : -1;
@@ -4384,12 +4386,19 @@ int elab_rec_open(Compiler *c, int node, int cp, const char *cname, int encl) {
     /* `class A::B`: A encloses B wherever it is written. The leaf is the
        header's as written: a `__` in it is the program's own, not the
        nesting mark the walk strips */
-    int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
-    if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode))
+    int path = cp >= 0 && (nt_kind(c->nt, cp) == NK_ConstantPathNode || nt_kind(c->nt, cp) == NK_ConstantPathTargetNode);
+    int par = path ? nt_ref(c->nt, cp, "parent") : -1;
+    if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode)) {
       header_parent_encloses(c, par, ci, cname, qrn != NULL);
-    /* `class ::B` names B at the top level wherever it is written: no
-       module encloses it, and its name is B */
-    else if (par < 0 && cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode)
+      /* a path builder's leaf the constant pass qualified (`A::B` made
+         `A__B`) is found by its Ruby path, as a header's the class pass
+         qualified is (qc_ruby_name) */
+      if (!qrn && nt_str(c->nt, cp, "qc_orig_name") && class_def_builder(c->nt, node) >= 0)
+        c->classes[ci].ruby_name_cache = strdup(class_ruby_name(c, ci));
+    }
+    /* `class ::B` (`::B = Class.new do ... end`) names B at the top level
+       wherever it is written: no module encloses it, and its name is B */
+    else if (par < 0 && path)
       c->classes[ci].enclosing_class = -1;
   }
   /* A class can be opened bare first (no superclass -- e.g. just to hold a
