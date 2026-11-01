@@ -2324,6 +2324,17 @@ const NodeKind *class_def_kinds(int *n) {
   return kinds;
 }
 
+/* ...of those, the kinds a module's definition can be (the kinds whose
+   node class_def_is_module can answer yes: a module header, a Module.new
+   builder's write): a loop that looks for modules only takes these, and
+   asks each node class_def_is_module still, so it does not meet every
+   class of the program per question. */
+const NodeKind *class_def_module_kinds(int *n) {
+  static const NodeKind kinds[] = { NK_ModuleNode, NK_ConstantWriteNode };
+  *n = (int)(sizeof kinds / sizeof kinds[0]);
+  return kinds;
+}
+
 /* The Class.new or Module.new call a constant write holds as its value
    (`X = Class.new(S) do ... end`), the write being the class's definition:
    the call, -1 for any other node. Its block is the class's body and its
@@ -4870,7 +4881,7 @@ static unsigned native_share_kind(const char *kind) {
 
 void register_ffi_decls(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  int ndk = 0; const NodeKind *dk = class_def_module_kinds(&ndk);
   for (int dh = 0; dh < ndk; dh++) NT_FOREACH_KIND(nt, dk[dh], id) {
     const char *mname = class_def_is_module(nt, id) ? class_def_name(nt, id) : NULL;
     if (!mname) continue;
@@ -4941,7 +4952,8 @@ void register_ffi_decls(Compiler *c) {
          reopen spelled with the same qualified path (the binding's own
          `class IO::Buffer ... end`) is the class and passes. */
       if (leaf != clsname) {
-        for (int dj = 0; dj < ndk; dj++) NT_FOREACH_KIND(nt, dk[dj], ucn) {
+        int nck = 0; const NodeKind *ck = class_def_kinds(&nck);
+        for (int dj = 0; dj < nck; dj++) NT_FOREACH_KIND(nt, ck[dj], ucn) {
           int ucp = class_def_is_class(nt, ucn) ? nt_ref(nt, ucn, "constant_path") : -1;
           NodeKind ucpk = nt_kind(nt, ucp);
           const char *ucpn = ucp >= 0 ? nt_str(nt, ucp, "name") : NULL;

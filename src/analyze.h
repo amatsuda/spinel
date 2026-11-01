@@ -485,6 +485,7 @@ int elab_builder_class(Compiler *c, int node);
    table alone: a class's def_node, or a node a pass walked to */
 int is_struct_call(const NodeTable *nt, int val);   /* `Struct.new(..)` / `Data.define(..)` */
 const NodeKind *class_def_kinds(int *n);   /* the node kinds a definition can be */
+const NodeKind *class_def_module_kinds(int *n);   /* ...a module's definition can be */
 int class_def_builder(const NodeTable *nt, int def_node);   /* a constant write's Class.new / Module.new call that defines a class, -1 for none */
 int class_cref(Compiler *c, int cls);   /* the class whose constants code in cls's body writes */
 int class_def_path(const NodeTable *nt, int def_node);   /* the constant node it writes: a header's path, a builder's write or path target */
