@@ -81,3 +81,22 @@ class F < E
 end
 p F.new.y
 p F.new.m("Hi")
+# a method of the program that hands its block on with super passes a
+# Symbol's block the values the method super calls yields
+class G
+  def f = yield(255, 16)
+  def g(&b) = b.call(255, 16)
+  def h(c) = yield(255)
+end
+class H < G
+  def f = super
+  def g(&b) = super(&b)
+  def h(c)
+    return yield(255, 16) if c
+    super
+  end
+end
+t = :to_s
+p H.new.f(&t)
+p H.new.g(&t)
+p H.new.h(false, &t)

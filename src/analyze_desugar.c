@@ -17099,8 +17099,10 @@ static int sym_proc_call2(BsB *b, const char *recv, const char *mn, int second) 
 /* The values the body under `node` passes its method's block, as every
    `yield` and every call of the `&b` named `bpn` agree (-1 when none is
    there yet); -2 when two disagree, one spreads a splat, or `b` is read for
-   anything but a call. `*calls` counts those calls, `*reads` every read of b. */
-static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n, int *calls, int *reads) {
+   anything but a call. `*calls` counts those calls, `*reads` every read of b,
+   `*sups` each `super` that hands the block on (none of its own, or `&b`). */
+static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n, int *calls, int *reads,
+                           int *sups) {
   if (node < 0 || node >= nt->count || n == -2) return n;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return n;
@@ -17116,6 +17118,15 @@ static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n
       args = nt_ref(nt, node, "arguments");
     }
   }
+  else if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    int sb = nt_ref(nt, node, "block");
+    int be = sb >= 0 && nt_kind(nt, sb) == NK_BlockArgumentNode ? nt_ref(nt, sb, "expression") : -1;
+    if (sb < 0) (*sups)++;
+    else if (bpn && be >= 0 && nt_kind(nt, be) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, be, "name"), bpn)) {
+      (*sups)++;
+      (*calls)++;   /* the read of b under it hands b on */
+    }
+  }
   if (args != -2) {
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_FORWARDING)) return -2;
@@ -17123,16 +17134,36 @@ static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n
     n = an;
   }
   const SpNode *nd = &nt->nodes[node];
-  for (int j = 0; j < nd->nr; j++) n = block_values_in(nt, nd->r[j].ref, bpn, n, calls, reads);
+  for (int j = 0; j < nd->nr; j++) n = block_values_in(nt, nd->r[j].ref, bpn, n, calls, reads, sups);
   for (int j = 0; j < nd->na; j++)
-    for (int q = 0; q < nd->a[j].n; q++) n = block_values_in(nt, nd->a[j].ids[q], bpn, n, calls, reads);
+    for (int q = 0; q < nd->a[j].n; q++) n = block_values_in(nt, nd->a[j].ids[q], bpn, n, calls, reads, sups);
+  return n;
+}
+
+/* The values method `mi` passes its block, as its body and each method a
+   `super` in it hands the block on to agree (block_values_in's -1 and -2) */
+static int method_block_values(Compiler *c, int mi, int depth) {
+  if (mi < 0 || mi >= c->nscopes || depth > 8) return -2;
+  const NodeTable *nt = c->nt;
+  Scope *ms = &c->scopes[mi];
+  const char *bpn = ms->blk_param;
+  if (bpn && !*bpn) return -2;   /* an anonymous `&` is only handed on */
+  int calls = 0, reads = 0, sups = 0;
+  int n = block_values_in(nt, ms->def_node >= 0 ? nt_ref(nt, ms->def_node, "body") : -1,
+                          bpn, -1, &calls, &reads, &sups);
+  if (n == -2 || reads != calls) return -2;
+  if (sups > 0) {
+    int m = method_block_values(c, a_super_target(c, ms), depth + 1);
+    if (m == -2 || (n >= 0 && m >= 0 && n != m)) return -2;
+    if (m >= 0) n = m;
+  }
   return n;
 }
 
 /* For a call `id` of a method of the program, how many values it passes its
-   block when that is more than one and its body agrees on it, else 0; -1
-   when the call reaches no method of the program. A `super` asks the
-   method it calls. */
+   block when that is more than one and its body agrees on it, with each
+   method a `super` in it hands the block on to, else 0; -1 when the call
+   reaches no method of the program. A `super` asks the method it calls. */
 static int user_block_values(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
@@ -17141,13 +17172,8 @@ static int user_block_values(Compiler *c, int id) {
   Scope *in = sup ? comp_scope_of(c, id) : NULL;
   int mi = sup ? (in ? a_super_target(c, in) : -1) : backprop_call_target(c, id);
   if (mi < 0 || mi >= c->nscopes) return -1;
-  const Scope *ms = &c->scopes[mi];
-  const char *bpn = ms->blk_param;
-  if (bpn && !*bpn) return 0;   /* an anonymous `&` is only handed on */
-  int calls = 0, reads = 0;
-  int n = block_values_in(nt, ms->def_node >= 0 ? nt_ref(nt, ms->def_node, "body") : -1,
-                          bpn, -1, &calls, &reads);
-  return n >= 2 && n <= 8 && reads == calls ? n : 0;
+  int n = method_block_values(c, mi, 0);
+  return n >= 2 && n <= 8 ? n : 0;
 }
 
 /* How many values the call `id` passes a Symbol's block, when it is more
