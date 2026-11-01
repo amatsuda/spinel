@@ -13356,6 +13356,7 @@ int desugar_conditional_defs(Compiler *c) {
        (ver_list_held), and the record answers such a def as possibly
        made, not made (elab_own_method_at) */
     nt_node_set_int(nt, def, "cond_lone_disp", 1); c->ncond_disp++;
+    if (ng == 1) c->ncond_lone_disp++;
     cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, *g[0].vis ? fwd_new_call(nt, -1, g[0].vis, def) : def);
     serial += ng;
     free(base);

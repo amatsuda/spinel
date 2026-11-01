@@ -1707,7 +1707,8 @@ typedef struct {
   struct VerEntry { const char *name; int guard, cls, sg, ar, scope; } *ver_entries;
   int nver_entries;
   int nver_refl;   /* the named entries whose name reflection does not answer (call_plan.c, ver_refl_named) */
-  int ncond_disp;  /* the dispatchers lone defs under a run-time condition are lowered to (analyze_desugar.c; call_plan.c, ver_list_held) */
+  int ncond_disp;  /* the dispatchers defs under a run-time condition are lowered to (analyze_desugar.c; call_plan.c, ver_list_held) */
+  int ncond_lone_disp;  /* those of them a lone def is lowered to (call_plan.c, feature_limit) */
   /* the open histories no reader names yet, sorted by name (call_plan.c,
      ver_named_one): made once a call names one, taken 1 when asked for and
      2 once made (ver_entries_demand) */
