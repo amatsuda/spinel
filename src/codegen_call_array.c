@@ -1815,6 +1815,7 @@ typedef struct {
   TyKind obj_ty;   /* ... and the object's type, which the hold keeps */
   TyKind conv_ty;  /* the dispatch's result, before checking it is an Array */
   int obj_boxed;
+  int obj_nil;     /* the object is held as a pointer that may be NULL (nil) */
   int arr;         /* the temp holding the operand's Array */
 } ConcatOperand;
 
@@ -1844,6 +1845,7 @@ static int prepare_concat_operands(Compiler *c, const int *argv, int argc, Conca
       out[i].conv_mi = mi;
       out[i].obj_ty = r.as_ty;
       out[i].obj_boxed = r.kind == RK_BOXED;
+      out[i].obj_nil = r.kind == RK_PTR && r.may_nil;
       out[i].repr = repr_of_ret(c, &c->scopes[mi]);
       out[i].conv_ty = dispatch_ret_over(c, ty_object_class(r.as_ty), "to_ary", 0, mi, c->scopes[mi].ret, -1);
       out[i].boxed = out[i].repr.kind == RK_BOXED || out[i].repr.may_nil ||
@@ -1938,6 +1940,10 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
       if (op[i].obj_boxed)
         snprintf(self, sizeof self, "((sp_%s *)_t%d.v.p)", c->classes[ty_object_class(op[i].obj_ty)].c_name, tv);
       else snprintf(self, sizeof self, "_t%d", tv);
+      /* a nil in the operand's slot has no to_ary to run: CRuby's TypeError,
+         ahead of the dispatch, which read the object through NULL */
+      if (op[i].obj_nil)
+        buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");", tv);
       emit_to_ary_dispatch(c, id, ty_object_class(op[i].obj_ty), self, &call);
       tv = op[i].arr = ++g_tmp;
       buf_puts(b, " "); emit_ctype(c, op[i].repr.as_ty, b);

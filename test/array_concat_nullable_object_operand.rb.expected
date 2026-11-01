@@ -1,0 +1,4 @@
+"no implicit conversion of nil into Array"
+[1, 2, 3]
+"no implicit conversion of nil into Array"
+[0]
