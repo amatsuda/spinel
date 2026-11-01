@@ -3078,6 +3078,15 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	$(SPINEL) test/rbs-seed/attr_writer_poly_value.rb --rbs test/rbs-seed/sig -o "$$tmp/awp" >/dev/null 2>&1 && \
 	  "$$tmp/awp" > "$$tmp/awp.out" 2>/dev/null && cmp -s "$$tmp/awp.out" test/rbs-seed/attr_writer_poly_value.expected || { echo "rbs-seed-test: FAIL (#4856 a boxed value into an --rbs Integer attr as a method's value)"; ok=0; }; \
 	;; \
+	seed_param_through_untyped) \
+	if $(SPINEL) test/rbs-seed/seed_param_through_untyped.rb --rbs test/rbs-seed/sig -o "$$tmp/sptu" >/dev/null 2>"$$tmp/sptu.err"; then \
+	  echo "rbs-seed-test: FAIL (#10681 a String through untyped parameters into an Array[String] one compiled)"; ok=0; \
+	else \
+	  grep -q 'parameter value of as_array is declared Array\[String\] but this call passes String' "$$tmp/sptu.err" && \
+	  grep -q 'The value is parameter value of wrap, which every call of wrap hands a String' "$$tmp/sptu.err" || \
+	  { echo "rbs-seed-test: FAIL (#10681 the refusal of a String through untyped parameters)"; sed -n 1,4p "$$tmp/sptu.err"; ok=0; }; \
+	fi; \
+	;; \
 	dyn_send_arm_seed_contradiction) \
 	$(SPINEL) test/rbs-seed/dyn_send_arm_seed_contradiction.rb --rbs test/rbs-seed/sig -o "$$tmp/dasc" >/dev/null 2>&1 && \
 	  "$$tmp/dasc" > "$$tmp/dasc.out" 2>/dev/null && cmp -s "$$tmp/dasc.out" test/rbs-seed/dyn_send_arm_seed_contradiction.expected || { echo "rbs-seed-test: FAIL (#6672 a runtime-name send arm contradicting a seeded parameter: refused, or did not raise TypeError when chosen)"; ok=0; }; \

@@ -1,0 +1,5 @@
+module SeedThroughUntyped
+  def self.as_array: (Array[String] value) -> Array[String]
+  def self.wrap: (untyped value) -> Array[String]
+  def self.outer: (untyped v) -> Array[String]
+end

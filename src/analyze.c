@@ -34546,6 +34546,121 @@ static int seed_value_only(Compiler *c, int v, int falsy, int depth) {
     return 0;
   }
 }
+/* The method the parameter check takes call id to reach: a receiverless
+   call as its own scope reaches it (a sibling class method inside a class
+   method), `Mod.m` through the class's singleton methods first, a call on
+   an object through its class; -1 when the target is not known here. */
+static int seed_call_target(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  int mi = -1;
+  if (recv < 0) mi = comp_self_call_mi(c, id, name);
+  else if (nt_kind(nt, recv) == NK_ConstantReadNode) {
+    const char *cn = nt_str(nt, recv, "name");
+    int rc = cn ? comp_class_index(c, cn) : -1;
+    /* `Mod.m` is a class (singleton) method, which is not in the instance
+       chain; fall back to it before giving up. */
+    if (rc >= 0) mi = call_target(c, id, rc, name, CT_CMETHOD, NULL);
+    if (rc >= 0 && mi < 0) mi = call_target(c, id, rc, name, 0, NULL);
+  }
+  else {
+    TyKind rt = infer_type(c, recv);
+    if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
+  }
+  return mi;
+}
+
+/* seed_chase_contradicts' walk: the (method, parameter) pairs it has
+   entered, the call sites it has read, and a type of the values it found,
+   for the message */
+typedef struct { int *seen; int nseen, cseen, sites; TyKind shown; } SeedChase;
+#define SEED_CHASE_DEPTH 4
+#define SEED_CHASE_SITES 64
+
+/* May method mi be called in a way no call site names: a Symbol spelling
+   its name (send, public_send, method, alias, define_method), or a super
+   from a method of that name */
+static int seed_chase_dynamic(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_SymbolNode, s) {
+    const char *v = nt_str(nt, s, "value");
+    if (v && sp_streq(v, name)) return 1;
+  }
+  static const NodeKind sk[] = { NK_SuperNode, NK_ForwardingSuperNode };
+  for (int q = 0; q < 2; q++)
+    NT_FOREACH_KIND(nt, sk[q], s) {
+      Scope *ss = comp_scope_of(c, s);
+      if (ss && ss->name && sp_streq(ss->name, name)) return 1;
+    }
+  return 0;
+}
+
+/* Is every value that can reach node a of a type the seed `slot`
+   contradicts? A concretely typed value is judged as the parameter check
+   judges an argument. A boxed one is followed only while it is the read of
+   a method parameter its body never writes: the values are then the
+   arguments every call site of the method hands that parameter (and its
+   default), each followed in turn. Anything else -- a call that cannot be
+   resolved, a name a Symbol spells, a splat or keyword shape, too many
+   sites or too deep a chain, a method no call reaches -- answers 0, and the
+   run-time check stays the only one. */
+static int seed_chase_contradicts(Compiler *c, TyKind slot, int a, int depth, SeedChase *ch) {
+  const NodeTable *nt = c->nt;
+  if (a < 0) return 0;
+  TyKind t = infer_type(c, a);
+  if (t != TY_POLY) {
+    if (t == TY_UNKNOWN) return 0;
+    if (slot == TY_POLY_ARRAY && (t == TY_INT_ARRAY || t == TY_STR_ARRAY || t == TY_FLOAT_ARRAY)) return 0;
+    if (!seed_contradicts(c, slot, t, 0)) return 0;
+    if (ch->shown == TY_UNKNOWN) ch->shown = t;
+    return 1;
+  }
+  if (depth >= SEED_CHASE_DEPTH || nt_kind(nt, a) != NK_LocalVariableReadNode) return 0;
+  const char *pn = nt_str(nt, a, "name");
+  Scope *m = comp_scope_of(c, a);
+  if (!pn || !m || !m->name || m->def_node < 0 || m->rest_idx >= 0 || m->kwrest_idx >= 0) return 0;
+  int pi = -1;
+  for (int i = 0; i < m->nparams; i++)
+    if (m->pnames[i] && sp_streq(m->pnames[i], pn)) { pi = i; break; }
+  LocalVar *lv = pi >= 0 ? scope_local(m, pn) : NULL;
+  if (!lv || lv->is_block_param) return 0;
+  int mi = (int)(m - c->scopes);
+  /* the parameter holds what it was handed: no write of it anywhere */
+  if (comp_vsite_first(c, VS_WRITE, NK_LocalVariableReadNode, pn, lv->owner >= 0 ? lv->owner : mi) >= 0) return 0;
+  for (int i = 0; i < ch->nseen; i += 2)
+    if (ch->seen[i] == mi && ch->seen[i + 1] == pi) return 1;   /* (a cycle hands on nothing new) */
+  if (ch->nseen + 2 > ch->cseen) {
+    ch->cseen = ch->cseen ? ch->cseen * 2 : 16;
+    ch->seen = realloc(ch->seen, sizeof(int) * (size_t)ch->cseen);
+    if (!ch->seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  ch->seen[ch->nseen++] = mi; ch->seen[ch->nseen++] = pi;
+  if (seed_chase_dynamic(c, m->name)) return 0;
+  int any = 0;
+  int dflt = m->pdefault ? m->pdefault[pi] : -1;
+  for (int id = an_calls_named_first(c, m->name); id >= 0; id = an_calls_named_next(id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (++ch->sites > SEED_CHASE_SITES) return 0;
+    int tmi = seed_call_target(c, id, m->name);
+    if (tmi < 0) return 0;      /* a call that may reach the method at run time */
+    if (tmi != mi) continue;
+    if (nt_ref(nt, id, "block") >= 0 && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode) return 0;
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (argc > m->nparams) return 0;
+    for (int k = 0; k < argc; k++) {
+      NodeKind ak = nt_kind(nt, argv[k]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+    }
+    int v = pi < argc ? argv[pi] : dflt;
+    if (v < 0) return 0;
+    if (!seed_chase_contradicts(c, slot, v, depth + 1, ch)) return 0;
+    any = 1;
+  }
+  if (dflt >= 0 && !seed_chase_contradicts(c, slot, dflt, depth + 1, ch)) return 0;
+  return any;
+}
+
 static void check_seed_contradictions(Compiler *c) {
   const NodeTable *nt = c->nt;
   char _sn1[192], _sn2[192];
@@ -34760,21 +34875,7 @@ static void check_seed_contradictions(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    int mi = -1;
-    if (recv < 0) mi = call_target(c, id, -1, name, CT_TOP, NULL);
-    else if (nt_kind(nt, recv) == NK_ConstantReadNode) {
-      const char *cn = nt_str(nt, recv, "name");
-      int rc = cn ? comp_class_index(c, cn) : -1;
-      /* `Mod.m` is a class (singleton) method, which is not in the instance
-         chain; fall back to it before giving up. */
-      if (rc >= 0) mi = call_target(c, id, rc, name, CT_CMETHOD, NULL);
-      if (rc >= 0 && mi < 0) mi = call_target(c, id, rc, name, 0, NULL);
-    }
-    else {
-      TyKind rt = infer_type(c, recv);
-      if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
-    }
+    int mi = seed_call_target(c, id, name);
     if (mi < 0 || mi >= c->nscopes) continue;
     Scope *m = &c->scopes[mi];
     if (m->rest_idx >= 0 || m->kwrest_idx >= 0) continue;
@@ -34800,6 +34901,21 @@ static void check_seed_contradictions(Compiler *c) {
       TyKind slot = (lv->rbs_type != TY_UNKNOWN) ? lv->rbs_type : lv->type;
       TyKind val = infer_type(c, a);
       if (slot == TY_POLY) continue;   /* `untyped` accepts anything */
+      /* a boxed argument read from a parameter the seed leaves untyped: the
+         values its call sites hand it, followed back while they are
+         parameters too. When every one is of a type the seed contradicts,
+         the call is the direct call's contradiction one step removed
+         (#10681); anything less certain is left to the run-time check
+         (sp_rbs_need_ary). */
+      int via_mi = -1, via_pi = -1;
+      if (val == TY_POLY) {
+        SeedChase ch = { NULL, 0, 0, 0, TY_UNKNOWN };
+        int all = seed_chase_contradicts(c, slot, a, 0, &ch);
+        if (all && ch.nseen >= 2) { via_mi = ch.seen[0]; via_pi = ch.seen[1]; }
+        free(ch.seen);
+        if (!all || ch.shown == TY_UNKNOWN) continue;
+        val = ch.shown;
+      }
       /* emit_arg_or_default_fill boxes these array kinds into a general
          Array parameter (#3137). This is a conversion, not a contradiction
          (#6514). Its mutation guard still refuses a copy that would lose
@@ -34850,6 +34966,10 @@ static void check_seed_contradictions(Compiler *c) {
                 "  Fix the signature or the call.\n",
                 file, ln, m->pnames[i], name,
                 seed_ty_name_into(c, slot, _sn1, sizeof _sn1),
+                seed_ty_name_into(c, val, _sn2, sizeof _sn2));
+      if (via_mi >= 0)
+        fprintf(stderr, "  The value is parameter %s of %s, which every call of %s hands a %s.\n",
+                c->scopes[via_mi].pnames[via_pi], c->scopes[via_mi].name, c->scopes[via_mi].name,
                 seed_ty_name_into(c, val, _sn2, sizeof _sn2));
       if (!collect_mode()) exit(1);
       g_seed_bad = 1;
