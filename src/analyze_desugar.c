@@ -15420,7 +15420,9 @@ int desugar_builtin_enum_calls(Compiler *c) {
        written with, the one a top-level method a send reaches answers
        (`42.send(:detect)`), or a reopening of the receiver's class; so does
        one an outer each is chained on (`42.send(:detect).each { }`) */
-    if (ty_lacks_enumerable(rt) && enum_unrename(nt, id)) {
+    /* (--int-overflow=promote holds a Rational boxed, typed poly and marked
+       an_rat_value: the same Rational, with no each) */
+    if ((ty_lacks_enumerable(rt) || (rt == TY_POLY && an_rat_value(c, recv))) && enum_unrename(nt, id)) {
       changed = 1;
       continue;
     }
