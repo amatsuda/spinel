@@ -15867,10 +15867,21 @@ static char *oa_walk_disc(Compiler *c, int nc) {
   }
   ANameHash read; memset(&read, 0, sizeof read);
   int all = 0;
+  /* (a Symbol that names an attribute an attr_reader / attr_writer /
+     attr_accessor declares defines the reader, it reads nothing: counted
+     as a read of the name, `attr_reader :amount` kept a class method
+     `Fn.amount` read, and the Array its tail walked boxed, #10700) */
+  int *par = an_parent_map(nt);
   for (int id = 0; id < nt->count && id < nc && !all; id++) {
     NodeKind k = nt_kind(nt, id);
     const char *mn = NULL;
-    if (k == NK_SymbolNode) mn = nt_str(nt, id, "value");
+    if (k == NK_SymbolNode) {
+      mn = nt_str(nt, id, "value");
+      int pa = par && id < nt->count ? par[id] : -1;
+      int call = pa >= 0 && nt_kind(nt, pa) == NK_ArgumentsNode && par[pa] >= 0 ? par[pa] : -1;
+      const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+      if (cn && nt_ref(nt, call, "receiver") < 0 && (is_attr_decl_reader(cn) || is_attr_decl_writer(cn))) mn = NULL;
+    }
     else if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
       Scope *ssc = comp_scope_of(c, id);
       mn = ssc ? ssc->name : NULL;
@@ -15928,6 +15939,7 @@ static char *oa_walk_disc(Compiler *c, int nc) {
   for (int s = 0; s < c->nscopes; s++)
     if (tail[s] >= 0 && !tail_read[tail[s]]) walk_disc[tail[s]] = 1;
   anh_free(&read);
+  free(par);
   free(named); free(m_read); free(tail_read); free(is_tail); free(tail);
   return walk_disc;
 }
@@ -16907,8 +16919,15 @@ static int narrow_object_arrays(Compiler *c) {
       }
       else {
         TyKind ort = infer_type(c, recv);
-        if (ty_is_object(ort))
+        if (ty_is_object(ort)) {
           oa_tmi = call_target(c, id, ty_object_class(ort), name, 0, NULL);
+          /* an attribute reader of the class is no method scope: the call
+             reads the ivar, with no parameter to bind and no slot of its
+             own, so it is no edge and no kill (`d.amount` on a Deal beside
+             a class method `Fn.amount`, whose parameter the name's kill
+             took, #10700) */
+          if (oa_tmi < 0 && argc == 0 && comp_reader_in_chain(c, ty_object_class(ort), name, NULL)) continue;
+        }
         else if (ort == TY_POLY || ort == TY_UNKNOWN || ort == TY_NIL) {
           /* An element of a slot is boxed only while the slot is: the
              call is decided once the slot's class is known (step 5d) */
@@ -17143,17 +17162,28 @@ static int narrow_object_arrays(Compiler *c) {
        whose roots then have no class in rcls) */
     int *tmis = (int *)malloc(sizeof(int) * (size_t)npend);
     if (!tmis) { fprintf(stderr, "oom\n"); exit(1); }
+    char *reads = (char *)calloc((size_t)npend, 1);
+    if (!reads) { fprintf(stderr, "oom\n"); exit(1); }
     for (int p = 0; p < npend; p++) {
       int r = oa_uf_find(sl, pend[p].slot), k = rcls[r];
-      tmis[p] = !rdead[r] && k >= 0 && k < c->nclasses ? call_target(c, pend[p].id, k, nt_str(nt, pend[p].id, "name"), 0, NULL) : -1;
+      const char *pn = nt_str(nt, pend[p].id, "name");
+      tmis[p] = !rdead[r] && k >= 0 && k < c->nclasses ? call_target(c, pend[p].id, k, pn, 0, NULL) : -1;
       if (tmis[p] >= 0) pend[p].cls = k;
+      /* an attribute reader of the element's class (as above): the call
+         reads the element's ivar, and is neither an edge nor a kill */
+      else if (!rdead[r] && k >= 0 && k < c->nclasses && nt_ref(nt, pend[p].id, "arguments") < 0 &&
+               comp_reader_in_chain(c, k, pn, NULL)) { reads[p] = 1; pend[p].cls = k; }
     }
     for (int p = 0; p < npend; p++) {
       int id = pend[p].id, args = nt_ref(nt, id, "arguments"), argc = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-      if (tmis[p] < 0) OA_DYN_KILL(nt_str(nt, id, "name"));
+      if (reads[p]) continue;
+      if (tmis[p] < 0) {
+        OA_DYN_KILL(nt_str(nt, id, "name"));
+      }
       oa_call_edges(c, sl, n, id, tmis[p], argv, argc, read_slot, claimed, call_ret, nc);
     }
+    free(reads);
     free(tmis); free(rcls); free(rdead);
   }
 
