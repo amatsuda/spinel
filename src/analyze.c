@@ -25739,8 +25739,11 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
 int an_super_object_text(Compiler *c, int n, int mi) {
   if (mi <= 0 || mi >= c->nscopes) return 0;
   const Scope *s = &c->scopes[mi];
-  if (!s->name || s->is_cmethod || s->class_id < 0 || s->nparams != 0 ||
-      (!sp_streq(s->name, "inspect") && !sp_streq(s->name, "to_s")))
+  /* (an included module's method under the class's own is a shadow of the
+     class: `__inc_0_inspect`) */
+  const char *nm = s->name ? comp_scope_def_name(c, s) : NULL;
+  if (!nm || s->is_cmethod || s->class_id < 0 || s->nparams != 0 ||
+      (!sp_streq(nm, "inspect") && !sp_streq(nm, "to_s")))
     return 0;
   NodeKind k = nt_kind(c->nt, n);
   if (k != NK_SuperNode && k != NK_ForwardingSuperNode) return 0;
@@ -25749,11 +25752,14 @@ int an_super_object_text(Compiler *c, int n, int mi) {
   ClassInfo *ci = &c->classes[cid];
   /* (a reopened builtin -- Exception, String, Object -- has its own
      inspect and to_s behind the program's) */
-  if (comp_class_is_module(c, ci) || is_builtin_reopen(ci->name) || ci->is_struct || ci->is_data ||
+  if (comp_class_is_module(c, ci) || is_builtin_reopen(ci->name) || class_lacks_kernel(c, cid) || ci->is_struct || ci->is_data ||
       ci->is_native_class || ci->nsub_root > 0 ||
       comp_ary_root(c, cid) >= 0 || class_inherits_builtin_exception(c, cid) || class_is_exc_subclass(c, cid))
     return 0;
-  return ci->parent < 0 || comp_method_in_chain(c, ci->parent, s->name, NULL) < 0;
+  if (ci->parent >= 0 && comp_method_in_chain(c, ci->parent, nm, NULL) >= 0) return 0;
+  /* (an included module's method, or an Object reopening's, is the call
+     plan's target) */
+  return cplan_user_fresh(c, n)->mi < 0;
 }
 /* Method mi is decided: yes or no, and for the handle walk its field. */
 static int an_ret_decided(Compiler *c, RetHandles *R, int mi, int yes) {

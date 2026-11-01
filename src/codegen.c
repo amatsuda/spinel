@@ -13511,7 +13511,7 @@ int obj_kernel_inspect_used(Compiler *c) {
   for (int q = 0; q < 2; q++)
     NT_FOREACH_KIND(c->nt, q ? NK_ForwardingSuperNode : NK_SuperNode, sn) {
       Scope *ss = comp_scope_of(c, sn);
-      if (ss && ss->name && sp_streq(ss->name, "inspect") && an_super_object_text(c, sn, (int)(ss - c->scopes))) return 1;
+      if (ss && ss->name && sp_streq(comp_scope_def_name(c, ss), "inspect") && an_super_object_text(c, sn, (int)(ss - c->scopes))) return 1;
     }
   return 0;
 }
@@ -15331,7 +15331,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       obj_default_name(c, cid, drn, sizeof drn, darg, sizeof darg);
       buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", %s(unsigned long long)(uintptr_t)%s%s)", drn, darg, vt ? "&" : "", g_self);
     }
-    else if (sp_streq(s->name, "inspect"))
+    else if (sp_streq(comp_scope_def_name(c, s), "inspect"))
       buf_printf(b, "sp_obj_kernel_inspect(%s, (void *)%s%s)", cls, vt ? "&" : "", g_self);
     else
       buf_printf(b, "sp_sprintf(\"#<%%s:0x%%016llx>\", sp_obj_cls_name_rt(%s), (unsigned long long)(uintptr_t)%s%s)",
