@@ -195,7 +195,42 @@ module OpenSSL
     end
   end
 
-  module HMAC
+  # A class, as CRuby's is: the one-shot `HMAC.digest` / `HMAC.hexdigest`
+  # below, and an instance a key is set on once and data fed to
+  # (`OpenSSL::HMAC.new(key, "SHA256")`, `#update` / `#<<`, `#digest` /
+  # `#hexdigest`), which Active Support's MessageVerifier and Action
+  # Controller's CSRF token use, keying once and `dup`-ing per message.
+  class HMAC
+    # The algorithm is checked where the key is set, as CRuby checks it;
+    # the data is kept and the MAC computed over all of it when asked, over
+    # the same one-shot functions. #update answers a new String rather than
+    # appending, so a `dup` (whose ivars are the original's) never shares
+    # the data it goes on to add to.
+    def initialize(key, digest)
+      @algo = HMAC.algorithm(digest)
+      unless @algo == "SHA256" || @algo == "SHA1"
+        raise Digest::DigestError, "unsupported digest algorithm: #{digest}"
+      end
+      @key = key.to_s
+      @data = ""
+    end
+
+    def update(data)
+      @data = @data + data.to_s
+      self
+    end
+
+    def <<(data) = update(data)
+
+    def digest = HMAC.digest(@algo, @key, @data)
+    def hexdigest = HMAC.hexdigest(@algo, @key, @data)
+    def to_s = hexdigest
+
+    def reset
+      @data = ""
+      self
+    end
+
     # CRuby takes the algorithm first, as a String or a Digest instance
     # (`OpenSSL::Digest.new("sha256")`, whose name is the algorithm), and
     # only the two the runtime carries are here: an algorithm that is not
