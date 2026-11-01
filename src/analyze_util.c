@@ -2732,6 +2732,26 @@ static TyKind yvt_proc_arg_value(Compiler *c, int blk) {
   return pt == TY_UNKNOWN ? TY_POLY : pt;
 }
 
+/* The value a literal block `blk` hands the yield that runs it: its tail
+   (a `{ return e }` types as e, see below), joined with what its `next`
+   statements answer; nil for an empty block or a void tail. */
+static TyKind yvt_literal_block_value(Compiler *c, int blk) {
+  const NodeTable *nt = c->nt;
+  int bb = nt_ref(nt, blk, "body");
+  int bn = 0; const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
+  TyKind bt;
+  if (bn == 0) bt = TY_NIL;
+  else if (nt_kind(nt, bd[bn - 1]) == NK_ReturnNode)
+    /* `{ return e }`: a non-local return -- the yield never produces a
+       value, but typing it as e's type keeps the enclosing method's
+       return shape consistent (the inline emits `return e` directly). */
+    bt = return_node_type(c, bd[bn - 1]);
+  else bt = infer_type(c, bd[bn - 1]);
+  if (bt == TY_VOID) bt = TY_NIL;
+  TyKind nx = block_next_value_ty(c, bb);
+  if (nx != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? nx : ty_unify(bt, nx);
+  return bt;
+}
 TyKind yield_value_type(Compiler *c, int mi) {
   for (int i = 0; i < g_yvt_depth; i++)
     if (g_yvt_mi[i] == mi) return TY_UNKNOWN;
@@ -2802,21 +2822,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
       result = ty_unify(result, ft);
       continue;
     }
-    int bb = nt_ref(nt, blk, "body");
-    int bn = 0; const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
-    TyKind bt;
-    if (bn == 0) bt = TY_NIL;
-    else if (nt_kind(nt, bd[bn - 1]) == NK_ReturnNode)
-      /* `{ return e }`: a non-local return -- the yield never produces a
-         value, but typing it as e's type keeps the enclosing method's
-         return shape consistent (the inline emits `return e` directly). */
-      bt = return_node_type(c, bd[bn - 1]);
-    else bt = infer_type(c, bd[bn - 1]);
-    if (bt == TY_VOID) bt = TY_NIL;
-    {
-      TyKind nx = block_next_value_ty(c, bb);
-      if (nx != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? nx : ty_unify(bt, nx);
-    }
+    TyKind bt = yvt_literal_block_value(c, blk);
     /* A yield-inlined (or self-recursive-lowered) method is specialized per
        call site, so its internal block type is the first concrete block. A
        non-inlined method (an escaping &block called via the proc ABI) has one
@@ -2974,8 +2980,15 @@ TyKind yield_value_type_via_super(Compiler *c, int mi) {
        include's or extend's copy), or the superclass chain */
     int rmi = a_super_target(c, cs);
     if (rmi != mi) continue;
-    TyKind ft = yield_value_type(c, cmi);
-    if (ft == TY_UNKNOWN) ft = yield_value_type_via_super(c, cmi);
+    /* `super(a) { }` in the child: its own literal block is what mi's
+       yield runs, not a block of the child's callers (none reaches it) */
+    int sb = nt_ref(nt, yvt_sup_ids[ii], "block");
+    TyKind ft;
+    if (sb >= 0 && nt_kind(nt, sb) == NK_BlockNode) ft = yvt_literal_block_value(c, sb);
+    else {
+      ft = yield_value_type(c, cmi);
+      if (ft == TY_UNKNOWN) ft = yield_value_type_via_super(c, cmi);
+    }
     if (ft == TY_VOID) ft = TY_NIL;
     if (ft == TY_UNKNOWN) continue;
     result = (result == TY_UNKNOWN) ? ft : ty_unify(result, ft);
@@ -3372,6 +3385,37 @@ TyKind pinned_guard_unpin_ret(Compiler *c, int mi) {
   return r;
 }
 
+/* Is `node`, the tail of method mi, a `super` that hands mi's block on
+   (`super()`, a bare `super`, `super(&b)` naming mi's own &b) to a parent
+   whose tail is a yield, a call of its &block, or such a super again? The
+   parent is spliced into mi's caller as a yield-tailed body is
+   (emit_super_inline), so a call of mi with a block answers that site's
+   block value, not a value mi's other call sites gave the chain. */
+static int super_hands_block_tail(Compiler *c, int node, int mi, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || mi < 0 || mi >= c->nscopes || depth > 8) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_SuperNode && k != NK_ForwardingSuperNode) return 0;
+  int blk = nt_ref(nt, node, "block");
+  if (blk >= 0) {
+    const char *bp = c->scopes[mi].blk_param;
+    int be = nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -1;
+    if (!bp || !*bp || be < 0 || nt_kind(nt, be) != NK_LocalVariableReadNode ||
+        !sp_streq(nt_str(nt, be, "name"), bp))
+      return 0;
+  }
+  int pmi = a_super_target(c, &c->scopes[mi]);
+  if (pmi < 0 || pmi >= c->nscopes || pmi == mi) return 0;
+  int plast = scope_body_last(c, pmi);
+  if (plast < 0) return 0;
+  if (nt_kind(nt, plast) == NK_YieldNode || is_blk_param_call(c, plast, pmi)) return 1;
+  return super_hands_block_tail(c, plast, pmi, depth + 1);
+}
+/* Does method mi fall off its end through such a super? */
+int method_hands_block_tail(Compiler *c, int mi) {
+  if (mi < 0 || mi >= c->nscopes) return 0;
+  return super_hands_block_tail(c, scope_body_last(c, mi), mi, 0);
+}
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   IMEMO_DEP_SCOPE(mi);   /* (the method's value is read here) */
   int last = scope_body_last(c, mi);
@@ -3408,7 +3452,8 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     return c->scopes[mi].ret;
   /* A yield-tailed inlined method, or a tail that calls the &block param:
      the block is spliced per call site, so use that site's block body type. */
-  if (is_yield || is_blk_param_call(c, last, mi) || ie_forwards_block_tail(c, last)) {
+  if (is_yield || is_blk_param_call(c, last, mi) || ie_forwards_block_tail(c, last) ||
+      super_hands_block_tail(c, last, mi, 0)) {
     int blk = nt_ref(c->nt, call_id, "block");
     /* `callee(&b)` / `callee(...)` forwards the block active in the enclosing
        method (a `...` forward carries it implicitly, with no block node), so

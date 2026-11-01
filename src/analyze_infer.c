@@ -10059,7 +10059,10 @@ static TyKind super_target_ret(Compiler *c, Scope *s, int mi, int id) {
   /* `super(x) { }`: the literal block is spliced into the yielding parent
      like a call's, so the super answers what that call would */
   int sblk = nt_ref(c->nt, id, "block");
-  if (c->scopes[mi].yields && sblk >= 0 && nt_kind(c->nt, sblk) == NK_BlockNode) {
+  /* (a parent that only hands the block on to a yielding chain, `def h(c) =
+     super()`, is spliced like a yielding one: the block is still this one) */
+  if ((c->scopes[mi].yields || method_hands_block_tail(c, mi)) && sblk >= 0 &&
+      nt_kind(c->nt, sblk) == NK_BlockNode) {
     return method_call_ret(c, mi, id);
   }
   TyKind sret = (TyKind)c->scopes[mi].ret;

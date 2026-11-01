@@ -310,6 +310,7 @@ int yield_block_calls(Compiler *c, int mi, int *out, int max);
 extern int yield_block_tails_next;
 /* The block value reaching `mi` from a child's `super` (see analyze_util.c). */
 TyKind yield_value_type_via_super(Compiler *c, int mi);
+int method_hands_block_tail(Compiler *c, int mi);   /* mi ends in a super handing its block to a yield-tailed chain */
 /* Whether a block-passing call hands on its enclosing method's own block
    (`...`, `&` of the block parameter) rather than a proc value of its own. */
 int call_forwards_own_block(Compiler *c, int cid);
