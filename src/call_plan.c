@@ -2216,6 +2216,11 @@ static int ver_list_held(Compiler *c, int id) {
     if (k < -1 && rk == NK_ConstantReadNode) k = comp_class_index(c, nt_str(nt, r, "name"));
     return k < 0 || ver_list_chain(c, k, sg);
   }
+  /* self in a class or module body is that class, as a constant naming
+     it is (a list a body makes of the methods it has defined) */
+  const Scope *cs = r < 0 ? comp_scope_of(c, id) : NULL;
+  if (r < 0 && !(cs && cs->name) && c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0)
+    return ver_list_chain(c, c->node_cbody[id], sg);
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
   if (rt == TY_CLASS) {
     for (int si = 1; si < c->nscopes; si++) {
@@ -2250,7 +2255,7 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
            "not run is not known at compile time; see docs/limitations.md";
   int pq = is_method_presence_query(name);
   if ((nt_int(nt, id, "cond_def_reflect", 0) || (pq == 1 && ver_refl_named(c, id)) ||
-       ((pq == 2 ? c->nver_refl || c->ncond_disp : pq == 3 && ver_list_held(c, id)) && !cplan_recv_own_member(c, id, name))) &&
+       ((pq == 2 ? c->nver_refl || c->ncond_lone_disp || (c->ncond_disp && ver_list_held(c, id)) : pq == 3 && ver_list_held(c, id)) && !cplan_recv_own_member(c, id, name))) &&
       cplan_reachable(c, id))
     return "a method defined under a condition only the run time decides is not answered for by "
            "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "
