@@ -25685,12 +25685,16 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       snprintf(rk, sizeof rk, "_t%d", tb); snprintf(sk, sizeof sk, "_t%d", tb);
     }
     const char *rs = ok ? "_okey" : "";
+    /* the write a frozen Hash refuses, as `h[k] = v` does (#3001) */
+    char frz[128];
+    snprintf(frz, sizeof frz, "{ if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", ta, ta, hash_box_cls(rt));
     if (vt == TY_POLY) {
-      buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) ", is_or ? "!" : "", hn, ta, tb);
+      buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) %s", is_or ? "!" : "", hn, ta, tb, frz);
       int open = 0;
       char *rhs = iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open);
       buf_printf(b, "sp_%sHash_set(_t%d, _t%d, %s)", hn, ta, tb, rhs);
       iow_guard_close(rhs, open, b);
+      buf_puts(b, "; }");
     }
     else {
       /* `h[k] ||= v` is `h[k] || (h[k] = v)`: it is the READ that decides, and
@@ -25704,12 +25708,13 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       if (oint_kind(vt)) buf_printf(b, "%s _t%d = sp_%sHash_oget%s(_t%d, %s); if (", oint_ctype(vt), tc, hn, rs, ta, rk);
       else buf_printf(b, "%s _t%d = sp_%sHash_get%s(_t%d, %s); if (", c_type_name(vt), tc, hn, rs, ta, rk);
       emit_slot_nil_test(c, vt, tc, is_or, b);
-      buf_puts(b, ") ");
+      buf_printf(b, ") %s", frz);
       int open = 0, oset = 0;
       char *rhs = iow_guarded_hash_rhs(c, v, rt, b, &open, &oset);
       /* (one-String mode: a String-valued Hash takes the value's bytes face) */
       buf_printf(b, "sp_%sHash_%s(_t%d, %s, %s%s%s)", hn, oset ? "oset" : "set", ta, sk, ONE_HV_O(hn), rhs, ONE_HV_C(hn));
       iow_guard_close(rhs, open, b);
+      buf_puts(b, "; }");
     }
     buf_puts(b, "; }\n");
     return;
