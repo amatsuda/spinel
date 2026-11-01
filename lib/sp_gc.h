@@ -108,11 +108,20 @@ int sp_gc_roots_ext_reserve(int n);   /* room for n roots in total; 0 on OOM */
 static inline void **sp_gc_root_at(int i) {
   return i < SP_GC_STACK_MAX ? sp_gc_roots[i] : sp_gc_roots_ext[i - SP_GC_STACK_MAX];
 }
+#ifdef SP_GC_NONE
+/* --gc=none: no collection reads a root, so none is kept; the count the
+   exception landings restore stays where the program's start left it, and
+   a package object built with the collector pushes into the storage
+   above, which is still there (#10699). */
+static inline int _sp_gc_root_push(void **p) { (void)p; return 0; }
+static inline void _sp_gc_root_pop(int *added) { (void)added; }
+#else
 static inline int _sp_gc_root_push(void **p) {
   if (sp_gc_nroots < SP_GC_STACK_MAX) { sp_gc_roots[sp_gc_nroots++] = p; return 1; }
   return sp_gc_root_push_slow(p);
 }
 static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
+#endif
 static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
 #define _SP_GC_CONCAT2(a,b) a##b
 #define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
@@ -267,7 +276,11 @@ void sp_gc_wb_slow(void *obj);
    lending site was, it already decided. */
 void sp_gc_pin_remembered_slow(void *obj);
 static inline void sp_gc_pin_remembered(void *obj) {
+#ifdef SP_GC_NONE
+  (void)obj;   /* no collection reads the pinned set (#10699) */
+#else
   if (SP_EXPECT(sp_gc_minor_on, 1)) sp_gc_pin_remembered_slow(obj);
+#endif
 }
 #ifndef SP_GC_PINNED_MAX
 #define SP_GC_PINNED_MAX 16384
@@ -276,6 +289,9 @@ extern void *sp_gc_pinned[SP_GC_PINNED_MAX];
 extern int sp_gc_npinned;
 extern int sp_gc_pin_overflow;
 static inline void sp_gc_wb(void *obj) {
+#ifdef SP_GC_NONE
+  (void)obj;   /* no collection reads the remembered set (#10699) */
+#else
   /* Nothing reads the remembered set unless a minor mark runs, and whether one
      can is decided once, from the environment, before main. So with the
      generational mark off -- the default -- the whole barrier is bookkeeping
@@ -296,7 +312,13 @@ static inline void sp_gc_wb(void *obj) {
     if (!h->old || h->dirty) return;
     sp_gc_wb_slow(obj);
   }
+#endif
 }
+/* --gc=none: the store itself, with no barrier around it. */
+#ifdef SP_GC_NONE
+#undef SP_WBO
+#define SP_WBO(x) (x)
+#endif
 /* Young object heap. Threaded build: per-worker lists (one pusher each, since a
    started thread is pinned to its worker), so allocation pushes without the
    CAS-on-shared-head that made object-heavy parallel workloads bounce a cache
@@ -516,7 +538,14 @@ int  sp_gc_verify_on(void);   /* SPINEL_GC_VERIFY is set (diagnostics only) */
 void sp_gc_fault_report(int sig);
 extern const char *sp_gc_dbg_phase;   /* which root group the mark walk is in */
 extern void *sp_gc_dbg_ctx;
+#ifdef SP_GC_NONE
+/* --gc=none: a scan function stays, as the identity of its class and the
+   finaliser's companion, but marks nothing, and the marker it would have
+   called leaves the link with the collector (#10699). */
+static inline void sp_gc_mark(void *obj) { (void)obj; }
+#else
 void sp_gc_mark(void *obj);
+#endif
 void sp_gc_mark_all(void);
 void sp_gc_mark_drain(void);
 extern int sp_gc_minor;
@@ -753,7 +782,11 @@ extern int (*sp_class_is_module_fn)(sp_Class c);
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked (0xfa -> 0xf8 for a
  * collectable frozen one); others skipped. */
+#ifdef SP_GC_NONE
+static inline void sp_gc_mark_str(const char *s) { (void)s; }   /* (--gc=none: see sp_gc_mark) */
+#else
 void sp_gc_mark_str(const char *s);   /* lib/sp_gc.c: the bitmap mark of a slab string, the byte of a malloc'd one */
+#endif
 /* The frozen bit of a GC object's header */
 static inline sp_bool sp_gc_is_frozen(void *p) { if (!p) return FALSE; return ((sp_gc_hdr *)((char *)p - sizeof(sp_gc_hdr)))->frozen; }
 static inline void sp_mark_string(const char *s) {

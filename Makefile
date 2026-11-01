@@ -801,6 +801,41 @@ RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
 	$(AR_DET) ar rcs $@ $^
 
+# ---- Runtime variants for --gc=none (-DSP_GC_NONE) ----
+# The same sources, compiled as the program's own TU is under --gc=none
+# (src/codegen.c defines SP_GC_NONE there): the root macros in lib/sp_gc.h
+# are empty, the write barrier is the store alone, and the allocators ask
+# for no collection, since none runs. Linked when the C carries codegen's
+# SPINEL_GC_NONE marker (src/main.c), one per threading variant; the C
+# extension archives have no such variant. lib/sp_gc_none.c, in these
+# archives only, defines the markers as nothing for an object built with
+# the collector that links them (a package's native object) (#10699).
+NOGC_DEF = -DSP_GC_NONE
+SP_RT_NOGC_LIB = lib/libspinel_rt_nogc.a
+SP_RT_MT_NOGC_LIB = lib/libspinel_rt_mt_nogc.a
+
+build/nogc/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) $(NOGC_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/nogc/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(NOGC_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/mt-nogc/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) $(MT_DEF) $(NOGC_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/mt-nogc/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(MT_DEF) $(NOGC_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+$(SP_RT_NOGC_LIB): $(patsubst lib/regexp/%.c,build/nogc/regexp/%.o,$(RE_SRC)) $(addprefix build/nogc/,$(addsuffix .o,$(RT_MEMBERS) sp_gc_none)) $(PLATFORM_OBJ)
+	$(AR_DET) ar rcs $@ $^
+
+$(SP_RT_MT_NOGC_LIB): $(patsubst lib/regexp/%.c,build/mt-nogc/regexp/%.o,$(RE_SRC)) $(addprefix build/mt-nogc/,$(addsuffix .o,$(RT_MEMBERS) sp_gc_none)) $(PLATFORM_MT_OBJ)
+	$(AR_DET) ar rcs $@ $^
+
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
 # but uninstrumented, so a race shows only when it corrupts the output. This
@@ -959,11 +994,54 @@ $(SP_RT_WASI_NOEXC_LIB): $(patsubst lib/regexp/%.c,build/wasm32-wasi-noexc/regex
 	@mkdir -p $(@D)
 	rm -f $@ && $(WASI_AR) rcs $@ $^
 
+# --gc=none (#10699): both wasm archives again with -DSP_GC_NONE, as the
+# native pair above (NOGC_DEF); the driver links one when the C carries the
+# SPINEL_GC_NONE marker. The packages' wasm objects are shared with the
+# collecting build: a root they register goes to storage nothing reads.
+SP_RT_WASI_NOGC_LIB = lib/wasm32-wasi/libspinel_rt_nogc.a
+SP_RT_WASI_NOEXC_NOGC_LIB = lib/wasm32-wasi/libspinel_rt_noexc_nogc.a
+
+build/wasm32-wasi-nogc/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) $(WASI_CFLAGS) $(NOGC_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/wasm32-wasi-nogc/wasi/%.o: lib/wasi/%.c $(WASI_SHIM_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_CFLAGS) $(NOGC_DEF) -Ilib $< -o $@
+
+build/wasm32-wasi-nogc/%.o: lib/%.c $(RT_HDRS) $(WASI_SHIM_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_CFLAGS) $(NOGC_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+$(SP_RT_WASI_NOGC_LIB): $(patsubst lib/regexp/%.c,build/wasm32-wasi-nogc/regexp/%.o,$(RE_SRC)) \
+                        $(patsubst lib/wasi/%.c,build/wasm32-wasi-nogc/wasi/%.o,$(wildcard lib/wasi/*.c)) \
+                        $(addprefix build/wasm32-wasi-nogc/,$(addsuffix .o,$(RT_MEMBERS) sp_gc_none))
+	@mkdir -p $(@D)
+	rm -f $@ && $(WASI_AR) rcs $@ $^
+
+build/wasm32-wasi-noexc-nogc/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) $(WASI_NOEXC_CFLAGS) $(NOGC_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/wasm32-wasi-noexc-nogc/wasi/%.o: lib/wasi/%.c $(WASI_SHIM_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_NOEXC_CFLAGS) $(NOGC_DEF) -Ilib $< -o $@
+
+build/wasm32-wasi-noexc-nogc/%.o: lib/%.c $(RT_HDRS) $(WASI_SHIM_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_NOEXC_CFLAGS) $(NOGC_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+$(SP_RT_WASI_NOEXC_NOGC_LIB): $(patsubst lib/regexp/%.c,build/wasm32-wasi-noexc-nogc/regexp/%.o,$(RE_SRC)) \
+                              $(patsubst lib/wasi/%.c,build/wasm32-wasi-noexc-nogc/wasi/%.o,$(wildcard lib/wasi/*.c)) \
+                              $(addprefix build/wasm32-wasi-noexc-nogc/,$(addsuffix .o,$(RT_MEMBERS) sp_gc_none))
+	@mkdir -p $(@D)
+	rm -f $@ && $(WASI_AR) rcs $@ $^
+
 BUNDLED_NATIVE_WASI_NOEXC_OBJS = $(patsubst %_wasi.o,%_wasi_noexc.o,$(BUNDLED_NATIVE_WASI_OBJS))
 packages/%_wasi_noexc.o: packages/%.c lib/spinel/runtime.h lib/sp_dtoa.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_setjmp.h $(WASI_SHIM_HDRS)
 	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_NOEXC_CFLAGS) -Ilib -I$(@D) $< -o $@
 
-wasm-rt: $(SP_RT_WASI_LIB) $(BUNDLED_NATIVE_WASI_OBJS) $(SP_RT_WASI_NOEXC_LIB) $(BUNDLED_NATIVE_WASI_NOEXC_OBJS)
+wasm-rt: $(SP_RT_WASI_LIB) $(BUNDLED_NATIVE_WASI_OBJS) $(SP_RT_WASI_NOEXC_LIB) $(BUNDLED_NATIVE_WASI_NOEXC_OBJS) $(SP_RT_WASI_NOGC_LIB) $(SP_RT_WASI_NOEXC_NOGC_LIB)
 
 # A few of the corpus's programs built with --target=wasm32-wasi and run
 # under wasmtime (WASMTIME, default: the one on PATH) against their expected
@@ -1038,9 +1116,21 @@ wasm-test: $(SPINEL) wasm-rt
 	  elif ! grep -qF "$$why" $$tmp/r.err; then echo "wasm-test: FAIL (--exceptions=abort -c refused without saying why) $$t"; head -3 $$tmp/r.err; ok=0; \
 	  else echo "wasm-test: pass (--exceptions=abort -c refuses) $$t"; fi; \
 	done; \
+	for t in test/gc_none_alloc.rb; do \
+	  bn=$$(basename $$t .rb); \
+	  for exc in "" --exceptions=abort; do \
+	    lbl="--gc=none$${exc:+ $$exc}"; \
+	    if ! WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --gc=none $$exc --no-line-map $$t -o $$tmp/$$bn.wasm >/dev/null 2>$$tmp/$$bn.build; then \
+	      echo "wasm-test: FAIL (build, $$lbl) $$t"; head -3 $$tmp/$$bn.build; ok=0; continue; fi; \
+	    $(WASMTIME) run -W max-wasm-stack=16777216 --dir=. $$tmp/$$bn.wasm >$$tmp/$$bn.out 2>$$tmp/$$bn.err </dev/null; rc=$$?; \
+	    if ! cmp -s $$tmp/$$bn.out $$t.expected; then echo "wasm-test: FAIL ($$lbl) $$t"; diff -u $$t.expected $$tmp/$$bn.out | head -6; head -3 $$tmp/$$bn.err; ok=0; \
+	    elif [ $$rc -ne 0 ]; then echo "wasm-test: FAIL (exit $$rc, $$lbl) $$t"; head -3 $$tmp/$$bn.err; ok=0; \
+	    else echo "wasm-test: pass ($$lbl) $$t"; fi; \
+	  done; \
+	done; \
 	rm -rf $$tmp; [ $$ok -eq 1 ]
 
-regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
+regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SP_RT_NOGC_LIB) $(SP_RT_MT_NOGC_LIB)
 
 # ---- In-tree developer tools ----
 
@@ -2411,12 +2501,19 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # separately, so the test asserts the mechanism rather than a timing.
 # --gc=none: the program answers as with the collector, and the collector
 # (sp_gc_collect and what only it reaches) is not in the binary.
-gc-none-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+# The program answers as with the collector, and the binary holds neither
+# the collector nor the bookkeeping only a collection reads: the root
+# stack's slow push, the write barrier's slow path and the mark (#10699).
+gc-none-test: $(SPINEL) $(SP_RT_NOGC_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcnone.XXXXXX); ok=1; \
 	$(SPINEL) --gc=none test/gc_none_alloc.rb -o "$$tmp/t" >"$$tmp/cc.out" 2>&1 || { echo "gc-none-test: FAIL (compile)"; tail -5 "$$tmp/cc.out"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
 	  $(TIMEOUT60) "$$tmp/t" > "$$tmp/out" 2>&1; cmp -s "$$tmp/out" test/gc_none_alloc.rb.expected || { echo "gc-none-test: FAIL (output)"; diff test/gc_none_alloc.rb.expected "$$tmp/out" | head -5; ok=0; }; \
-	  if command -v nm >/dev/null 2>&1; then nm "$$tmp/t" | grep -q ' sp_gc_collect$$' && { echo "gc-none-test: FAIL (the collector is still linked)"; ok=0; }; fi; \
+	  if command -v nm >/dev/null 2>&1; then \
+	    for s in sp_gc_collect sp_gc_mark sp_gc_root_push_slow sp_gc_wb_slow sp_gc_pin_remembered_slow; do \
+	      nm "$$tmp/t" | grep -q " $$s$$" && { echo "gc-none-test: FAIL ($$s is still linked)"; ok=0; }; \
+	    done; \
+	  fi; \
 	fi; \
 	rm -rf "$$tmp"; if [ $$ok -eq 1 ]; then echo "gc-none-test: pass"; else exit 1; fi
 
@@ -4136,6 +4233,8 @@ ckey=""; hit=0; own=0; \
   cextinc=""; \
   if grep -q SPINEL_USES_CEXT "$$cfile"; then \
     rtlib=$$(echo "$$rtlib" | sed 's|libspinel_rt|libspinel_cext_rt|'); pchuse=""; cextinc="-Iinclude"; \
+  elif grep -q SPINEL_GC_NONE "$$cfile"; then \
+    rtlib=$$(echo "$$rtlib" | sed 's|\.a$$|_nogc.a|'); pchuse=""; \
   fi; \
   xlibs="$$xobjs $$xlibs"; \
   if [ -f "$<.expected" ]; then \
@@ -4207,7 +4306,7 @@ $(TEST_RESULT_DIR)/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT
 endef
 $(foreach d,$(wildcard packages/*/test),$(eval $(call PKG_TEST_RULE,$(patsubst packages/%/test,%,$(d)))))
 
-$(TEST_RESULT_DIR)/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) | $(SPINEL) $(SPINEL_TIMEOUT)
+$(TEST_RESULT_DIR)/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SP_RT_NOGC_LIB) $(SP_RT_MT_NOGC_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) | $(SPINEL) $(SPINEL_TIMEOUT)
 	$(RUN_ONE_TEST)
 
 clean-test-results:
@@ -6114,6 +6213,7 @@ install: all bin/spin
 	fi
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_rt_mt.a $(SPNLDIR)/lib/
+	install -m 644 lib/libspinel_rt_nogc.a lib/libspinel_rt_mt_nogc.a $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a $(SPNLDIR)/lib/
 	install -d $(SPNLDIR)/include/ruby $(SPNLDIR)/tools/cext $(SPNLDIR)/tools/spin
 	install -m 644 include/ruby.h $(SPNLDIR)/include/

@@ -1417,7 +1417,8 @@ def toolchain_deps
   dir = File.expand_path("..", sb)
   rt = File.join(dir, "lib")
   rt = File.expand_path("../lib", dir) unless File.file?(File.join(rt, "libspinel_rt.a"))
-  ["libspinel_rt.a", "libspinel_rt_mt.a", "libspinel_cext_rt.a", "libspinel_cext_rt_mt.a"].each do |name|
+  ["libspinel_rt.a", "libspinel_rt_mt.a", "libspinel_rt_nogc.a", "libspinel_rt_mt_nogc.a",
+   "libspinel_cext_rt.a", "libspinel_cext_rt_mt.a"].each do |name|
     path = File.join(rt, name)
     deps << path if File.file?(path)
   end

@@ -551,7 +551,9 @@ static void usage(void) {
     "              break or return that leaves a block through a frame are refused\n"
     "  --gc=none   No garbage collector: memory is allocated and never reclaimed,\n"
     "              for a short run under a host's memory cap (also --no-gc;\n"
-    "              --gc=on is the default). The collector leaves the build\n"
+    "              --gc=on is the default). The collector leaves the build, and\n"
+    "              the runtime linked is the one built without its bookkeeping\n"
+    "              (lib/libspinel_rt_nogc.a)\n"
     "  -e STR      Inline Ruby source (repeatable; joined with newlines)\n"
     "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)\n"
     "  --no-inline-rbs  Ignore inline RBS comments (`#: ...`, `# @rbs ...`)\n"
@@ -626,13 +628,23 @@ static int run_table_mode(const NodeTable *nt, int mode) {
 static void work_report(void) { fprintf(stderr, "spinel-work: %llu\n", g_nt_work); }
 #endif
 
-static const char *runtime_archive(const char *csrc, int threads, int wasi, int abort_exceptions, int *cext) {
+/* The runtime archive a program links. Thread/Mutex/Queue/... take the
+   -DSP_THREADS variant, a C extension the one carrying the bridge, and
+   --gc=none (codegen's SPINEL_GC_NONE marker) the one built with
+   -DSP_GC_NONE, whose own functions register no root and run no barrier,
+   since no collection reads them (#10699). The extension archives have no
+   such variant: a program with both links the collecting one, and only the
+   program's own TU is without the bookkeeping. */
+static const char *runtime_archive(const char *csrc, int threads, int wasi, int abort_exceptions, int *cext, int *gc_none) {
   *cext = strstr(csrc, "/* SPINEL_USES_CEXT */") != NULL;
+  *gc_none = strstr(csrc, "/* SPINEL_GC_NONE */") != NULL;
   if (*cext && (wasi || abort_exceptions)) {
     fprintf(stderr, "spinel: C extensions currently require the native exception runtime\n");
     return NULL;
   }
-  return *cext ? (threads ? "libspinel_cext_rt_mt.a" : "libspinel_cext_rt.a") : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
+  if (*cext) return threads ? "libspinel_cext_rt_mt.a" : "libspinel_cext_rt.a";
+  if (*gc_none) return threads ? "libspinel_rt_mt_nogc.a" : "libspinel_rt_nogc.a";
+  return threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
 }
 
 static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_cext) {
@@ -1447,8 +1459,8 @@ int main(int argc, char **argv) {
      large-frame brake -- ask for the warning back (#3913). */
   int fiber_frame_guard = strstr(csrc, "/* SPINEL_FIBER_FRAME_GUARD */") != NULL;
   int uses_crypt = strstr(csrc, "sp_str_crypt(") != NULL;  /* String#crypt: link -lcrypt */
-  int uses_cext;
-  const char *rt_lib = runtime_archive(csrc, uses_threads, target_wasi, exc_abort, &uses_cext);
+  int uses_cext, gc_none;
+  const char *rt_lib = runtime_archive(csrc, uses_threads, target_wasi, exc_abort, &uses_cext, &gc_none);
   free(csrc);
   if (!rt_lib) { if (c_is_temp) remove(c_path); return 1; }
   /* wasm has no threads without SharedArrayBuffer and no stack switching
@@ -1461,7 +1473,8 @@ int main(int argc, char **argv) {
       if (c_is_temp) remove(c_path);
       return 1;
     }
-    rt_lib = exc_abort ? "wasm32-wasi/libspinel_rt_noexc.a" : "wasm32-wasi/libspinel_rt.a";
+    rt_lib = exc_abort ? (gc_none ? "wasm32-wasi/libspinel_rt_noexc_nogc.a" : "wasm32-wasi/libspinel_rt_noexc.a")
+                       : (gc_none ? "wasm32-wasi/libspinel_rt_nogc.a" : "wasm32-wasi/libspinel_rt.a");
     if (run_mode) {
       fprintf(stderr, "spinel: -E cannot run a wasm32-wasi module; build it and run it with wasmtime\n");
       if (c_is_temp) remove(c_path);

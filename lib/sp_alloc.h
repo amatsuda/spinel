@@ -337,6 +337,7 @@ static inline char *sp_str_alloc(size_t len) {
      per worker independent of N. A shared aggregate check (threshold/N) instead
      multiplied the collection count by N and left allocation-heavy parallel
      workloads STW-bound; this keeps them flat. */
+#ifndef SP_GC_NONE   /* (--gc=none: nothing collects, so nothing asks; #10699) */
   { size_t _yb = SP_GC_CTR_GET(sp_str_wslot[wid].young_bytes);
     /* over the threshold AND past this worker's ask mark; the threshold clause
        stays first so a retune that LOWERS it still triggers at once. */
@@ -347,6 +348,7 @@ static inline char *sp_str_alloc(size_t len) {
          allocation later rather than the next allocation. */
       sp_str_wslot[wid].ask_at = SP_GC_CTR_GET(sp_str_wslot[wid].young_bytes) + sp_str_threshold;
     } }
+#endif
   h = (sp_str_hdr *)sp_slab_alloc_str(total);
   h->size = (uint32_t)total;
   h->len = (uint32_t)len;
@@ -364,9 +366,11 @@ static inline char *sp_str_alloc(size_t len) {
 #else
   SP_HEAP_LOCK();
   if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_str_threshold, 2048); sp_str_threshold_init = 2048; sp_gc_stress_pin = 1; } }
+#ifndef SP_GC_NONE   /* (--gc=none: nothing collects, so nothing asks; #10699) */
   if (SP_GC_CTR_GET(sp_str_heap_bytes) > sp_str_threshold) {
     sp_str_collect_retune();         /* sp_gc_collect runs sp_str_sweep */
   }
+#endif
   h = (sp_str_hdr *)sp_slab_alloc_str(total);
   h->size = (uint32_t)total;
   h->len = (uint32_t)len;

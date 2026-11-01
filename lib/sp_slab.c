@@ -857,7 +857,9 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
      parked, so a push never races the sweep. The stress-threshold one-shot is
      idempotent under a race. */
   if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_gc_threshold, 2048); sp_gc_threshold_init = 2048; sp_gc_stress_pin = 1; } }
+#ifndef SP_GC_NONE   /* (--gc=none: nothing collects, so nothing asks; #10699) */
   if (SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold)) sp_stw_collect();
+#endif
   size_t need = sizeof(sp_gc_hdr) + sz;
   sp_gc_hdr *h = (sp_gc_hdr *)sp_slab_alloc_in(need, 0, fin != NULL, 1);
   h->finalize = fin; h->scan = scn; h->size = need;
@@ -880,9 +882,11 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
      the heap lock. threshold_init stays plain -- only retune reads it, under
      stop-the-world, ordered after this by the writer's park. */
   if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_gc_threshold, 2048); sp_gc_threshold_init = 2048; sp_gc_stress_pin = 1; } }
+#ifndef SP_GC_NONE   /* (--gc=none: nothing collects, so nothing asks; #10699) */
   if (SP_GC_CTR_GET(sp_gc_bytes) > sp_gc_threshold) {
     sp_gc_collect_retune();
   }
+#endif
   size_t need = sizeof(sp_gc_hdr) + sz;
   sp_gc_hdr *h = (sp_gc_hdr *)sp_slab_alloc_in(need, 0, fin != NULL, 1);
   h->finalize = fin; h->scan = scn; h->size = need;

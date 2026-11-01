@@ -720,7 +720,14 @@ static void sp_str_retune(size_t before, size_t promoted) {
    weak, gives way, nothing then names the collector, and its mark, sweep
    and verifiers leave the link (--gc-sections); the triggers are lifted the
    first time one fires, so no allocation asks again. */
+#ifdef SP_GC_NONE
+/* The archive built for --gc=none (lib/libspinel_rt_nogc.a and its
+   variants, -DSP_GC_NONE) names the collector nowhere: this definition
+   agrees with the program's, which is the strong one. */
+SP_WEAK void (*sp_gc_collect_fn)(void) = NULL;
+#else
 SP_WEAK void (*sp_gc_collect_fn)(void) = sp_gc_collect;
+#endif
 static int sp_gc_collect_installed(void) {
   if (sp_gc_collect_fn) return 1;
   SP_GC_CTR_SET(sp_gc_threshold, (size_t)-1 / 4);
@@ -1222,9 +1229,11 @@ char *sp_str_alloc_ext(size_t len) { return sp_str_alloc(len); }
 /* Wire string sweep into the object collector. Runs before main, so the hook is
    set before the first allocation can trigger a collection. */
 SP_CONSTRUCTOR static void sp_alloc_install_hooks(void) {
+#ifndef SP_GC_NONE   /* (--gc=none: no collection runs them; #10699) */
   sp_gc_str_sweep_hook = sp_str_sweep_gated;
   sp_gc_str_major_due_hook = sp_str_major_due;
   sp_gc_obj_retune_hook = sp_gc_retune_object;
+#endif
   sp_alloc_floors_from_env();
 }
 

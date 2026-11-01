@@ -21765,8 +21765,9 @@ char *codegen_program(const NodeTable *nt) {
      `static` before the include (ext-design.md, Layer 1). */
   if (g_ext_init_name) buf_puts(&b, "#define SPINEL_EXT_KERNEL 1\n");
   /* --gc=none: the program defines the collector pointer itself, as NULL
-     (the runtime's is weak, lib/sp_alloc.c), so nothing names the collector */
-  if (g_gc_none) buf_puts(&b, "#define SP_GC_NONE 1\n");
+     (the runtime's is weak, lib/sp_alloc.c), so nothing names the collector;
+     the marker has the driver link the archive built the same way (#10699) */
+  if (g_gc_none) buf_puts(&b, "#define SP_GC_NONE 1   /* SPINEL_GC_NONE */\n");
   /* a computed instance_variable_set can reach a user class (#8219): the
      object-keyed ivar table admits its instances, for the names the class
      does not declare */

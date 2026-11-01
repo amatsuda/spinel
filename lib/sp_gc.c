@@ -280,6 +280,7 @@ void sp_gc_fault_report(int sig) {
 }
 /* The collector's boot-time modes, read from the environment once, before
    main. */
+#ifndef SP_GC_NONE   /* (--gc=none: no collector to set the modes of; #10699) */
 SP_CONSTRUCTOR static void sp_gc_debug_env(void){
   const char *v=getenv("SPINEL_GC_VERIFY"); sp_gc_verify=(v&&*v&&*v!='0');
   /* SPINEL_GC_STRESS=2 keeps what a sweep frees poisoned and out of reuse
@@ -342,6 +343,7 @@ SP_CONSTRUCTOR static void sp_gc_debug_env(void){
     sp_gc_str_major_sched = !(sm && strcmp(sm, "size") == 0); }
   if (sp_gc_verify) { signal(SIGSEGV, sp_gc_fault_report); signal(SIGBUS, sp_gc_fault_report); }
 }
+#endif
 
 /* Tag byte preceding `obj`: 0xfe heap-unmarked -> 0xfc, 0xfa -> 0xf8;
  * 0xfc/0xf8/0xff/0xfd/0xf1/0xfb skipped; else a real GC object reached
@@ -473,6 +475,7 @@ size_t sp_gc_mk_promo_bytes = 0;
    stays 0xfe, since nothing resets a byte the sweep does not touch. A
    string that fell back to malloc keeps the byte protocol (0xfe -> 0xfc,
    0xfa -> 0xf8, reset by the list sweep that frees or promotes it). */
+#ifndef SP_GC_NONE   /* (--gc=none: both are inline and mark nothing, lib/sp_gc.h; #10699) */
 void sp_gc_mark_str(const char *s) {
   sp_str_hdr *h = ((sp_str_hdr *)(s - 1)) - 1;
 #ifdef SP_ONE_STRING
@@ -562,6 +565,7 @@ void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[
     if(sp_gc_mark_cap<(1<<28)){int nc=sp_gc_mark_cap*2;void**ns=(void**)realloc(sp_gc_mark_stack,sizeof(void*)*(size_t)nc);if(ns){sp_gc_mark_stack=ns;sp_gc_mark_cap=nc;}}}
 if(sp_gc_mark_stack&&sp_gc_mark_top<sp_gc_mark_cap){sp_gc_mark_stack[sp_gc_mark_top++]=obj;}
 else{h->scan(obj);}}}
+#endif
 /* The thread's counts, folded in. The collector folds its own at the end of
    the mark; a helper folds when its drain ends. */
 static void sp_gc_mkl_fold(void){
@@ -1460,6 +1464,7 @@ void sp_fd_retire(char *base) {
   sp_str_hdr *fh = (sp_str_hdr *)base;
   fh->hash = 0;
   base[sizeof(sp_str_hdr)] = (char)0xf9;
+#ifndef SP_GC_NONE   /* (--gc=none: no sweep frees it, so no list holds it; #10699) */
   sp_fd_retired_t *r = SP_FD_RETIRED_MINE;
   if (r->n == r->cap) {
     int nc = r->cap ? r->cap * 2 : 64;
@@ -1469,6 +1474,7 @@ void sp_fd_retire(char *base) {
   }
   r->v[r->n++] = base;
   if (!sp_fd_nretired) sp_fd_nretired = 1;
+#endif
 }
 static void sp_fd_retired_sweep(void) {
   for (int w = 0; w < SP_FD_RETIRED_LISTS; w++) {
