@@ -2066,18 +2066,20 @@ int        hash_new_default_arg(Compiler *c, int recv); /* Hash.new(d) literal: 
 int        recv_hash_new_default_arg(Compiler *c, int recv); /* the same through a local or ivar READ node */
 TyKind     hash_default_value_ty(Compiler *c, int dn);      /* the value type a Hash.new(d) default contributes */
 int        hash_new_blockless(Compiler *c, int recv);  /* blockless Hash.new / {} literal */
-int        const_owned_by_class(Compiler *c, const char *clsname, const char *constname);
-const char *const_get_recv_name(Compiler *c, int call, int recv);
+/* The receiver of a const_get family call, as a class id: >= 0 a class of the
+   program, CG_OBJECT Object when no class reopens it (the same number as
+   comp_core_class's none), CG_NONE no receiver, CG_UNTABLED a named receiver
+   the class table lacks (a builtin module, an unknown name). */
+enum { CG_OBJECT = -1, CG_NONE = -2, CG_UNTABLED = -3 };
+int        const_owned_by_class(Compiler *c, int rk, const char *constname);
+int        const_get_recv_class(Compiler *c, int call, int recv);
 enum { CS_NONE, CS_SLOT, CS_AMBIG };            /* const_set_slot's answers */
 int        const_set_slot(Compiler *c, int call, const char *n, const char **key);
-int        const_get_takes_value(Compiler *c, const char *rnm, const char *cgn);
-const char *const_get_value_key(Compiler *c, const char *rnm, const char *cgn);
-int        const_get_class_index(Compiler *c, const char *rnm, const char *cgn);
-const char *const_get_lookup(Compiler *c, const char *rnm, const char *cgn, int *cls);
+const char *const_get_resolve(Compiler *c, int rk, const char *cgn, int *cls);
 void       const_get_leaves_begin(Compiler *c);  /* index the class leaves while the class table holds still */
 void       const_get_leaves_end(void);
-int        const_defined_known(Compiler *c, const char *rnm, const char *cgn);
-int        const_defined_from(Compiler *c, const char *rnm, const char *cgn);   /* ... and seen from R: R, its ancestors, their modules, or top level (#9876) */
+int        const_defined_known(Compiler *c, int rk, const char *cgn);
+int        const_defined_from(Compiler *c, int rk, const char *cgn);   /* ... and seen from R: R, its ancestors, their modules, or top level (#9876) */
 int        const_seen_by_class(Compiler *c, int k, const char *cgn);
 int        qc_const_qualified(const char *qn);
 int        qc_leaf_qualified(const char *leaf);

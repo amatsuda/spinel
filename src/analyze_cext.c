@@ -338,13 +338,12 @@ int cext_scope(const Compiler *c, int mi) {
   return c->n_cext_extensions && mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
     nt_int(c->nt, c->scopes[mi].def_node, "cext_extension", 0) != 0;
 }
-static int constant_owned_in_chain(Compiler *c, const char *owner, const char *key) {
-  if (!owner) return 0;
+static int constant_owned_in_chain(Compiler *c, int owner, const char *key) {
+  if (owner == CG_NONE) return 0;
   if (const_owned_by_class(c, owner, key)) return 1;
-  int cid = comp_class_index(c, owner);
-  for (int n = 0; cid >= 0 && n < c->nclasses; n++, cid = c->classes[cid].parent)
-    if (const_owned_by_class(c, c->classes[cid].name, key)) return 1;
-  return const_owned_by_class(c, "Object", key);
+  for (int cid = owner, n = 0; cid >= 0 && n < c->nclasses; n++, cid = c->classes[cid].parent)
+    if (const_owned_by_class(c, cid, key)) return 1;
+  return const_owned_by_class(c, comp_core_class(c, CORE_OBJECT), key);
 }
 static void builtin_constant_read(Compiler *c, int call, int mi) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -353,18 +352,22 @@ static void builtin_constant_read(Compiler *c, int call, int mi) {
   if (ac != 1 || nt_kind(nt, av[0]) != NK_SymbolNode) return;
   const char *key = nt_str(nt, av[0], "value");
   int recv = nt_ref(nt, call, "receiver");
-  const char *owner = const_get_recv_name(c, call, recv);
+  int owner = const_get_recv_class(c, call, recv);
+  /* the receiver's spelling for the builtin test below: a class's name, or a
+     constant receiver's own (Object not reopened, a builtin module) */
+  const char *oname = owner >= 0 ? c->classes[owner].name : owner != CG_NONE ? nt_str(nt, recv, "name") : NULL;
   int value = -1;
-  const char *source = const_get_value_key(c, owner, key);
+  int cls;
+  const char *source = const_get_resolve(c, owner, key, &cls);
   if (source && !constant_owned_in_chain(c, owner, key)) {
     nt_node_set_int(nt, call, "cext_const_missing", 1); return;
   }
   if (source) {
     value = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, value, "name", source);
-  } else if (!const_get_value_key(c, owner, key) &&
+  } else if (
       (builtin_class_id(key) || is_builtin_module_const_name(key) || is_builtin_exception_name(key))) {
     value = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, value, "name", key);
-  } else if (owner && (builtin_class_id(owner) || is_builtin_module_const_name(owner))) {
+  } else if (oname && (builtin_class_id(oname) || is_builtin_module_const_name(oname))) {
     value = nt_new_node(nt, "ConstantPathNode"); nt_node_set_str(nt, value, "name", key);
     nt_node_set_ref(nt, value, "parent", recv);
     comp_grow_node_arrays(c); c->nscope[value] = mi;
@@ -382,7 +385,8 @@ void cext_resolve_constant(Compiler *c, int call) {
   if (ac != 1 || nt_kind(c->nt, av[0]) != NK_SymbolNode) return;
   const char *key = nt_str(c->nt, av[0], "value");
   int recv = nt_ref(c->nt, call, "receiver");
-  if (!const_get_value_key(c, const_get_recv_name(c, call, recv), key)) return;
+  int cls;
+  if (!const_get_resolve(c, const_get_recv_class(c, call, recv), key, &cls)) return;
   Scope *scope = comp_scope_of(c, call);
   if (scope) builtin_constant_read(c, call, (int)(scope - c->scopes));
 }
