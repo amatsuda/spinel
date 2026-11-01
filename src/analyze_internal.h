@@ -118,6 +118,7 @@ int method_name_implicitly_invoked(const char *nm);
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name);
 int local_all_writes_empty_hash_or_new(Compiler *c, Scope *sc, const char *name);
 int method_call_param_shift(Compiler *c, int mn, int mi);
+void mark_path_builders(Compiler *c);   /* analyze_desugar.c */
 
 extern int g_inc_did_clone;
 extern int *g_ie_node_class;

@@ -746,6 +746,7 @@ typedef struct {
                           user `class RbVal` does not redefine the runtime type */
   int def_node;        /* ClassNode id */
   unsigned char presence_read; /* constant pass: a read consumes the creation flag */
+  unsigned char path_ns;       /* constant pass: encloses a path builder's class (an_class_needs_presence) */
   int parent;          /* superclass index, or -1 */
   char **ivars;        /* instance variable names, incl. leading '@' */
   NameIdx ivars_ix;    /* comp_ivar_index's index of ivars */

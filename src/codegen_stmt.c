@@ -21009,7 +21009,9 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       int owner = class_recv_static_ci(c, crecv);
       if (crecv >= 0 && nt_kind(nt, crecv) == NK_SelfNode)
         owner = cpath_in_singleton(c, id) ? -1 : g_class_body_id;
-      emit_class_const_name(c, nm, nm, owner, b, indent);
+      /* named by the leaf as written, not the C name a collision gave it */
+      const char *wn = nt_str(nt, tgt, "qc_orig_name");
+      emit_class_const_name(c, nm, wn ? wn : nm, owner, b, indent);
     }
     emit_const_flag_set(cv, nm, b, indent);
     return 1;

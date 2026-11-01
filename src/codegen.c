@@ -21551,17 +21551,22 @@ static void emit_required_table(Compiler *c, Buf *b, const unsigned char *has) {
              t.p ? t.p : "", count);
   free(t.p);
 }
+/* The presence flag of each class a read asks (an_class_presence_is_read) */
+static void emit_class_presence_decls(Compiler *c, Buf *b) {
+  for (int ci = 0; ci < c->nclasses; ci++)
+    if (an_class_presence_is_read(c, ci)) buf_printf(b, "static int sp_class_present_%d;\n", ci);
+}
 static void emit_file_top_decls(Compiler *c, Buf *b) {
   int n = nt_nroots(c->nt);
-  if (!prog_has_files(c)) return;
+  /* (a path builder's class needs its flag under no file too) */
+  if (!prog_has_files(c)) { emit_class_presence_decls(c, b); return; }
   unsigned char *has = calloc((size_t)n, 1);
   if (!has) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   NativeFlags nf = { c, b };
   prog_file_tops(c, has, emit_native_flag, &nf);
   for (int f = 1; f < n; f++)
     if (has[f]) buf_printf(b, "static int sp_loaded_%d;\n%svoid sp_file_%d_top(void);\n", f, file_top_storage(), f);
-  for (int ci = 0; ci < c->nclasses; ci++)
-    if (an_class_presence_is_read(c, ci)) buf_printf(b, "static int sp_class_present_%d;\n", ci);
+  emit_class_presence_decls(c, b);
   for (int k = 0; k < c->nautoloads; k++) {
     const AutoloadRegistration *a = &c->autoloads[k];
     if (!a->first) continue;

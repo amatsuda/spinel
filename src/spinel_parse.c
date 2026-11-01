@@ -2927,7 +2927,7 @@ static int sp_tier_merge(int old, int tier) { return tier > old ? tier : old; }
 static int sp_intern_file(const char *path, int tier) {
   for (int i = 0; i < sp_file_count; i++)
     if (strcmp(sp_file_table[i], path) == 0) {
-      sp_file_tier[i] = (unsigned char)((sp_file_tier[i] | tier) & SP_FILE_DEFERRED |
+      sp_file_tier[i] = (unsigned char)(((sp_file_tier[i] | tier) & SP_FILE_DEFERRED) |
                                         sp_tier_merge(sp_file_tier[i] & ~SP_FILE_DEFERRED, tier & ~SP_FILE_DEFERRED));
       return i;
     }
