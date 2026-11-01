@@ -91,3 +91,17 @@ class H3
   def run = @arr.each_slice(*sz, &@w.method(:go))
 end
 H3.new.run
+
+# An argument that rebinds the receiver's own local: the original is iterated.
+class W4
+  def initialize(t) = @t = t
+  def go(x, memo) = (memo << "#{@t}#{x}")
+end
+class H4
+  def initialize = @worker = W4.new("w")
+  def run
+    a = [1]
+    a.each_with_object((a = [2]; []), &@worker.method(:go))
+  end
+end
+p H4.new.run
