@@ -25,6 +25,8 @@ false
 false
 ["hello.txt", "z.txt"]
 ["hello.txt", "z.txt"]
+["hello.txt", "z.txt"]
+["hello.txt", "z.txt"]
 [".", "a", "a/b", "a/b/c", "a/b/c/hello.txt", "a/b/c/z.txt"]
 true
 true

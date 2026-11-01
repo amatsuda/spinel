@@ -345,13 +345,15 @@ class Pathname
     Dir.entries(@path).map { |x| Pathname.new(x) }
   end
 
-  # The children as full paths, without "." and "..".
-  def children
-    Dir.children(@path).sort.map { |x| self + x }
+  # The children without "." and "..": full paths by default, bare names
+  # with `with_directory` false (CRuby's argument of the same name).
+  def children(with_directory = true)
+    names = Dir.children(@path).sort
+    with_directory ? names.map { |x| self + x } : names.map { |x| Pathname.new(x) }
   end
 
-  def each_child
-    out = children
+  def each_child(with_directory = true)
+    out = children(with_directory)
     out.each { |x| yield x }
     out
   end

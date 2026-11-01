@@ -40,7 +40,7 @@ puts f.binread.bytesize
 
 # children are full paths and sorted; entries are bare names
 (deep + "z.txt").write("z")
-puts deep.children.map { |c| c.basename.to_s }.inspect
+puts deep.children.map { |c| c.basename.to_s }.sort.inspect
 puts deep.entries.map { |e| e.to_s }.sort.inspect
 puts deep.empty?
 puts (deep + "z.txt").empty?
@@ -48,6 +48,12 @@ puts (deep + "z.txt").empty?
 seen = []
 deep.each_child { |c| seen.push(c.basename.to_s) }
 puts seen.sort.inspect
+
+# with_directory false answers bare names
+puts deep.children(false).map { |c| c.to_s }.sort.inspect
+names = []
+deep.each_child(false) { |c| names.push(c.to_s) }
+puts names.sort.inspect
 
 # glob is rooted at the directory
 puts deep.glob("*.txt").map { |g| g.basename.to_s }.sort.inspect
