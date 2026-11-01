@@ -205,6 +205,7 @@ src/codegen_call.c root_reopen_defines a Symbol argument's method (respond_to?)
 src/codegen_call.c rt_probe_unfounded a Symbol argument's method (respond_to?)
 src/codegen_call_class.c emit_call_reflection_arms =qm a Symbol argument's method
 src/codegen_call_class.c emit_refl_im_params a reflected method's name
+src/codegen_call_class.c obj_defines_own whether the receiver's class defines the reflection method itself
 src/codegen_call_class.c emit_refl_method_defined a reflected method's name
 src/codegen_call_method.c emit_method_obj_target =disp arity metadata for a boxed receiver's method, not an invocation target
 src/codegen_call_method.c emit_op_method_arity a Symbol argument's method
