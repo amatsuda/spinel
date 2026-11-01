@@ -621,6 +621,8 @@ void comp_free(Compiler *c) {
   free(c->classes);
   free(c->class_head);
   free(c->class_next);
+  free(c->class_def_head);
+  free(c->class_def_next);
   free(c->cls_value);
   for (int i = 0; i < c->ngvars; i++) free(c->gvars[i].name);
   free(c->gvars);
@@ -1033,17 +1035,40 @@ static void class_hash_link(Compiler *c, int i) {
   c->class_next[i] = c->class_head[b];
   c->class_head[b] = i;
 }
+/* def node -> class index: chains over the classes' def_node, in the name
+   chains' buckets. A def_node is not unique (a builder write makes several
+   classes, Toplevel and the made-up classes have none), so each chain is
+   kept in ascending index and walked for the node's classes in turn. A
+   class is linked once comp_class_new has set its def_node, and moved by
+   comp_class_set_def, the one writer after it. */
+static void class_def_link(Compiler *c, int i) {
+  int d = c->classes[i].def_node, *p;
+  c->class_def_next[i] = -1;
+  if (d < 0) return;
+  for (p = &c->class_def_head[(unsigned)d % (unsigned)c->class_buckets]; *p >= 0 && *p < i; p = &c->class_def_next[*p]) {}
+  c->class_def_next[i] = *p;
+  *p = i;
+}
+static void class_def_unlink(Compiler *c, int i) {
+  int d = c->classes[i].def_node, *p;
+  if (d < 0) return;
+  for (p = &c->class_def_head[(unsigned)d % (unsigned)c->class_buckets]; *p >= 0 && *p != i; p = &c->class_def_next[*p]) {}
+  if (*p == i) *p = c->class_def_next[i];
+}
 static void class_hash_add(Compiler *c, int i) {
   if (c->nclasses > c->class_buckets) {
     if (!c->class_buckets) c->class_hash_check = elab_check_on(c);
     int nb = c->class_buckets ? c->class_buckets * 2 : 64;
     free(c->class_head);
+    free(c->class_def_head);
     c->class_head = malloc(sizeof(int) * (size_t)nb);
     c->class_next = realloc(c->class_next, sizeof(int) * (size_t)nb);
-    if (!c->class_head || !c->class_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    for (int b = 0; b < nb; b++) c->class_head[b] = -1;
+    c->class_def_head = malloc(sizeof(int) * (size_t)nb);
+    c->class_def_next = realloc(c->class_def_next, sizeof(int) * (size_t)nb);
+    if (!c->class_head || !c->class_next || !c->class_def_head || !c->class_def_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int b = 0; b < nb; b++) c->class_head[b] = c->class_def_head[b] = -1;
     c->class_buckets = nb;
-    for (int k = 0; k < i; k++) class_hash_link(c, k);
+    for (int k = 0; k < i; k++) { class_hash_link(c, k); class_def_link(c, k); }
   }
   class_hash_link(c, i);
 }
@@ -1071,6 +1096,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   int core = builtin_core_class_slot(name);
   if (core >= 0 && c->core_cls[core] < 0) c->core_cls[core] = ci->idx;
   { ci->def_node = def_node; comp_touch_class(ci->idx); }
+  class_def_link(c, ci->idx);
   if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
   ci->parent = -1;
   ci->enclosing_class = -1;
@@ -1104,6 +1130,39 @@ int comp_class_index(Compiler *c, const char *name) {
     if (k != i) fprintf(stderr, "spinel: class index check: %s is class %d, the scan finds %d\n", name, i, k);
   }
   return i;
+}
+
+/* The lowest-index class whose def_node is node, -1 for none, and the next
+   class of the same def_node after k. SPINEL_ELAB_CHECK=1 also scans the
+   classes and reports where the chains answer otherwise. */
+static int class_def_scan(const Compiler *c, int node, int from) {
+  int k = from;
+  while (k < c->nclasses && c->classes[k].def_node != node) k++;
+  return k < c->nclasses ? k : -1;
+}
+static int class_def_from(const Compiler *c, int node, int i) {
+  for (; i >= 0 && c->classes[i].def_node != node; i = c->class_def_next[i]) {}
+  return i;
+}
+int comp_class_of_def(const Compiler *c, int node) {
+  if (node < 0 || !c->class_buckets) return -1;
+  int i = class_def_from(c, node, c->class_def_head[(unsigned)node % (unsigned)c->class_buckets]);
+  if (c->class_hash_check && class_def_scan(c, node, 0) != i)
+    fprintf(stderr, "spinel: class index check: def node %d is class %d, the scan finds %d\n", node, i, class_def_scan(c, node, 0));
+  return i;
+}
+int comp_class_def_next(const Compiler *c, int k) {
+  int node = c->classes[k].def_node;
+  if (node < 0) return -1;
+  int i = class_def_from(c, node, c->class_def_next[k]);
+  if (c->class_hash_check && class_def_scan(c, node, k + 1) != i)
+    fprintf(stderr, "spinel: class index check: def node %d after class %d is class %d, the scan finds %d\n", node, k, i, class_def_scan(c, node, k + 1));
+  return i;
+}
+void comp_class_set_def(Compiler *c, int k, int node) {
+  class_def_unlink(c, k);
+  { c->classes[k].def_node = node; comp_touch_class(c->classes[k].idx); }
+  class_def_link(c, k);
 }
 
 /* The first-created class of core slot k, or -1 before it is made. */

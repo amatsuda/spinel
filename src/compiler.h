@@ -1426,6 +1426,7 @@ typedef struct {
   int nclasses, cclasses;
   int toplevel_class;
   int *class_head, *class_next, class_buckets;   /* name -> class index (comp_class_index) */
+  int *class_def_head, *class_def_next;   /* def node -> class index (comp_class_of_def), same buckets */
   unsigned char class_hash_check;   /* SPINEL_ELAB_CHECK: each lookup also scans the classes */
   int object_standin;   /* +1-based index (0 = none) of the empty root class an
                           `o = Object.new` binding's singleton subclass stands
@@ -2003,6 +2004,11 @@ int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 /* The first-created class for a CORE_* slot, -1 if no class has been made
    or the slot is negative. */
 int        comp_core_class(const Compiler *c, int k);   /* CORE_* or a negative slot; -1 if none */
+/* The classes whose def_node is node, lowest index first: a builder write
+   makes several. -1 if none (or node < 0). */
+int        comp_class_of_def(const Compiler *c, int node);
+int        comp_class_def_next(const Compiler *c, int k);   /* the next class of k's def_node, -1 */
+void       comp_class_set_def(Compiler *c, int k, int node);   /* the one writer after comp_class_new */
 int        comp_any_computed_ivar_set(Compiler *c);
 int        comp_is_wellknown_const(const char *cn);
 int        const_name_resolves_top_level(Compiler *c, const char *cn);

@@ -447,8 +447,13 @@ int elab_const_first_write(Compiler *c, const char *name, int *early);
 int elab_const_own_at(Compiler *c, int owner, const char *name, LoadPoint p, const LrDef **out);
 /* the class constant reference node (a ConstantReadNode or
    ConstantPathNode) names where it stands, as the record resolves it
-   there; -1 for Object (main's), below -1 for one it does not know */
-int elab_class_ref_at(Compiler *c, int node);
+   there; -1 for Object (main's), below -1 for one it does not know.
+   Asked after recording, it answers at the node's source position (the
+   call plan's frame), and not known for a node the frame cannot place.
+   *core (when non-NULL): the CORE_* slot of the builtin the reference
+   names when Object holds no program constant of that name (reopened,
+   reopened later, or not), else -1. */
+int elab_class_ref_at(Compiler *c, int node, int *core);
 /* is node a value no module can be there: a builtin's own constructor
    (`Object.new`), or a constant holding one? */
 int elab_value_not_module(Compiler *c, int node);

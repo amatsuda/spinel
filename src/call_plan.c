@@ -1308,7 +1308,7 @@ void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void 
   }
   int r = nt_ref(nt, id, "receiver");
   NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
-  int cref = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode, rc = cref ? elab_class_ref_at(c, r) : -1;
+  int cref = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode, rc = cref ? elab_class_ref_at(c, r, NULL) : -1;
   /* a constant the record cannot settle to one class (one a run-time
      condition defines, or binds to either of two) names one of the classes
      its writes may bind there, when the record can list them */
@@ -1362,7 +1362,7 @@ static const char *cm_self_name(Compiler *c, int self, char *buf, size_t cap) {
 /* See call_plan.h. */
 int cplan_const_recv_class(Compiler *c, int id, int recv) {
   int framed = elab_plan_enter(c, id);
-  int ci = elab_class_ref_at(c, recv);
+  int ci = elab_class_ref_at(c, recv, NULL);
   if (framed) elab_plan_leave(c);
   return ci;
 }
