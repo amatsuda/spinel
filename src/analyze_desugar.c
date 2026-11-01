@@ -13254,7 +13254,8 @@ int desugar_conditional_defs(Compiler *c) {
     free(nm);
     /* the dispatcher answers the name before any arm's branch has run,
        whatever the number of arms: a list of methods asks them
-       (ver_list_held) */
+       (ver_list_held), and the record answers such a def as possibly
+       made, not made (elab_own_method_at) */
     nt_node_set_int(nt, def, "cond_lone_disp", 1); c->ncond_disp++;
     cdef_insert_after(nt, g[ng - 1].tst, g[ng - 1].top, *g[0].vis ? fwd_new_call(nt, -1, g[0].vis, def) : def);
     serial += ng;
@@ -25732,7 +25733,7 @@ static int sce_eval_args(const NodeTable *nt, int st, const int **avp, int *anp)
       int la = nt_ref(nt, l, "arguments"), ln = 0;
       const int *lv = la >= 0 ? nt_arr(nt, la, "arguments", &ln) : NULL;
       int lr = nt_ref(nt, l, "receiver");
-      if (!op || !(is_add_sub(op)) || ln != 1 || !lv || lr < 0 ||
+      if (!op || !(is_add_sub(op)) || ln != 1 || !lv || lr < 0 || nt_call_block_arg(nt, l) >= 0 ||
           nt_kind(nt, lr) != NK_SourceLineNode || nt_kind(nt, lv[0]) != NK_IntegerNode)
         return 0;
     }
@@ -25823,6 +25824,15 @@ static char *sce_text(const NodeTable *nt, int str, const char *var, const char 
     free(v);
   }
   return buf;
+}
+/* The operator of the `__LINE__ + k` / `__LINE__ - k` that is class_eval
+   call site's third argument; NULL when it has another */
+static const char *sce_line_op(const NodeTable *nt, int site) {
+  int an = 0; int args = nt_ref(nt, site, "arguments");
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 3 || !av || nt_kind(nt, av[2]) != NK_CallNode) return NULL;
+  const char *op = nt_str(nt, av[2], "name");
+  return op && is_add_sub(op) ? op : NULL;
 }
 /* The line the eval's text starts on: the `__LINE__` / `__LINE__ + k` it is
    given, else the call's own line; -1 when the program has no lines. */
@@ -25997,8 +26007,17 @@ static void sce_text_walk(NodeTable *t, int id, int nest, int in_def, SceText *w
    nt; up and k name its own locals apart (SceText). 0, or -1 when it does
    not parse or reads what the graft cannot keep. */
 static int sce_graft(Compiler *c, const SceFrame *fr, SceText *up, int k, const char *text, int site,
-                     int **out, int *n) {
+                     const LoadPoint *at, int **out, int *n) {
   NodeTable *nt = (NodeTable *)c->nt;
+  /* a macro's text runs where the macro was called (at), with the load
+     record made: the line argument's `+` or `-` is Integer's, which the
+     program may have defined by then. Only a definition the record shows
+     ran declines; one it cannot decide (under a condition) keeps the fold,
+     as before. The written graft runs ahead
+     of the record and does not ask. */
+  const char *lop = at ? sce_line_op(nt, site) : NULL;
+  int ci = lop ? comp_core_class(c, CORE_INTEGER) : -1;
+  if (ci >= 0 && elab_own_method_at(c, ci, lop, *at) == ELAB_YES) return -1;
   SceText w = { c, fr, { 0 }, 0, site, k, up, "", NULL, 0, 0 };
   /* `__FILE__` in a class_eval within an eval's text: that eval's path */
   char *dflt = NULL;
@@ -26047,7 +26066,7 @@ static int sce_graft(Compiler *c, const SceFrame *fr, SceText *up, int k, const 
         inf.n = fr->n + 1;
       }
       char *itext = sce_text(nt, str, NULL, NULL);
-      ok = itext && sce_graft(c, &inf, &w, i, itext, id, out, n) >= 0;
+      ok = itext && sce_graft(c, &inf, &w, i, itext, id, at, out, n) >= 0;
       free(itext);
     }
   }
@@ -26617,7 +26636,7 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
     SceFrame fr = { &scope, known };
     if (str >= 0) {
       char *text = sce_text(nt, str, NULL, NULL);
-      if (text) { ok = sce_graft(c, &fr, NULL, -1, text, st, &ins, &nins) >= 0; free(text); }
+      if (text) { ok = sce_graft(c, &fr, NULL, -1, text, st, NULL, &ins, &nins) >= 0; free(text); }
     }
     else if (each) {
       /* CONST.each do |v| class_eval "..." end, or %w(a b).each */
@@ -26642,7 +26661,7 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
         ok = 1;
         for (int e = 0; e < ne && ok; e++) {
           char *text = sce_text(nt, estr, var, elems[e]);
-          if (!text || sce_graft(c, &bfr, NULL, e, text, ss[0], &ins, &nins) < 0) ok = 0;
+          if (!text || sce_graft(c, &bfr, NULL, e, text, ss[0], NULL, &ins, &nins) < 0) ok = 0;
           free(text);
         }
         sce_scope_free(&bs[1]);
@@ -26708,10 +26727,12 @@ int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const
 /* The statements `text` becomes as the code of class_eval call `site`
    (a macro's, whose text the evaluator computed) run in owner's body: parsed
    with the site's file and line arguments, in a frame not known (the
-   macro's, whose locals the body does not have), into *out (*n). 0, or -1
-   where the graft does not take it, as it would not take the same text
-   written at the site; nothing is placed. */
-int sce_graft_text(Compiler *c, HostStep *h, int owner, const char *text, int site, int **out, int *n) {
+   macro's, whose locals the body does not have), into *out (*n), where the
+   macro was called (at). 0, or -1 where the graft does not take it, as it
+   would not take the same text written at the site (or, for a line argument
+   that adds with an Integer#+ the record shows changed at `at`, as the
+   written one does not ask); nothing is placed. */
+int sce_graft_text(Compiler *c, HostStep *h, int owner, const char *text, int site, LoadPoint at, int **out, int *n) {
   const NodeTable *nt = c->nt;
   struct SceFacts *f = sce_facts(h);
   const int *av = NULL;
@@ -26720,7 +26741,7 @@ int sce_graft_text(Compiler *c, HostStep *h, int owner, const char *text, int si
   if (f->gate < 0) f->gate = sce_program_reflects_scoped(nt, &f->scoped);
   if (f->gate > 0 || (f->scoped.n > 0 && sce_scoped_reaches(nt, &f->scoped, owner, 0))) return -1;
   SceFrame fr = { NULL, 0 };
-  int r = sce_graft(c, &fr, NULL, -1, text, site, out, n);
+  int r = sce_graft(c, &fr, NULL, -1, text, site, &at, out, n);
   comp_grow_node_arrays(c);
   return r;
 }

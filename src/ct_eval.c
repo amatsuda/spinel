@@ -35,6 +35,15 @@ int ct_same_string(const CtVal *a, const CtVal *b) {
   return a->k == CT_VALUE && b->k == CT_VALUE && a->mv.k == MV_STR && b->mv.k == MV_STR && a->mv.s == b->mv.s;
 }
 
+void ct_env_relied(CtEnv *e, const char *meth) {
+  for (int i = 0; i < e->nrelied; i++)
+    if (e->relied[i].after == e->nfx && strcmp(e->relied[i].name, meth) == 0) return;
+  e->relied = ct_grow(e->relied, &e->crelied, e->nrelied + 1, sizeof *e->relied);
+  e->relied[e->nrelied].name = ct_strdup(meth);
+  e->relied[e->nrelied].after = e->nfx;
+  e->nrelied++;
+}
+
 static CtFx *ct_fx(CtEnv *e, CtFxKind k, int site) {
   e->fx = ct_grow(e->fx, &e->cfx, e->nfx + 1, sizeof *e->fx);
   CtFx *f = &e->fx[e->nfx++];
@@ -102,11 +111,12 @@ void ct_env_free(CtEnv *e) {
   for (int i = 0; i < e->ncls; i++) free(e->cls[i].name);
   for (int i = 0; i < e->nfx; i++) ct_fx_clear(&e->fx[i]);
   for (int i = 0; i < e->nran; i++) { free((char *)e->ran[i].cls); free((char *)e->ran[i].meth); }
+  for (int i = 0; i < e->nrelied; i++) free(e->relied[i].name);
   for (int i = 0; i < e->nframes; i++) {
     for (int j = 0; j < e->frames[i].nloc; j++) free(e->frames[i].loc[j].name);
     free(e->frames[i].loc);
   }
-  free(e->cls); free(e->fx); free(e->ran); free(e->frames);
+  free(e->cls); free(e->fx); free(e->ran); free(e->relied); free(e->frames);
   memset(e, 0, sizeof *e);
 }
 
@@ -224,9 +234,11 @@ static int ct_class_new(const NodeTable *nt, CtEnv *e, int call, CtVal *out) {
 
 /* is call `call` on self (no receiver, or `self`), a core method of it the
    frame lets run: macro mode only */
-static int ct_self_core(const NodeTable *nt, const CtEnv *e, int call, const char *name) {
+static int ct_self_core(const NodeTable *nt, CtEnv *e, int call, const char *name) {
   int rv = nt_ref(nt, call, "receiver");
-  return e->self_name && name && (rv < 0 || nt_kind(nt, rv) == NK_SelfNode) && e->self_core(e->host, name);
+  if (!(e->self_name && name && (rv < 0 || nt_kind(nt, rv) == NK_SelfNode) && e->self_core(e->host, name))) return 0;
+  ct_env_relied(e, name);
+  return 1;
 }
 
 static int ct_eval_call(const NodeTable *nt, CtEnv *e, int call, CtVal *out) {
@@ -367,7 +379,7 @@ static int ct_attr_name(const char *s) {
 /* is rv self's singleton class: `singleton_class` on self, Kernel's, or
    `(class << self; self; end)`, which desugar_singleton_body_self spells
    `(class << self; end; self.singleton_class)` */
-static int ct_self_singleton(const NodeTable *nt, const CtEnv *e, int rv) {
+static int ct_self_singleton(const NodeTable *nt, CtEnv *e, int rv) {
   int bn = 0;
   const int *bb = NULL;
   switch (nt_kind(nt, rv)) {
@@ -540,7 +552,10 @@ static int ct_exec_call(const NodeTable *nt, CtEnv *e, int call) {
   /* another macro on self: what its frame does, this one does */
   if (e->self_macro && name && blk < 0 && (rv < 0 || nt_kind(nt, rv) == NK_SelfNode)) {
     int def = e->self_macro(e->host, name);
-    if (def >= 0) return ct_run_macro(nt, e, call, def);
+    if (def >= 0) {
+      ct_env_relied(e, name);
+      return ct_run_macro(nt, e, call, def);
+    }
   }
   /* attr_* of self or of its singleton class, by names the frame computes */
   if (e->self_name && name && argc > 0 && blk < 0 && (is_attr_reader_family(name) || is_attr_writer_family(name))) {

@@ -84,6 +84,9 @@ typedef struct {
 /* a core method the evaluation ran: on an instance of `cls`, or (a class
    method) on the class itself */
 typedef struct { const char *cls; const char *meth; } CtRan;
+/* a name the evaluator took a call on self to reach what the record says,
+   with how many effects had run before it did */
+typedef struct { char *name; int after; } CtRelied;
 /* a macro frame: the def whose body ran for call `call` of frame parent's
    (-1: the first), its locals as the body left them */
 typedef struct { int def, call, parent; CtLocal *loc; int nloc; } CtFrame;
@@ -93,6 +96,7 @@ typedef struct {
   CtClass *cls; int ncls, ccls;
   CtFx *fx; int nfx, cfx;
   CtRan *ran; int nran, cran;
+  CtRelied *relied; int nrelied, crelied;
   /* macro mode: a class-body macro's frame, whose self is the class named
      self_name. self_core(host, m) answers whether a call of m on self
      reaches the core method (Module's), not one of the program's: only
@@ -130,6 +134,9 @@ void ct_env_new_call(CtEnv *e);
 int ct_same_string(const CtVal *a, const CtVal *b);
 /* note that core method cls#meth ran */
 void ct_env_ran(CtEnv *e, const char *cls, const char *meth);
+/* note that a call of meth on self was taken to reach what the record says,
+   with the effects that ran so far before it */
+void ct_env_relied(CtEnv *e, const char *meth);
 void ct_env_free(CtEnv *e);
 
 #endif

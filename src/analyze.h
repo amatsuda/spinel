@@ -252,6 +252,8 @@ void elab_record_builders(Compiler *c);
    hook (`inherited`, `included`, `method_added`, ...) is asked as the
    singleton method it is: sg = 1. */
 int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out);
+/* ...and whether the program gives cls's instance side a method `name` of its own at p, or through a prepend: what shadows the class's own core method (an ancestor's, a Numeric's or Object's, does not, nor an include's); ELAB_YES also for one removed, ELAB_UNKNOWN for one that may not have run (under a condition) */
+int elab_own_method_at(Compiler *c, int cls, const char *name, LoadPoint p);
 /* is the history of cls's method `name` (singleton when sg) open: does a
    version after its last surely applied one (applied 1, lr_stmt_applied)
    stand under a run-time condition in its class body (applied 2), or in an

@@ -730,7 +730,11 @@ int desugar_table_loops(Compiler *c) {
    answered a method_defined? query of one of the macro's names before the
    walk (def_asked). The program changes none of the core methods the macro
    ran, and no macro has defined a method of that name (ct_core_method_changed,
-   asked once per walk of each). The block must not write the macro's
+   asked once per walk of each). A text's line argument that adds or subtracts
+   is Integer's, which the record must show unchanged at the call's point
+   (sce_graft). No effect of the run gives self's singleton class a method of
+   a name a later call on self was taken to reach the record's answer for
+   (ct_relied_redefined). The block must not write the macro's
    locals, yield to its block, ask block_given? or read its binding; it
    reads a constant or class variable only when the macro is defined in the
    same body as the call (both are lexical); a String of the frame only for
@@ -1076,6 +1080,28 @@ static int ct_name_made(void *arg, const char *name) {
   return 1;
 }
 
+static int ct_name_is(void *arg, const char *name) {
+  return !ct_eq(*(const char **)arg, name);
+}
+/* Did an effect that ran before a call of some name on self was taken to
+   reach what the record says give self's singleton class a method of that
+   name: a def of its text (tid[f], tn[f]), a define_singleton_method or an
+   attr_* of the singleton class? The record at the macro call's point does
+   not hold them (ct_text_stmts parses a text after the run), and the call
+   reaches them. */
+static int ct_relied_redefined(const NodeTable *nt, const CtEnv *e, int *const *tid, const int *tn) {
+  for (int a = 0; a < e->nrelied; a++) {
+    const char *meth = e->relied[a].name;
+    for (int f = 0; f < e->relied[a].after; f++) {
+      const CtFx *x = &e->fx[f];
+      for (int i = 0; x->k == CT_FX_EVAL && i < tn[f]; i++)
+        if (nt_ref(nt, tid[f][i], "receiver") >= 0 && ct_eq(nt_str(nt, tid[f][i], "name"), meth)) return 1;
+      if (x->sg && !ct_fx_each_name(x, ct_name_is, &meth)) return 1;
+    }
+  }
+  return 0;
+}
+
 /* Is effect f's statement the value of the macro call: its frame's last
    statement, in a frame whose call is its caller's last, up to the first */
 static int ct_fx_answers(const NodeTable *nt, const CtEnv *e, const CtFx *f) {
@@ -1170,7 +1196,7 @@ static int ct_fx_stmt(CtBind *b, Compiler *c, int list, int call, const CtFx *f)
 static int ct_text_stmts(Compiler *c, HostStep *h, int frame, int cls, LoadPoint p, const CtFx *f, int **ids, int *n) {
   NodeTable *nt = (NodeTable *)c->nt;
   *ids = NULL; *n = 0;
-  if (nt_kind(nt, frame) != NK_ClassNode || sce_graft_text(c, h, frame, f->name, f->site, ids, n) < 0) return 0;
+  if (nt_kind(nt, frame) != NK_ClassNode || sce_graft_text(c, h, frame, f->name, f->site, p, ids, n) < 0) return 0;
   int ok = 1, nn = 0;
   for (int i = 0; i < *n && ok; i++) {
     int d = (*ids)[i], rv = nt_ref(nt, d, "receiver");
@@ -1259,7 +1285,7 @@ int ct_macro_form(Compiler *c, int call, int list, int j) {
     ok = ok && (k == CT_FX_DEFINE_METHOD || k == CT_FX_ATTR || k == CT_FX_LOCAL || k == CT_FX_RESIDUAL || k == CT_FX_EVAL);
     if (ok) ok = ct_fx_each_name(&e.fx[f], ct_name_unasked, c);
   }
-  if (ok) ok = defs > 0 && !ct_macro_core_changed(c, h, e.ran, e.nran);
+  if (ok) ok = defs > 0 && !ct_macro_core_changed(c, h, e.ran, e.nran) && !ct_relied_redefined(nt, &e, tid, tn);
   /* the code each effect carries must run where the call stands; a local
      a promoted local's value reads may need promoting too */
   CtBind b = { nt, &e, 0, 0, 0, 0, 0, NULL, NULL, 0, 0 };
