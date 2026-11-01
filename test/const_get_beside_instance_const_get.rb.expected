@@ -1,0 +1,8 @@
+[FooHelper, BarHelper, FooHelper]
+true
+false
+NameError BazHelper
+"the key"
+"another"
+"registered"
+"missing"

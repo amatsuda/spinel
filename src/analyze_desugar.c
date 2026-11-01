@@ -2638,6 +2638,36 @@ int desugar_constant_path_self_alias(Compiler *c) {
   return changed;
 }
 
+/* Whether scope S, a method named const_get or const_defined?, may answer
+   such a call on a class or module. An instance method of a class that is
+   not Module, Class or one of their subclasses answers only that class's
+   objects (an options object answering any key by name has a const_get);
+   a class method, a module's method (an `extend` makes it a singleton
+   method) and a top-level or Object method may answer a class. */
+static int user_const_method_reaches_module(Compiler *c, int s) {
+  const Scope *sc = &c->scopes[s];
+  if (sc->is_cmethod || sc->class_id < 0) return 1;
+  ClassInfo *ci = &c->classes[sc->class_id];
+  if (comp_class_is_module(c, ci)) return 1;
+  for (int k = sc->class_id, hops = 0; k >= 0 && hops < c->nclasses; k = c->classes[k].parent, hops++) {
+    const char *cn = c->classes[k].name;
+    if (cn && (sp_streq(cn, "Module") || sp_streq(cn, "Class") || sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) return 1;
+  }
+  return 0;
+}
+
+/* Whether RECV of the const_get CALL is surely a class or module: a constant
+   naming one of the program's, or Object, or self in a class method. */
+static int const_get_recv_is_module(Compiler *c, int call, int recv) {
+  NodeKind rk = nt_kind(c->nt, recv);
+  if (rk == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, call);
+    return s && s->is_cmethod;
+  }
+  const char *rn = const_get_recv_name(c, call, recv);
+  return rn && (sp_streq(rn, "Object") || comp_class_index(c, rn) >= 0);
+}
+
 /* Where desugar_dynamic_const_get_arms stashes the arms of a call named NM,
    or NULL when it leaves the call alone (another name, or one the program
    defines itself). */
@@ -2808,12 +2838,17 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
-  /* a user-defined const_get / const_defined? resolves normally; don't
-     intercept that name */
-  int user_get = 0, user_def = 0;
+  /* a user-defined const_get / const_defined? that may answer a class
+     resolves normally; don't intercept that name. One only a class's
+     objects answer (inst_get, inst_def) leaves the calls on a receiver
+     that is surely a class or module. */
+  int user_get = 0, user_def = 0, inst_get = 0, inst_def = 0;
   for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
-    if (sn && sp_streq(sn, "const_get")) user_get = 1;
-    if (sn && sp_streq(sn, "const_defined?")) user_def = 1; }
+    int g = sn && sp_streq(sn, "const_get"), d = sn && sp_streq(sn, "const_defined?");
+    if (!g && !d) continue;
+    int reaches = user_const_method_reaches_module(c, s);
+    if (g) { if (reaches) user_get = 1; else inst_get = 1; }
+    if (d) { if (reaches) user_def = 1; else inst_def = 1; } }
   int any = 0;
   for (int id = 0; id < n0 && !any; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
@@ -2840,6 +2875,7 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
     if (!stash) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
+    if ((sp_streq(nm, "const_get") ? inst_get : inst_def) && !const_get_recv_is_module(c, id, recv)) continue;
     { int dn = 0; nt_arr(nt, id, stash, &dn); if (dn > 0) continue; }
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
