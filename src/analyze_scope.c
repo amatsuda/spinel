@@ -1659,11 +1659,13 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       refuse_native_class_reopen(c, id, cp, class_id, cls_leaf);
     child_class = elab_rec_open(c, id, cp, cname, class_cref(c, class_id));
   }
-  /* `X = Class.new(S) do ... end`: the class is made at the write, as a
-     header's, and the block is walked with the class as self and definee
-     (bclass1); its constants stay the cref's */
-  else if (class_def_builder(c->nt, id) >= 0)
-    builder_class = elab_rec_open(c, id, -1, class_def_name(c->nt, id), class_cref(c, class_id));
+  /* `X = Class.new(S) do ... end`, `A::B = Module.new do ... end`: the class
+     is made at the write, as a header's, and the block is walked with the
+     class as self and definee (bclass1); its constants stay the cref's */
+  else if (class_def_builder(c->nt, id) >= 0) {
+    int cp = class_def_path(c->nt, id);
+    builder_class = elab_rec_open(c, id, cp == id ? -1 : cp, class_def_name(c->nt, id), class_cref(c, class_id));
+  }
   else if (ty_k == NK_DefNode) {
     const char *name = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_new(c, name, id);
@@ -2303,33 +2305,36 @@ int is_c_ident(const char *s);
 /* The node kinds a definition can be, in the order a pass that iterates
    every definition takes them: kind by kind (NT_FOREACH_KIND over each,
    its ids ascending), the class headers, the module headers, then the
-   constant writes a builder's class may be (class_def_builder). A loop
+   constant and constant path writes a builder's class may be
+   (class_def_builder). A loop
    over them asks each node the fact it needs (class_def_opens_frame,
    class_def_opens_cref, class_def_is_class, class_def_is_module). *n
    receives the count. */
 const NodeKind *class_def_kinds(int *n) {
-  static const NodeKind kinds[] = { NK_ClassNode, NK_ModuleNode, NK_ConstantWriteNode };
+  static const NodeKind kinds[] = { NK_ClassNode, NK_ModuleNode, NK_ConstantWriteNode, NK_ConstantPathWriteNode };
   *n = (int)(sizeof kinds / sizeof kinds[0]);
   return kinds;
 }
 
 /* ...of those, the kinds a module's definition can be (the kinds whose
    node class_def_is_module can answer yes: a module header, a Module.new
-   builder's write): a loop that looks for modules only takes these, and
-   asks each node class_def_is_module still, so it does not meet every
-   class of the program per question. */
+   builder's constant or path write): a loop that looks for modules only
+   takes these, and asks each node class_def_is_module still, so it does
+   not meet every class of the program per question. */
 const NodeKind *class_def_module_kinds(int *n) {
-  static const NodeKind kinds[] = { NK_ModuleNode, NK_ConstantWriteNode };
+  static const NodeKind kinds[] = { NK_ModuleNode, NK_ConstantWriteNode, NK_ConstantPathWriteNode };
   *n = (int)(sizeof kinds / sizeof kinds[0]);
   return kinds;
 }
 
 /* The Class.new or Module.new call a constant write holds as its value
-   (`X = Class.new(S) do ... end`), the write being the class's definition:
-   the call, -1 for any other node. Its block is the class's body and its
-   first argument the superclass; the block opens a frame (self and
-   definee are the class) but no cref. A path write (`A::B = Class.new do
-   ... end`) is no definition yet: it stays a value. */
+   (`X = Class.new(S) do ... end`, `A::B = Module.new do ... end`), the
+   write being the class's definition: the call, -1 for any other node. Its
+   block is the class's body and its first argument the superclass; the
+   block opens a frame (self and definee are the class) but no cref. A path
+   write defines its class only where mark_path_builders marked it, under a
+   namespace the program defines before it; any other path write stays a
+   value. */
 static int builder_call_of(const NodeTable *nt, int def_node, int *module) {
   int val = nt_ref(nt, def_node, "value"), recv = val >= 0 ? nt_ref(nt, val, "receiver") : -1;
   if (recv < 0 || nt_kind(nt, val) != NK_CallNode || nt_kind(nt, recv) != NK_ConstantReadNode) return -1;
@@ -2337,15 +2342,18 @@ static int builder_call_of(const NodeTable *nt, int def_node, int *module) {
   int blk = nt_ref(nt, val, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
   *module = is_module_new(rn, mn);
-  return *module || is_class_new(rn, mn) ? val : -1;
+  if (!*module && !is_class_new(rn, mn)) return -1;
+  if (nt_kind(nt, def_node) == NK_ConstantPathWriteNode && !nt_str(nt, def_node, "ns_defined_before")) return -1;
+  return val;
 }
-/* The builder call of a constant write (-1: none), and in *module whether
-   it is Module.new. The loops over class_def_kinds ask every constant
-   write, per question, so the answer is found once per write while the
-   table holds (NtBuilders); -1 for any other node. */
+/* The builder call of a constant or constant path write (-1: none), and in
+   *module whether it is Module.new. The loops over class_def_kinds ask
+   every such write, per question, so the answer is found once per write
+   while the table holds (NtBuilders); -1 for any other node. */
 static int builder_call(const NodeTable *nt, int def_node, int *module) {
   *module = 0;
-  if (def_node < 0 || nt_kind(nt, def_node) != NK_ConstantWriteNode) return -1;
+  NodeKind k = def_node >= 0 ? nt_kind(nt, def_node) : NK_NONE;
+  if (k != NK_ConstantWriteNode && k != NK_ConstantPathWriteNode) return -1;
   NodeTable *m = (NodeTable *)nt;   /* the index is the table's own */
   struct NtBuilders *b = m->builders;
   if (!b && !(b = m->builders = calloc(1, sizeof *b))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -2378,10 +2386,11 @@ int class_def_builder(const NodeTable *nt, int def_node) {
   return builder_call(nt, def_node, &module);
 }
 
-/* The constant node a definition writes: a header's path, or a builder's
-   write itself (`X = Class.new`) */
+/* The constant node a definition writes: a header's path, a builder's
+   write itself (`X = Class.new`) or its path target (`A::B = Class.new`) */
 int class_def_path(const NodeTable *nt, int def_node) {
-  return class_def_builder(nt, def_node) >= 0 ? def_node : nt_ref(nt, def_node, "constant_path");
+  if (class_def_builder(nt, def_node) < 0) return nt_ref(nt, def_node, "constant_path");
+  return nt_kind(nt, def_node) == NK_ConstantPathWriteNode ? nt_ref(nt, def_node, "target") : def_node;
 }
 
 /* The constant name a definition writes: its path's last name (a header's
@@ -2392,7 +2401,8 @@ const char *class_def_name(const NodeTable *nt, int def_node) {
 }
 
 /* ...when the definition writes it as a plain constant (`class X`,
-   `X = Class.new`), not under a path (`class A::X`): NULL otherwise. */
+   `X = Class.new`), not under a path (`class A::X`, `A::X = Class.new`):
+   NULL otherwise. */
 const char *class_def_bare_name(const NodeTable *nt, int def_node) {
   int cp = class_def_path(nt, def_node);
   NodeKind k = cp >= 0 ? nt_kind(nt, cp) : NK_NONE;
@@ -2428,9 +2438,10 @@ int class_def_is_record_call(const NodeTable *nt, int val) {
 int class_def_body(const NodeTable *nt, int def_node) {
   if (def_node < 0) return -1;
   NodeKind k = nt_kind(nt, def_node);
-  if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) return nt_ref(nt, def_node, "body");
+  if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode && k != NK_ConstantPathWriteNode)
+    return nt_ref(nt, def_node, "body");
   int val = nt_ref(nt, def_node, "value");
-  if (!class_def_is_record_call(nt, val) && class_def_builder(nt, def_node) < 0) return -1;
+  if (class_def_builder(nt, def_node) < 0 && (k == NK_ConstantPathWriteNode || !class_def_is_record_call(nt, val))) return -1;
   int blk = nt_ref(nt, val, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
   int bb = nt_ref(nt, blk, "body");
@@ -4589,7 +4600,7 @@ void register_globals_consts(Compiler *c) {
          leaf name is interned flat like a top-level constant. */
       int tgt = nt_ref(nt, id, "target");
       const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
-      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0) {
+      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0 && class_def_builder(nt, id) < 0) {
         LocalVar *cv = comp_const_intern(c, nm);
         if (k == NK_ConstantPathWriteNode) cv->const_def_write = 1;
       }

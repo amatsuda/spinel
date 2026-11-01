@@ -277,6 +277,7 @@ static void sp_fsl_splice(unsigned char **buf, size_t *n, size_t at,
 static int *sp_line_file = NULL;  /* buffer line (1-based) -> file id */
 static int *sp_line_orig = NULL;  /* buffer line (1-based) -> original line */
 static int *sp_line_pop = NULL;
+static void sp_stamp_req_pop(int id, int32_t bl, int32_t ol);
 /* The position a `#<SPINEL_SOURCE>file:line` marker pins for the lines after
    it (0 = none). Kept apart from the physical map above: `__FILE__`,
    `__dir__` and `require_relative` still answer from the file the code is in,
@@ -1199,8 +1200,7 @@ static int flatten_node(pm_node_t *node) {
     int32_t bl = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line);
     int32_t ol = owner ? pm_newline_list_line(&g_parser->newline_list, owner, g_parser->start_line) : 0;
     g_stmt_next++;
-    if (bl >= 1 && bl <= sp_line_map_n && sp_line_pop[bl] > 0 && sp_line_pop[bl] != sp_line_pop[ol])
-      emit_int(id, "req_pop", sp_line_pop[bl]);
+    sp_stamp_req_pop(id, bl, ol);
   }
   if (t != PM_STATEMENTS_NODE) g_owner = t == PM_PROGRAM_NODE ? NULL : node->location.start;
 
@@ -2824,11 +2824,18 @@ static void sp_includes_free(void) {
 #define SP_INSERT_PREFIX "#<SPINEL_INSERT>"
 
 /* A PUSH or INSERT marker's file, after the prefix: its path, and the tier
-   sp_wrap_included wrote ahead of it (SP_LIB_NONE for the program's own) */
+   sp_wrap_included wrote ahead of it (SP_LIB_NONE for the program's own),
+   with SP_FILE_DEFERRED when the marker says the file was spliced from a
+   require in a method, a block or a lambda */
 #define SP_TIER_MARK '\x1f'
+#define SP_DEFER_MARK '\x1e'
+#define SP_FILE_DEFERRED 0x40
 static const char *sp_marker_file(const char *p, size_t *len, int *tier) {
+  int deferred = *len >= 1 && p[0] == SP_DEFER_MARK;
+  if (deferred) { p++; (*len)--; }
   *tier = SP_LIB_NONE;
-  if (*len >= 2 && p[0] == SP_TIER_MARK && p[1] >= '0' && p[1] <= '9') { *tier = p[1] - '0'; *len -= 2; return p + 2; }
+  if (*len >= 2 && p[0] == SP_TIER_MARK && p[1] >= '0' && p[1] <= '9') { *tier = p[1] - '0'; *len -= 2; p += 2; }
+  if (deferred) *tier |= SP_FILE_DEFERRED;
   return p;
 }
 #define SP_POP_PREFIX "#<SPINEL_POP>"
@@ -2907,7 +2914,8 @@ static int sp_in_builtin(const uint8_t *at) {
 }
 
 static char **sp_file_table = NULL;  /* id -> path (declared above flatten) */
-static unsigned char *sp_file_tier = NULL;   /* id -> where `require` found it (SP_LIB_*) */
+static unsigned char *sp_file_tier = NULL;   /* id -> where `require` found it (SP_LIB_*), and
+                                                SP_FILE_DEFERRED */
 static int sp_file_count = 0, sp_file_cap = 0;
 
 /* A file's tier once another require finds it too (one canonical path,
@@ -2919,7 +2927,8 @@ static int sp_tier_merge(int old, int tier) { return tier > old ? tier : old; }
 static int sp_intern_file(const char *path, int tier) {
   for (int i = 0; i < sp_file_count; i++)
     if (strcmp(sp_file_table[i], path) == 0) {
-      sp_file_tier[i] = (unsigned char)sp_tier_merge(sp_file_tier[i], tier);
+      sp_file_tier[i] = (unsigned char)((sp_file_tier[i] | tier) & SP_FILE_DEFERRED |
+                                        sp_tier_merge(sp_file_tier[i] & ~SP_FILE_DEFERRED, tier & ~SP_FILE_DEFERRED));
       return i;
     }
   int cap = sp_file_cap;
@@ -2935,7 +2944,21 @@ static int sp_intern_file(const char *path, int tier) {
 /* The file table's tiers, onto the node table's */
 static void sp_file_tiers_mark(NodeTable *nt) {
   for (int i = 0; i < sp_file_count; i++)
-    if (sp_file_tier[i] != SP_LIB_NONE) nt_put_file_tier(nt, i, sp_file_tier[i]);
+    if ((sp_file_tier[i] & ~SP_FILE_DEFERRED) != SP_LIB_NONE) nt_put_file_tier(nt, i, sp_file_tier[i] & ~SP_FILE_DEFERRED);
+}
+/* Was file fid spliced from a require in a method, a block or a lambda, or
+   inside such a file? */
+static int sp_file_deferred(int fid) {
+  return sp_file_tier && fid >= 0 && fid < sp_file_count && (sp_file_tier[fid] & SP_FILE_DEFERRED);
+}
+/* Stamp top-level statement id, on source line bl under its owner's line ol,
+   with the splice it ends (req_pop) when the two lines' splices differ, and
+   req_deferred when its file was spliced from a require in a method, a block
+   or a lambda, so it runs only when that code does. */
+static void sp_stamp_req_pop(int id, int32_t bl, int32_t ol) {
+  if (bl < 1 || bl > sp_line_map_n || sp_line_pop[bl] <= 0 || sp_line_pop[bl] == sp_line_pop[ol]) return;
+  emit_int(id, "req_pop", sp_line_pop[bl]);
+  if (sp_file_deferred(sp_line_file[bl])) emit_int(id, "req_deferred", 1);
 }
 
 /* In debug mode, wrap an included file's (already-resolved) content with
@@ -2950,8 +2973,10 @@ static char *sp_wrap_included(char *content, const char *path, int tier) {
                + strlen(SP_POP_PREFIX) + 1 + 1;
   char *w = malloc(total + 8);
   if (!w) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  size_t o = tier != SP_LIB_NONE ? (size_t)sprintf(w, SP_PUSH_PREFIX "%c%d%s\n", SP_TIER_MARK, tier, path)
-                                 : (size_t)sprintf(w, SP_PUSH_PREFIX "%s\n", path);
+  const char *dm = tier & SP_FILE_DEFERRED ? (const char[]){ SP_DEFER_MARK, 0 } : "";
+  tier &= ~SP_FILE_DEFERRED;
+  size_t o = tier != SP_LIB_NONE ? (size_t)sprintf(w, SP_PUSH_PREFIX "%s%c%d%s\n", dm, SP_TIER_MARK, tier, path)
+                                 : (size_t)sprintf(w, SP_PUSH_PREFIX "%s%s\n", dm, path);
   memcpy(w + o, content, clen); o += clen;
   if (need_nl) w[o++] = '\n';
   o += (size_t)sprintf(w + o, SP_POP_PREFIX "\n");
@@ -3006,6 +3031,8 @@ else if (strncmp(line, SP_INSERT_PREFIX, strlen(SP_INSERT_PREFIX)) == 0) {
       if (plen >= sizeof(pathbuf)) plen = sizeof(pathbuf) - 1;
       memcpy(pathbuf, fp, plen);
       pathbuf[plen] = '\0';
+      /* a file spliced inside a deferred one runs when that one does */
+      if (sp_file_deferred(stk_file[sp])) tier |= SP_FILE_DEFERRED;
       sp++;
       stk_file[sp] = sp_intern_file(pathbuf, tier);
       stk_next[sp] = 1;
@@ -4145,6 +4172,7 @@ typedef struct {
   int rel_stmt;              /* (in a rewrite) stmt_start and ctl_stmt_start are offsets in its text */
   int plain;                 /* a plain `require` (the load graph's; the plain pass still scans) */
   int line;                  /* the call's line in its file */
+  int deferred;              /* inside a method, a block or a lambda */
 } SpReqSite;
 
 /* A rewrite the tree asks for: the text [a, b) becomes `text`, and the
@@ -4238,6 +4266,10 @@ static void sp_req_site_place(const SpReqSiteScan *s, const pm_node_t *node, SpR
     st->control_only = alone;
     for (int i = 1; st->control_only && i < s->depth; i++)
       if (!sp_node_is_control(s->stack[i])) st->control_only = 0;
+  }
+  for (int i = 0; i < s->depth; i++) {
+    pm_node_type_t at = PM_NODE_TYPE(s->stack[i]);
+    if (at == PM_DEF_NODE || at == PM_BLOCK_NODE || at == PM_LAMBDA_NODE) st->deferred = 1;
   }
   const pm_node_t *top = s->depth > 2 ? s->stack[2] : node;
   st->stmt_start = sp_line_start_of(t, (size_t)((const char *)top->location.start - t));
@@ -5362,6 +5394,7 @@ static char *resolve_requires(SpLoadGraph *g, const char *source, const char *so
     unsigned char *cfsl = NULL; size_t cfsl_n = 0;   /* spliced content's flags */
     /* the run-time part a hoisted require held back (sp_defer_runtime) */
     const char *dval = NULL;
+    int fresh = 0;   /* this splice reads the file */
     if (sp_path_already_included(canonical)) {
       /* Already inlined once -- replace require with empty content */
       content = strdup("# require_relative skipped (already included)");
@@ -5372,6 +5405,7 @@ static char *resolve_requires(SpLoadGraph *g, const char *source, const char *so
       sp_req_resolved++;
     }
 else {
+      fresh = 1;
       sp_mark_path_included(canonical);
       content = read_file(full_path);
       if (!content) {
@@ -5398,7 +5432,7 @@ else {
 
     /* Debug: wrap with PUSH/POP markers so the line map can attribute this
        file's nodes to the right source. No-op outside --debug. */
-    content = sp_wrap_included(content, full_path, SP_LIB_NONE);
+    content = sp_wrap_included(content, full_path, site->deferred && !dval && fresh ? SP_FILE_DEFERRED : SP_LIB_NONE);
     sp_fsl_pad_wrap(&cfsl, &cfsl_n);
 
     /* The call's value is live (a condition, an assignment, a receiver) or a

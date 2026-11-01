@@ -12081,7 +12081,7 @@ static void bls_walk(NodeTable *nt, int id, int lvl, BlsTag *tag) {
 }
 
 static int cdef_arity(const NodeTable *nt, int def);
-/* `X = Class.new do |k| ... end`, `M = Module.new do |m| ... end`: the
+/* `X = Class.new do |k| ... end`, `A::B = Module.new do |m| ... end`: the
    block runs once, at the write, with the class as its one argument, so
    the parameter is a local of the body that holds the class: `k = self`
    as the body's first statement, the block left with no parameters. Only
@@ -19988,6 +19988,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
       continue;
     }
     if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) continue;
+    int omitted = blk < 0;
     /* An omitted block has the same empty class body as `{}`. */
     if (blk < 0) {
       if (ac > (is_module ? 0 : 1)) continue;
@@ -20013,11 +20014,13 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     int reads_outer = cn_reads_outer_local(nt, body, 0) ||
                       cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
     int capture_refusal = reads_outer && !defer_refusals_at(c, id);
-    /* `Name = Class.new(...) do ... end`: the write defines the class
-       (class_def_builder) and keeps its block, which the scope walk opens
-       as a frame at the write; the block's class_eval text is grafted into
-       it */
-    if (!reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode && nt_ref(nt, par, "value") == id) {
+    /* `Name = Class.new(...) do ... end`, `A::B = Module.new do ... end`:
+       the write defines the class (class_def_builder) and keeps its block,
+       which the scope walk opens as a frame at the write; the block's
+       class_eval text is grafted into it. A path write with no block stays
+       an anonymous class the write names. */
+    if (!reads_outer && par >= 0 && nt_ref(nt, par, "value") == id &&
+        (nt_kind(nt, par) == NK_ConstantWriteNode || (!omitted && class_def_builder(nt, par) >= 0))) {
       if (nt_ref(nt, blk, "body") != body) nt_node_set_ref(nt, blk, "body", body);
       cn_host_body(c, h, par, body);
       changed = 1;
@@ -27006,7 +27009,9 @@ static int cbs_path_text(const NodeTable *nt, int p, char *buf, size_t cap, int 
   if (p < 0) return 0;
   NodeKind k = nt_kind(nt, p);
   const char *nm = nt_str(nt, p, "name");
-  if (k == NK_ConstantWriteNode) k = NK_ConstantReadNode;   /* (a builder's write is its own name) */
+  /* (a builder's write is its own name, its path target a path) */
+  if (k == NK_ConstantWriteNode) k = NK_ConstantReadNode;
+  if (k == NK_ConstantPathTargetNode) k = NK_ConstantPathNode;
   if (!nm || (k != NK_ConstantReadNode && k != NK_ConstantPathNode)) return 0;
   if (k == NK_ConstantPathNode) {
     int par = nt_ref(nt, p, "parent");

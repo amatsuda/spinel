@@ -117,7 +117,7 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_rescue_block_bodies_at, desugar_rescue_block_bodies_left, "a block whose body is not a StatementsNode" },
   [LW_MARK_SYM_PROC_BLOCKS] = { "mark_sym_proc_blocks", LF_MARKS, { NK_BlockNode },
     mark_sym_proc_blocks_at, NULL, NULL },
-  [LW_BUILDER_BLOCK_PARAM] = { "desugar_builder_block_param", 0, { NK_ConstantWriteNode },
+  [LW_BUILDER_BLOCK_PARAM] = { "desugar_builder_block_param", 0, { NK_ConstantWriteNode, NK_ConstantPathWriteNode },
     desugar_builder_block_param_at, desugar_builder_block_param_left, "a class builder's block parameter `|k|`" },
   [LW_BODY_LOCAL_SCOPES] = { "desugar_body_local_scopes", LF_SCOPE | LF_FRAMES, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
     desugar_body_local_scopes_at, NULL, "a local of a class body" },
