@@ -38,3 +38,23 @@ begin
 rescue ArgumentError => e
   p e.message
 end
+
+# a boxed nil limit without a block is an endless walk; an infinite
+# Float limit with an Integer step stays an Integer walk
+n = [nil, 2][0]
+s = [2, "x"][0]
+p 1.step(n, s).first(3)
+f = [2, 0.5][1]
+p 1.step(n, f).first(2)
+inf = [1, Float::INFINITY][1]
+1.step(inf, 2) { |v| p v; break if v > 3 }
+def m(l) = 1.step(l, 2) { |v| p v; break if v > 3 }
+m(Float::INFINITY)
+m(4)
+ninf = [1, -Float::INFINITY][1]
+1.step(ninf, -2) { |v| p v; break if v < -2 }
+l = [1, 2.5][1]
+p 1.step(l, s).to_a
+p 1.step(l, f).to_a
+p 1.step(4, f).to_a
+p 1.step([3, nil][0], s).to_a

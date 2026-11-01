@@ -12072,8 +12072,7 @@ int an_rat_operand(Compiler *c, int n, int infer) {
    s = s + 0.5`, a parameter called with 1 and with 0.5) walks boxed too:
    the walk turns into CRuby's Float walk when one is a Float, where the
    Integer loop cut 1.5 to 1 and 0.5 to 0. Under --int-overflow=promote
-   every Integer local is boxed, so there only a Rational one does. A boxed
-   limit without a block stays with emit_step_boxed_limit. */
+   every Integer local is boxed, so there only a Rational one does. */
 int an_step_rat_bound(Compiler *c, int id, int infer) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, id, "arguments");
@@ -12086,10 +12085,11 @@ int an_step_rat_bound(Compiler *c, int id, int infer) {
     TyKind t = infer ? infer_type(c, sv[k]) : comp_ntype(c, sv[k]);
     if (t == TY_FLOAT) flt = 1;
     else if (an_rat_operand(c, sv[k], infer)) rat = 1;
-    /* (a boxed limit only with a block: without one, a nil limit there is
-       an endless Enumerator, which emit_step_boxed_limit builds) */
-    else if (t == TY_POLY && !g_promote_mode && (k == 1 || blk)) poly = 1;
+    else if (t == TY_POLY && !g_promote_mode) poly = 1;
   }
+  /* (without a block, a boxed limit stays with emit_step_boxed_limit: a
+     nil one there is an endless Enumerator, and it takes a boxed step) */
+  if (!blk && poly && !rat && (infer ? infer_type(c, sv[0]) : comp_ntype(c, sv[0])) == TY_POLY) return 0;
   return poly || (rat && !flt);
 }
 
