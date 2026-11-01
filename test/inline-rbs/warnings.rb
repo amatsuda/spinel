@@ -15,7 +15,7 @@ class Shapes
   end
 
   #: (?Integer) -> Integer
-  def optional(x = 1)
+  def optional(x = 1, y = 2)
     x
   end
 

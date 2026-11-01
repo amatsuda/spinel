@@ -100,8 +100,11 @@ accepted and pins nothing (it says the value is unused, not what it is). See
 
 A method uses one signature: a method type or named parameter and return
 lines. Method-type parameters match Ruby parameters by position and keyword
-name. Required positional parameters and keywords, including optional keywords,
-can receive pins.
+name. Required, optional and trailing positional parameters and keywords,
+including optional keywords, can receive pins; each positional takes the
+signature's type of its own kind in order, so `(Integer, ?String, *Symbol,
+Float)` describes `def m(a, b = "", *c, d)`. A rest or `**` parameter stays
+the array or hash its arguments are gathered into, as with `--rbs`.
 A Ruby block parameter without an RBS block declaration remains inferred.
 
 ## Where an annotation attaches
@@ -147,7 +150,7 @@ overridden return can remain inferred while supported parameter types apply.
 | Conflicting applied inline or external declarations | Error naming both locations |
 | Unseedable types: literals, interfaces, tuples, records, procs, `self`/`instance`/`class`, type variables | Warning; ignore the whole annotation |
 | Unknown program class, such as `Regexp` or `Array[Time]` (a builtin class with values of its own, such as `Time` or `File`, applies, and so do `Range` and an exception class: see [Type vocabulary](rbs-extract.md#type-vocabulary)) | Warning naming the type as written; ignore the whole annotation |
-| Optional positional, rest, trailing, rest-keyword, or RBS block parameters | Warning; ignore the whole signature |
+| Positional kinds that differ from the method's (`(?Integer)` for `def m(x)`), a destructuring parameter, or RBS block parameters | Warning; ignore the whole signature |
 | Overloads, `...`, generic method signatures, and superclass/mixin type arguments | Warning; ignore the annotation |
 | Constants and type/module declarations that have no analyzer pin | Warning; ignore the annotation |
 | Unattached annotations and unsupported placements | Warning with the reason; no pin |

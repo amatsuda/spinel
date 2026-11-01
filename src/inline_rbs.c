@@ -703,19 +703,26 @@ static char *ir_sym_name(rbs_parser_t *p, rbs_ast_symbol_t *sym) {
 }
 
 /* Has the def any parameter a seed cannot address by position? Seed
- * parameter slots follow the def's own order, required positionals then
- * keywords; anything between them shifts every slot after it. */
+ * parameter slots follow the def's own order: required, optional, rest and
+ * trailing positionals, then keywords. A destructuring parameter is one slot
+ * the signature types as a whole, which the seed cannot split. */
 static const char *ir_unseedable_params(const ir_param *ps, int n) {
-    for (int i = 0; i < n; i++) {
-        switch (ps[i].kind) {
-            case 'o': return "the method has an optional positional parameter";
-            case '*': return "the method has a rest parameter";
-            case 'p': return "the method has a parameter after its rest parameter";
-            case 'x': return "the method has a destructuring parameter";
-            default: break;
-        }
-    }
+    for (int i = 0; i < n; i++)
+        if (ps[i].kind == 'x') return "the method has a destructuring parameter";
     return NULL;
+}
+
+/* The `k`th node of an RBS list, NULL past its end. */
+static rbs_node_t *ir_list_at(rbs_node_list_t *l, int k) {
+    rbs_node_list_node_t *c = l ? l->head : NULL;
+    for (; c && k > 0; k--) c = c->next;
+    return c ? c->node : NULL;
+}
+
+static int ir_list_len(rbs_node_list_t *l) {
+    int n = 0;
+    if (l) for (rbs_node_list_node_t *c = l->head; c; c = c->next) n++;
+    return n;
 }
 
 /* A method type (`(T, k: U) -> R`) against the def: fills ret/ptypes, or
@@ -730,25 +737,39 @@ static const char *ir_method_type(rbs_parser_t *p, rbs_node_t *mtn, const ir_tar
     if (mt->type == NULL || mt->type->type != RBS_TYPES_FUNCTION)
         return "an untyped parameter list (`(?)`) has no Spinel equivalent";
     rbs_types_function_t *fn = (rbs_types_function_t *) mt->type;
-    if ((fn->optional_positionals && fn->optional_positionals->head) || fn->rest_positionals ||
-        (fn->trailing_positionals && fn->trailing_positionals->head) || fn->rest_keywords)
-        return "optional, rest and trailing parameters are not seeded";
     const char *why = ir_unseedable_params(ps, np);
     if (why) return why;
-    int nreq = 0, nkw = 0;
-    for (int i = 0; i < np; i++) { if (ps[i].kind == 'r') nreq++; else if (ps[i].kind == 'k') nkw++; }
-    int sreq = 0;
-    if (fn->required_positionals) for (rbs_node_list_node_t *c = fn->required_positionals->head; c; c = c->next) sreq++;
-    if (sreq != nreq) return "the signature's positional parameters do not match the method's";
+    /* Each positional kind of the def takes the signature's list of that
+       kind, one to one: `(Integer, ?String, *Symbol, Float)` for
+       `def m(a, b = "", *c, d)`. A rest or `**` slot is typed by
+       construction, as the gathered array or hash, and takes no field, as
+       --rbs gives it none. */
+    int nreq = 0, nopt = 0, nrest = 0, npost = 0, nkw = 0, nkwrest = 0;
+    for (int i = 0; i < np; i++)
+        switch (ps[i].kind) {
+            case 'r': nreq++; break;
+            case 'o': nopt++; break;
+            case '*': nrest++; break;
+            case 'p': npost++; break;
+            case 'k': nkw++; break;
+            case 'K': nkwrest++; break;
+            default: break;
+        }
+    if (ir_list_len(fn->required_positionals) != nreq || ir_list_len(fn->optional_positionals) != nopt ||
+        (fn->rest_positionals != NULL) != (nrest > 0) || ir_list_len(fn->trailing_positionals) != npost)
+        return "the signature's positional parameters do not match the method's";
+    if (fn->rest_keywords != NULL && nkwrest == 0)
+        return "the signature's keyword parameters do not match the method's";
     for (int i = 0; i < np; i++) {
         sbuf_t tag; sbuf_init(&tag);
-        if (ps[i].kind == 'r') {
+        if (ps[i].kind == 'r' || ps[i].kind == 'o' || ps[i].kind == 'p') {
             int k = 0;
-            rbs_node_list_node_t *c = fn->required_positionals->head;
-            for (int j = 0; j < i; j++) if (ps[j].kind == 'r') k++;
-            for (; k > 0; k--) c = c->next;
-            rbs_types_function_param_t *fp = (rbs_types_function_param_t *) c->node;
-            if (c->node->type != RBS_TYPES_FUNCTION_PARAM || !ir_map(p, fp->type, t, &tag)) {
+            for (int j = 0; j < i; j++) if (ps[j].kind == ps[i].kind) k++;
+            rbs_node_t *n = ir_list_at(ps[i].kind == 'r' ? fn->required_positionals
+                                     : ps[i].kind == 'o' ? fn->optional_positionals
+                                                         : fn->trailing_positionals, k);
+            rbs_types_function_param_t *fp = (rbs_types_function_param_t *) n;
+            if (n == NULL || n->type != RBS_TYPES_FUNCTION_PARAM || !ir_map(p, fp->type, t, &tag)) {
                 sbuf_free(&tag);
                 return "a parameter type is outside the types Spinel can pin";
             }
