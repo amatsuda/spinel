@@ -25234,8 +25234,11 @@ static char *iow_frozen_hash_rhs(char *rhs, int ta, TyKind rt) {
   Buf w; memset(&w, 0, sizeof w);
   int t = ++g_tmp;
   const char *cls = hash_box_cls(rt);
-  buf_printf(&w, "({ __typeof__(%s) _t%d = (%s); if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })",
-             rhs, t, rhs, ta, ta, cls ? cls : "0", t);
+  /* (__auto_type: the right side is written once; written twice, in a
+     __typeof__ and as the value, a case/in prelude inside it would carry
+     its label twice) */
+  buf_printf(&w, "({ __auto_type _t%d = (%s); if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })",
+             t, rhs, ta, ta, cls ? cls : "0", t);
   free(rhs);
   return w.p ? w.p : strdup("");
 }
