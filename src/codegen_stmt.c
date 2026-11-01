@@ -25225,6 +25225,20 @@ static char *iow_guarded_hash_rhs(Compiler *c, int v, TyKind rt, Buf *b, int *op
   g_pre = sv;
   return rb.p ? rb.p : strdup("");
 }
+/* The right side of a Hash slot's `||=` / `&&=` write, then the frozen
+   test the write takes (as `h[k] = v` and `h[k] += v` raise FrozenError,
+   #3001): the value first, as in CRuby, so its own error or side effect
+   comes before the FrozenError. Takes rhs and gives a new string. */
+static char *iow_frozen_hash_rhs(char *rhs, int ta, TyKind rt) {
+  if (!rhs || !rhs[0]) return rhs ? rhs : strdup("");
+  Buf w; memset(&w, 0, sizeof w);
+  int t = ++g_tmp;
+  const char *cls = hash_box_cls(rt);
+  buf_printf(&w, "({ __typeof__(%s) _t%d = (%s); if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })",
+             rhs, t, rhs, ta, ta, cls ? cls : "0", t);
+  free(rhs);
+  return w.p ? w.p : strdup("");
+}
 static void iow_guard_close(char *rhs, int open, Buf *b) {
   if (open) buf_puts(b, "; }");
   free(rhs);
@@ -25692,7 +25706,7 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     if (vt == TY_POLY) {
       buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) ", is_or ? "!" : "", hn, ta, tb);
       int open = 0;
-      char *rhs = iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open);
+      char *rhs = iow_frozen_hash_rhs(iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open), ta, rt);
       buf_printf(b, "sp_%sHash_set(_t%d, _t%d, %s)", hn, ta, tb, rhs);
       iow_guard_close(rhs, open, b);
     }
@@ -25710,7 +25724,7 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       emit_slot_nil_test(c, vt, tc, is_or, b);
       buf_puts(b, ") ");
       int open = 0, oset = 0;
-      char *rhs = iow_guarded_hash_rhs(c, v, rt, b, &open, &oset);
+      char *rhs = iow_frozen_hash_rhs(iow_guarded_hash_rhs(c, v, rt, b, &open, &oset), ta, rt);
       /* (one-String mode: a String-valued Hash takes the value's bytes face) */
       buf_printf(b, "sp_%sHash_%s(_t%d, %s, %s%s%s)", hn, oset ? "oset" : "set", ta, sk, ONE_HV_O(hn), rhs, ONE_HV_C(hn));
       iow_guard_close(rhs, open, b);
