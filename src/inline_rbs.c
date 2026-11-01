@@ -636,12 +636,33 @@ static void ir_names_merge(sbuf_t *into, const sbuf_t *from) {
     }
 }
 
+/* `top`, or core's `boolish` (`type boolish = top`, which flag parameters
+ * are written with): any value at all, which says nothing about the slot.
+ * It pins nothing ("-", as a `void` return reads), and the rest of the
+ * signature still applies, as --rbs leaves such a slot to inference. A
+ * program's own `boolish` alias is mapped as written. */
+static bool ir_says_nothing(rbs_parser_t *p, rbs_node_t *type) {
+    if (type->type == RBS_TYPES_OPTIONAL) type = ((rbs_types_optional_t *) type)->type;
+    if (type->type == RBS_TYPES_BASES_TOP) return true;
+    if (type->type != RBS_TYPES_ALIAS) return false;
+    rbs_types_alias_t *a = (rbs_types_alias_t *) type;
+    if ((a->args && a->args->length > 0) || a->name == NULL ||
+        (a->name->rbs_namespace && a->name->rbs_namespace->path && a->name->rbs_namespace->path->length > 0) ||
+        (a->name->rbs_namespace && a->name->rbs_namespace->absolute)) return false;
+    sbuf_t n; sbuf_init(&n);
+    name_of_type_name(p, a->name, &n);
+    bool b = n.buf && strcmp(n.buf, "boolish") == 0;
+    sbuf_free(&n);
+    return b;
+}
+
 /* map_type with the owner's lexical scope, as traverse_members sets it up */
 static bool ir_map(rbs_parser_t *p, rbs_node_t *type, const ir_target *t, sbuf_t *out) {
     const char *sv = g_self_scope;
     g_self_scope = strcmp(t->owner, "Object") == 0 ? "" : t->owner;
     bool ok = map_type(p, type, t->lookup, out);
     g_self_scope = sv;
+    if (!ok && ir_says_nothing(p, type)) { sbuf_set(out, "-", 1); return true; }
     if (ok && out->buf && type->location.end_byte > type->location.start_byte)
         ir_names_add(&g_ir_names, out->buf, p->lexer->string.start + type->location.start_byte,
                      (size_t) (type->location.end_byte - type->location.start_byte));

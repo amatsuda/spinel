@@ -1,0 +1,6 @@
+class Word
+  def title: (untyped, ?keep: boolish) -> String
+  def show: (untyped, top) -> untyped
+  def word?: (untyped) -> true
+  def blank?: (untyped) -> false
+end

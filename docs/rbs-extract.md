@@ -196,6 +196,7 @@ the field layouts coincide by construction.
 | `String`                               | `string`                              |
 | `Symbol`                               | `symbol`                              |
 | `TrueClass`, `FalseClass`              | `bool`                                |
+| `true`, `false` (literal types)        | `bool`                                |
 | `NilClass`, `nil`                      | `nil`                                 |
 | `bool`                                 | `bool`                                |
 | `void` (return only)                   | `-` (no pin: unused, not typed)       |
@@ -420,7 +421,7 @@ stands on its own.
   method; `class`, `top`, `bot`
 - Interfaces (`_Foo`)
 - Intersections (`T & U`)
-- Literal types (`:foo`, `42`, `"x"`)
+- Literal types other than `true` and `false` (`:foo`, `42`, `"x"`)
 - Generic type aliases (`type listed[T] = Array[T]`)
 - Type variables (generics with parameters)
 - Tuples (`[T, U]`)

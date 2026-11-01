@@ -94,8 +94,12 @@ annotations with ruby/rbs's default `untyped` signatures.
 
 The supported types match `--rbs`: `Integer`, `Float`, `String`, `Symbol`,
 `bool`, `nil`, `untyped`, program classes, `Array[T]`, `Hash[K, V]`,
-`T?`, unions as boxed values, and `singleton(C)`; a `void` return is
-accepted and pins nothing (it says the value is unused, not what it is). See
+`T?`, unions as boxed values, `singleton(C)`, and the literals `true` and
+`false` (as `bool`); a `void` return is accepted and pins nothing (it says
+the value is unused, not what it is). So is a `top` or `boolish` (core's
+`type boolish = top`) parameter or return: it admits any value, so that
+slot is left to inference and the rest of the signature applies, as with
+`--rbs`. See
 [Type vocabulary](rbs-extract.md#type-vocabulary).
 
 A method uses one signature: a method type or named parameter and return
@@ -148,7 +152,7 @@ overridden return can remain inferred while supported parameter types apply.
 | Malformed RBS annotation | Error with the parser's message and source position |
 | Two signatures for one method, or duplicate parameter annotations | Error naming both locations |
 | Conflicting applied inline or external declarations | Error naming both locations |
-| Unseedable types: literals, interfaces, tuples, records, procs, `self`/`instance`/`class`, type variables | Warning; ignore the whole annotation |
+| Unseedable types: literals other than `true` and `false`, interfaces, tuples, records, procs, `self`/`instance`/`class`, type variables | Warning; ignore the whole annotation |
 | Unknown program class, such as `Regexp` or `Array[Time]` (a builtin class with values of its own, such as `Time` or `File`, applies, and so do `Range` and an exception class: see [Type vocabulary](rbs-extract.md#type-vocabulary)) | Warning naming the type as written; ignore the whole annotation |
 | Positional kinds that differ from the method's (`(?Integer)` for `def m(x)`), a destructuring parameter, or RBS block parameters | Warning; ignore the whole signature |
 | Overloads, `...`, generic method signatures, and superclass/mixin type arguments | Warning; ignore the annotation |
