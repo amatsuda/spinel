@@ -9359,78 +9359,87 @@ static int param_is_keyword(Compiler *c, Scope *sc, int pi) {
     if (nt_ref(nt, kws[i], "value") == sc->pdefault[pi]) return 1;
   return 0;
 }
+/* Does call `id`, named `nm`, supply parameter `pi` of `sc`? */
+static int psa_call_supplies(Compiler *c, Scope *sc, int pi, int is_init, int is_kw, int id, const char *nm) {
+  const NodeTable *nt = c->nt;
+  /* a dynamic reference can call it any way -- unless the name is a user
+     method of the program's own (an LSP's `send(obj)`), which is a call
+     like any other, or the reference names a literal other method */
+  if (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send") ||
+      sp_streq(nm, "method") || sp_streq(nm, "instance_method") || sp_streq(nm, "define_method")) {
+    if (an_user_defines_method(c, nm)) { if (!sp_streq(nm, sc->name)) return 0; }
+    else {
+      int dargs = nt_ref(nt, id, "arguments"); int dn = 0;
+      const int *dav = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dn) : NULL;
+      const char *lit = NULL;
+      if (dav && dn > 0) {
+        NodeKind dk = nt_kind(nt, dav[0]);
+        if (dk == NK_SymbolNode) lit = nt_str(nt, dav[0], "unescaped");
+        else if (dk == NK_StringNode) lit = nt_str(nt, dav[0], "unescaped");
+      }
+      if (!lit || sp_streq(lit, sc->name)) return 1;
+      return 0;
+    }
+  }
+  if (!sp_streq(nm, sc->name) && !(is_init && sp_streq(nm, "new"))) return 0;
+  /* `K.new(...)` reaches this initialize only from K or a class under it;
+     a `new` on a constant naming another class is that class's. A `new`
+     on anything but a written constant could be anyone's: unsure. */
+  if (is_init && sp_streq(nm, "new")) {
+    int recv = nt_ref(nt, id, "receiver");
+    NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_CallNode;
+    if (recv >= 0 && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
+      const char *rn = nt_str(nt, recv, "name");
+      int rci = rn ? comp_class_index(c, rn) : -1;
+      if (rci >= 0 && sc->class_id >= 0) {
+        int under = 0;
+        for (int k = rci; k >= 0; k = c->classes[k].parent) if (k == sc->class_id) { under = 1; break; }
+        if (!under) return 0;
+      }
+      /* a builtin's `new` (Hash.new(0), Array.new(n)) is not ours either */
+      else if (rci < 0 && rn && is_builtin_class_name(rn)) return 0;
+    }
+  }
+  int args = nt_ref(nt, id, "arguments");
+  int n = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_SplatNode || ak == NK_ForwardingArgumentsNode) return 1;
+    /* a keyword parameter is supplied by a `name:` pair (or by a `**`
+       spread, which may carry anything) */
+    if (ak == NK_KeywordHashNode && is_kw) {
+      int en = 0; const int *els = nt_arr(nt, av[k], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return 1;
+        int key = nt_ref(nt, els[e], "key");
+        const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+        if (kn && sc->pnames[pi] && sp_streq(kn, sc->pnames[pi])) return 1;
+      }
+    }
+  }
+  /* a positional one takes what the call's layout funds it from, a
+     braceless hash no keyword parameter claims among them (#4436) */
+  if (!is_kw) {
+    ArgLayout L;
+    call_layout(c, sc, av, n, &L);
+    int supplied = L.from[pi] != ARG_DEFAULT;
+    arg_layout_free(&L);
+    if (supplied) return 1;
+  }
+  return 0;
+}
 static int param_supplied_anywhere(Compiler *c, Scope *sc, int pi) {
   const NodeTable *nt = c->nt;
   if (!sc->name) return 1;
   int is_init = sp_streq(sc->name, "initialize");
   int is_kw = param_is_keyword(c, sc, pi);
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm) continue;
-    /* a dynamic reference can call it any way -- unless the name is a user
-       method of the program's own (an LSP's `send(obj)`), which is a call
-       like any other, or the reference names a literal other method */
-    if (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send") ||
-        sp_streq(nm, "method") || sp_streq(nm, "instance_method") || sp_streq(nm, "define_method")) {
-      if (an_user_defines_method(c, nm)) { if (!sp_streq(nm, sc->name)) continue; }
-      else {
-        int dargs = nt_ref(nt, id, "arguments"); int dn = 0;
-        const int *dav = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dn) : NULL;
-        const char *lit = NULL;
-        if (dav && dn > 0) {
-          NodeKind dk = nt_kind(nt, dav[0]);
-          if (dk == NK_SymbolNode) lit = nt_str(nt, dav[0], "unescaped");
-          else if (dk == NK_StringNode) lit = nt_str(nt, dav[0], "unescaped");
-        }
-        if (!lit || sp_streq(lit, sc->name)) return 1;
-        continue;
-      }
-    }
-    if (!sp_streq(nm, sc->name) && !(is_init && sp_streq(nm, "new"))) continue;
-    /* `K.new(...)` reaches this initialize only from K or a class under it;
-       a `new` on a constant naming another class is that class's. A `new`
-       on anything but a written constant could be anyone's: unsure. */
-    if (is_init && sp_streq(nm, "new")) {
-      int recv = nt_ref(nt, id, "receiver");
-      NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_CallNode;
-      if (recv >= 0 && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
-        const char *rn = nt_str(nt, recv, "name");
-        int rci = rn ? comp_class_index(c, rn) : -1;
-        if (rci >= 0 && sc->class_id >= 0) {
-          int under = 0;
-          for (int k = rci; k >= 0; k = c->classes[k].parent) if (k == sc->class_id) { under = 1; break; }
-          if (!under) continue;
-        }
-        /* a builtin's `new` (Hash.new(0), Array.new(n)) is not ours either */
-        else if (rci < 0 && rn && is_builtin_class_name(rn)) continue;
-      }
-    }
-    int args = nt_ref(nt, id, "arguments");
-    int n = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
-    for (int k = 0; k < n; k++) {
-      NodeKind ak = nt_kind(nt, av[k]);
-      if (ak == NK_SplatNode || ak == NK_ForwardingArgumentsNode) return 1;
-      /* a keyword parameter is supplied by a `name:` pair (or by a `**`
-         spread, which may carry anything) */
-      if (ak == NK_KeywordHashNode && is_kw) {
-        int en = 0; const int *els = nt_arr(nt, av[k], "elements", &en);
-        for (int e = 0; e < en; e++) {
-          if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return 1;
-          int key = nt_ref(nt, els[e], "key");
-          const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
-          if (kn && sc->pnames[pi] && sp_streq(kn, sc->pnames[pi])) return 1;
-        }
-      }
-    }
-    /* a positional one takes what the call's layout funds it from, a
-       braceless hash no keyword parameter claims among them (#4436) */
-    if (!is_kw) {
-      ArgLayout L;
-      call_layout(c, sc, av, n, &L);
-      int supplied = L.from[pi] != ARG_DEFAULT;
-      arg_layout_free(&L);
-      if (supplied) return 1;
-    }
+  /* Not every call of the program: only one of these names can supply it,
+   and each ask walked them all, once per parameter per memo rebuild. */
+  const char *names[] = { sc->name, is_init ? "new" : NULL, "send", "__send__", "public_send", "method", "instance_method", "define_method" };
+  for (int k = 0; k < (int)(sizeof names / sizeof *names); k++) {
+  if (!names[k]) continue;
+  for (int id = an_calls_named_first(c, names[k]); id >= 0; id = an_calls_named_next(id))
+    if (psa_call_supplies(c, sc, pi, is_init, is_kw, id, names[k])) return 1;
   }
   NT_FOREACH_KIND(nt, NK_SuperNode, id) { (void)id; return 1; }
   NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, id) { (void)id; return 1; }
