@@ -13126,10 +13126,7 @@ static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
     }
     if (k != NK_CallNode) continue;
     const char *cn = nt_str(nt, id, "name");
-    int r = nt_ref(nt, id, "receiver");
-    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
-    int member = cn && rn && ((sp_streq(cn, "new") && sp_streq(rn, "Struct")) ||
-                              (sp_streq(cn, "define") && sp_streq(rn, "Data")));
+    int member = class_def_is_record_call(nt, id);
     for (int i = 0; cn && makers[i] && !member; i++) member = sp_streq(cn, makers[i]);
     if (member && cdef_call_names(nt, id, nm)) return 1;
   }
@@ -21863,12 +21860,7 @@ int desugar_self_const_get(Compiler *c) {
 static const char *holder_block_name(const NodeTable *nt, const int *parent, int block) {
   int call = parent[block];
   if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") != block) return NULL;
-  int receiver = nt_ref(nt, call, "receiver");
-  const char *receiver_name = receiver >= 0 && nt_kind(nt, receiver) == NK_ConstantReadNode ? nt_str(nt, receiver, "name") : NULL;
-  const char *method_name = nt_str(nt, call, "name");
-  if (!receiver_name || !method_name) return NULL;
-  if (!((sp_streq(receiver_name, "Struct") && sp_streq(method_name, "new")) ||
-        (sp_streq(receiver_name, "Data") && sp_streq(method_name, "define")))) return NULL;
+  if (!class_def_is_record_call(nt, call)) return NULL;
   int write = parent[call];
   if (write < 0 || nt_kind(nt, write) != NK_ConstantWriteNode || nt_ref(nt, write, "value") != call) return NULL;
   return nt_str(nt, write, "name");
