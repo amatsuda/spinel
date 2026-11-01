@@ -1518,6 +1518,18 @@ int class_cref(Compiler *c, int cls) {
   return cls;
 }
 
+/* Is node `recv` a read of a parameter of the method it stands in? A block
+   parameter or block-local that shadows it was renamed before the walk, so a
+   read of that name inside a block of the method is the method's too. */
+static int recv_is_method_param(Compiler *c, int recv, int scope_idx) {
+  if (scope_idx <= 0 || nt_kind(c->nt, recv) != NK_LocalVariableReadNode || c->scopes[scope_idx].def_node < 0 ||
+      nt_kind(c->nt, c->scopes[scope_idx].def_node) != NK_DefNode)
+    return 0;
+  const char *rn = nt_str(c->nt, recv, "name");
+  LocalVar *lv = rn ? scope_local(&c->scopes[scope_idx], rn) : NULL;
+  return lv && lv->is_param;
+}
+
 static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   if (id < 0 || id >= c->nt->count) return;
   int scope_idx = w.scope, class_id = w.cls, proc = w.proc, dead = w.dead;
@@ -1787,8 +1799,12 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       /* A const or variable receiver that is NOT a class is an object
          singleton method: still create the scope (as an instance method,
          class_id deferred to -1), so register_singleton_defs can reattach it
-         to the synthesized subclass. */
-      if (!dm_ok && dm_recv >= 0 &&
+         to the synthesized subclass. A method's own parameter holds what its
+         callers pass, never one `new` that pass traces: nothing would
+         reattach the scope, and left at the top level it answers a bare call
+         and `respond_to?` at main, where CRuby defines the method on the
+         receiver at run time (`def self.included(base)` in a hook). */
+      if (!dm_ok && dm_recv >= 0 && !recv_is_method_param(c, dm_recv, scope_idx) &&
           (dsm_rk == NK_ConstantReadNode || dsm_rk == NK_LocalVariableReadNode ||
            dsm_rk == NK_InstanceVariableReadNode || dsm_rk == NK_ClassVariableReadNode ||
            dsm_rk == NK_GlobalVariableReadNode)) {

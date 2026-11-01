@@ -1,0 +1,20 @@
+main 1
+single 2
+a
+b
+peeked
+keyed
+blocky
+ib
+NameError
+NoMethodError
+NoMethodError
+kind: false false false
+peek: false false false
+keyed: false false false
+blocky: false false false
+inblock: false false
+[false, false, true]
+1
+false
+false
