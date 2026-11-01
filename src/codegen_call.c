@@ -5719,6 +5719,11 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                  tcl, tcl, tcl);
       return 1;
     }
+    /* a curried Proc renders as the lambda it reports itself as */
+    if (crt == TY_CURRY && argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
+      buf_puts(b, "sp_curry_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
     if (crt == TY_CURRY && argc == 0 && sp_streq(name, "to_proc")) {
       /* the wrapping proc applies its call's arguments and realizes (#3864) */
       buf_puts(b, "sp_curry_to_proc("); emit_expr(c, recv, b); buf_puts(b, ")");

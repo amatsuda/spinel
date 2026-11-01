@@ -384,6 +384,10 @@ const char *sp_poly_to_s(sp_RbVal v)
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
         case SP_BUILTIN_STRBUF: return sp_String_cstr((sp_String *)v.v.p);   /* live buffer (#3227) */
         case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
+        /* Proc#to_s is its inspect; a boxed one (an element of a mixed Array)
+           fell through to "" */
+        case SP_BUILTIN_PROC: return sp_proc_inspect((sp_Proc *)v.v.p);
+        case SP_BUILTIN_CURRY: return sp_curry_inspect((sp_Curry *)v.v.p);
         case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_BIG_RATIONAL: return sp_brat_to_s((sp_BigRational *)v.v.p);
@@ -670,6 +674,8 @@ const char *sp_poly_inspect(sp_RbVal v)
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
       case SP_BUILTIN_STRBUF: return sp_str_inspect(sp_String_cstr((sp_String *)v.v.p));   /* (#3227) */
       case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
+      case SP_BUILTIN_PROC: return sp_proc_inspect((sp_Proc *)v.v.p);
+      case SP_BUILTIN_CURRY: return sp_curry_inspect((sp_Curry *)v.v.p);
         case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_BIG_RATIONAL:  return sp_brat_inspect((sp_BigRational *)v.v.p);

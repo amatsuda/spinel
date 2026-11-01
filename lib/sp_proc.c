@@ -27,6 +27,13 @@ const char *sp_proc_inspect(sp_Proc *p) {SP_GC_ROOT(p);
   return sp_sprintf(p->lambda_p ? "#<Proc:0x%016llx (lambda)>" : "#<Proc:0x%016llx>",
                     (unsigned long long)(uintptr_t)p);
 }
+/* A curried Proc keeps its target's lambda-ness (#3052), as Proc#inspect
+   shows it */
+const char *sp_curry_inspect(sp_Curry *c) {SP_GC_ROOT(c);
+  if (!c) return SPL("nil");
+  return sp_sprintf(c->target && c->target->lambda_p ? "#<Proc:0x%016llx (lambda)>" : "#<Proc:0x%016llx>",
+                    (unsigned long long)(uintptr_t)c);
+}
 /* Proc#parameters with an explicit mode. Kinds are stored canonically
    (lambda-style: a plain positional is "req"); printing for proc mode remaps
    req -> opt, which leaves defaulted positionals (stored "opt") and every
