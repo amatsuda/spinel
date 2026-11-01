@@ -1244,6 +1244,10 @@ spinel: 1 refusal, nothing written
 == test/reject/module_new_captured_local.rb [promote] rc=1
 spinel: test/reject/module_new_captured_local.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/native_struct_bare_leaf_collision.rb [default] rc=1
+spinel: test/reject/native_struct_bare_leaf_collision.rb:10: this class shares its name with a native class declared under a qualified path (constant lookups are leaf-keyed, so the two would merge); rename the class
+== test/reject/native_struct_bare_leaf_collision.rb [promote] rc=1
+spinel: test/reject/native_struct_bare_leaf_collision.rb:10: this class shares its name with a native class declared under a qualified path (constant lookups are leaf-keyed, so the two would merge); rename the class
 == test/reject/new_receiver_class_chain_still_reached.rb [default] rc=1
 spinel: test/reject/new_receiver_class_chain_still_reached.rb:5: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written

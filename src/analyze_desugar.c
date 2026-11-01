@@ -2433,7 +2433,7 @@ static int scm_names_hook(const NodeTable *nt, int n, int depth) {
    self` calls M.included with the singleton class, which an `extend` in its
    place would not. */
 static int scm_module_hooks(const NodeTable *nt, const char *leaf) {
-  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  int ndk = 0; const NodeKind *dk = class_def_module_kinds(&ndk);
   for (int dh = 0; dh < ndk; dh++)
     NT_FOREACH_KIND(nt, dk[dh], m) {
       const char *mn = class_def_is_module(nt, m) ? class_def_name(nt, m) : NULL;
@@ -5363,7 +5363,7 @@ static int engine_source_lib_defines(NodeTable *nt, const char *h, const char *x
    guarded `Fiber.prepend(Fiber::Annotation)` of the module defined above
    it)? Such a method reaches no class unless `in` runs. */
 static int engine_def_mixed_in_only(NodeTable *nt, int id, int in) {
-  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  int ndk = 0; const NodeKind *dk = class_def_module_kinds(&ndk);
   for (int dh = 0; dh < ndk; dh++) NT_FOREACH_KIND(nt, dk[dh], md) {
     if (!class_def_is_module(nt, md) || !subtree_has(nt, md, id)) continue;
     const char *leaf = class_def_name(nt, md);
@@ -11217,7 +11217,7 @@ static void ee_mark_module(const NodeTable *nt, const int *parent, EeClass *v, i
     ee_own_key(nt, m, dk, sizeof dk);
     if (sp_streq(dk, mk)) v[i].shadow[ni] = 1;
   }
-  int ndk = 0; const NodeKind *dks = class_def_kinds(&ndk);
+  int ndk = 0; const NodeKind *dks = class_def_module_kinds(&ndk);
   for (int dh = 0; dh < ndk; dh++) NT_FOREACH_KIND(nt, dks[dh], m) {
     if (!class_def_is_module(nt, m)) continue;
     char dk[512];
@@ -19055,7 +19055,7 @@ static int cn_names_module(const NodeTable *nt, const int *parent, int id, int k
   if (kk == NK_ConstantReadNode && is_builtin_module_const_name(nm)) return 1;
   if (kk == NK_ConstantPathNode && nt_ref(nt, k, "parent") < 0) return 0;
   int any = 0, ndk = 0;
-  const NodeKind *dk = class_def_kinds(&ndk);
+  const NodeKind *dk = class_def_module_kinds(&ndk);
   for (int dh = 0; dh < ndk; dh++)
     NT_FOREACH_KIND(nt, dk[dh], m) {
       const char *mn = class_def_is_module(nt, m) ? class_def_name(nt, m) : NULL;
@@ -24841,7 +24841,7 @@ static int ffi_package_loaded(const NodeTable *nt) {
   static const NodeTable *memo_nt; static int memo;
   if (memo_nt == nt) return memo;
   memo_nt = nt; memo = 0;
-  int ndk = 0; const NodeKind *dk = class_def_kinds(&ndk);
+  int ndk = 0; const NodeKind *dk = class_def_module_kinds(&ndk);
   for (int dh = 0; dh < ndk; dh++)
     NT_FOREACH_KIND(nt, dk[dh], m) {
       const char *n = class_def_is_module(nt, m) ? class_def_name(nt, m) : NULL;
