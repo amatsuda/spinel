@@ -2702,10 +2702,10 @@ static int lr_mixin_dup(Compiler *c, int cls, int sg, LrMixin *m) {
    LR_STOP an undef stops the search there, ELAB_NO go on to the next,
    ELAB_UNKNOWN for a class the record does not hold (LoadRecord.held);
    *unsure is set where an entry or a mixin may have happened. */
-static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth, int *unsure) {
+static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth, int *unsure, int shadow) {
   LrClass *k = lr_class(c->lrec, cls);
   if (!k) return ELAB_UNKNOWN;
-  for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
+  for (int pass = 0; pass < (shadow ? 2 : 3); pass++) {   /* prepends, own, includes or extends (with shadow, not these) */
     if (pass == 1) {
       int o = name ? lr_own(c, lr_hist(c->lrec, cls, sg, name, 0), p, late, vis, out) : ELAB_NO;
       if (o == ELAB_YES || o == LR_STOP) return o;
@@ -2750,7 +2750,7 @@ static int lr_sg_tail(Compiler *c, int cls, const char *name, int mod, LoadPoint
     int t = tail[i];
     if (t < LR_MAIN) continue;
     if (!name && t == mod) return ELAB_YES;
-    int o = lr_search_one(c, t, 0, name, mod, p, late, vis, out, depth + 1, unsure);
+    int o = lr_search_one(c, t, 0, name, mod, p, late, vis, out, depth + 1, unsure, 0);
     if (o != ELAB_NO) return o;
   }
   return ELAB_NO;
@@ -2765,7 +2765,7 @@ static int lr_sg_tail(Compiler *c, int cls, const char *name, int mod, LoadPoint
 static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth) {
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   if (!name && cls == mod && !sg) return ELAB_YES;
-  int unsure = 0, o = lr_search_one(c, cls, sg, name, mod, p, late, vis, out, depth, &unsure);
+  int unsure = 0, o = lr_search_one(c, cls, sg, name, mod, p, late, vis, out, depth, &unsure, 0);
   if (o == ELAB_NO) {
     /* a class's chain ends at Object, whose methods main's top level
        defines (main's own singleton is not Object's) */
@@ -2855,6 +2855,17 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
   if (!lr_ready(c, p) || !name) return ELAB_UNKNOWN;
   int o = lr_search(c, cls, sg, name, -1, p, p.region < 0, 0, out, 0);
   return o == LR_STOP ? ELAB_NO : o;
+}
+
+int elab_own_method_at(Compiler *c, int cls, const char *name, LoadPoint p) {
+  if (!lr_ready(c, p) || !name) return ELAB_UNKNOWN;
+  const LrDef *v = NULL;
+  int unsure = 0, o = lr_search_one(c, cls, 0, name, -1, p, p.region < 0, 0, &v, 0, &unsure, 1);
+  /* a definition under a condition (a branch, a rescue, a modifier; or the
+     dispatcher a lone one is lowered to) may not have run */
+  const LrStmt *st = o == ELAB_YES && v ? lr_stmt_of(elab_fresh(c), v->node) : NULL;
+  if (v && (v->may || nt_int(c->nt, v->node, "cond_lone_disp", 0) || (st && (st->may || st->fmay || st->fpartial)))) return ELAB_UNKNOWN;
+  return unsure ? ELAB_UNKNOWN : o == LR_STOP ? ELAB_YES : o;
 }
 
 /* Where the version recorded at node in cls's history of `name` (its

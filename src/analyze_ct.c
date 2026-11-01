@@ -730,7 +730,9 @@ int desugar_table_loops(Compiler *c) {
    answered a method_defined? query of one of the macro's names before the
    walk (def_asked). The program changes none of the core methods the macro
    ran, and no macro has defined a method of that name (ct_core_method_changed,
-   asked once per walk of each). The block must not write the macro's
+   asked once per walk of each). A text's line argument that adds or subtracts
+   is Integer's, which the record must show unchanged at the call's point
+   (sce_graft). The block must not write the macro's
    locals, yield to its block, ask block_given? or read its binding; it
    reads a constant or class variable only when the macro is defined in the
    same body as the call (both are lexical); a String of the frame only for
@@ -1170,7 +1172,7 @@ static int ct_fx_stmt(CtBind *b, Compiler *c, int list, int call, const CtFx *f)
 static int ct_text_stmts(Compiler *c, HostStep *h, int frame, int cls, LoadPoint p, const CtFx *f, int **ids, int *n) {
   NodeTable *nt = (NodeTable *)c->nt;
   *ids = NULL; *n = 0;
-  if (nt_kind(nt, frame) != NK_ClassNode || sce_graft_text(c, h, frame, f->name, f->site, ids, n) < 0) return 0;
+  if (nt_kind(nt, frame) != NK_ClassNode || sce_graft_text(c, h, frame, f->name, f->site, p, ids, n) < 0) return 0;
   int ok = 1, nn = 0;
   for (int i = 0; i < *n && ok; i++) {
     int d = (*ids)[i], rv = nt_ref(nt, d, "receiver");
