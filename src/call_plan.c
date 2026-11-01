@@ -2430,10 +2430,13 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
             "(see docs/limitations.md)";
     /* `Class.new(parent) { ... }`: the class graph is baked at compile time. A
        bare `Class.new` with no argument and no block is just an Object factory
-       and is left to the normal path. */
-    else if (sp_streq(rcn, "Class") && sp_streq(name, "new") &&
-             (nt_ref(nt, id, "block") >= 0 || cplan_argc(nt, id) > 0))
+       and is left to the normal path. The message names the form written. */
+    else if (is_class_new(rcn, name) && cplan_argc(nt, id) > 0)
       why = "Class.new(parent) is not supported by AOT compilation: the class "
+            "graph, ancestor chain, and method/ivar layout are baked at compile time. "
+            "Declare the class with `class ... end` instead (see docs/limitations.md)";
+    else if (is_class_new(rcn, name) && nt_ref(nt, id, "block") >= 0)
+      why = "Class.new with a block is not supported here by AOT compilation: the class "
             "graph, ancestor chain, and method/ivar layout are baked at compile time. "
             "Declare the class with `class ... end` instead (see docs/limitations.md)";
     if (why) *lx = LX_NAME;

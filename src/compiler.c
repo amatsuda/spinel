@@ -1096,7 +1096,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   if (core >= 0 && c->core_cls[core] < 0) c->core_cls[core] = ci->idx;
   { ci->def_node = def_node; comp_touch_class(ci->idx); }
   class_def_link(c, ci->idx);
-  if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
+  if (nt_int(c->nt, def_node, "class_new_anonymous", 0) || class_def_builder(c->nt, def_node) >= 0) c->has_anonymous_classes = 1;
   ci->parent = -1;
   ci->enclosing_class = -1;
   return ci;
@@ -5318,7 +5318,8 @@ int comp_has_sclass_values(Compiler *c) {
 
 int comp_class_anonymous(Compiler *c, int ci) {
   return ci >= 0 && ci < c->nclasses &&
-         nt_int(c->nt, c->classes[ci].def_node, "class_new_anonymous", 0);
+         (nt_int(c->nt, c->classes[ci].def_node, "class_new_anonymous", 0) ||
+          class_def_builder(c->nt, c->classes[ci].def_node) >= 0);
 }
 
 /* The table that prints a class value for to_s and inspect: a Class.new class

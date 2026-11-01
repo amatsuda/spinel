@@ -124,6 +124,9 @@ typedef struct {
   /* the class or module body that holds each node (fwd_lex_parent), made as
      far as its questions need; NULL until the first */
   struct NtHolders *holders;
+  /* the class builder each constant write holds (class_def_builder), asked
+     node by node; NULL until the first */
+  struct NtBuilders *builders;
 } NodeTable;
 
 /* An index of the tree kept on the table it was made of: for each node, the
@@ -143,6 +146,22 @@ struct NtHolders {
   int hi, k;
   const int *bv;
   int bn;
+  unsigned ver;
+  unsigned long edits;
+  int cnt;
+};
+
+/* The class builder call each constant write holds (class_def_builder) and
+   its kind, kept on the table it was asked of: call[id] (-1: none) and
+   module[id] (Module.new) are the answer when stamp[id] is cur, and an entry
+   counts only while the table's count, version and edits are the ones it
+   saw (ver, edits, cnt), so an edit clears nothing. Freed with the table. */
+struct NtBuilders {
+  int *call;
+  unsigned char *module;
+  unsigned *stamp;
+  int cap;
+  unsigned cur;
   unsigned ver;
   unsigned long edits;
   int cnt;

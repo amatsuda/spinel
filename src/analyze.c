@@ -719,13 +719,11 @@ static void cr_live_collect(CrLive *lv, int s, int id, int cls, int persist) {
       cr_live_collect(lv, s, p, cls, persist);
     return;
   }
-  if (k == NK_ClassNode) {
-    int cp = nt_ref(nt, id, "constant_path");
-    cr_live_collect(lv, s, nt_ref(nt, id, "body"), cp >= 0 ? const_node_class_index(c, cp) : -1, 0);
-    return;
-  }
-  if (k == NK_ModuleNode) {
-    cr_live_collect(lv, s, nt_ref(nt, id, "body"), -1, 0);
+  /* a definition's body (a header's, a class builder's block) runs with
+     self the class it defines; a module's has no class side to open */
+  if (class_def_opens_frame(nt, id)) {
+    int cp = class_def_is_class(nt, id) ? class_def_path(nt, id) : -1;
+    cr_live_collect(lv, s, class_def_body(nt, id), cp >= 0 ? const_node_class_index(c, cp) : -1, 0);
     return;
   }
   int skip = -1;
@@ -10854,13 +10852,20 @@ static int desugar_kernel_method_block_arg(Compiler *c) {
    undefined, which is the one thing it is not (#4006). Write the nil the block
    already means, once, rather than teaching a dozen arms to special-case it.
    The arms that DO have an empty-body path keep answering the same thing: a
-   body of `nil` maps every element to nil, which is what they hard-coded. */
+   body of `nil` maps every element to nil, which is what they hard-coded. A
+   class builder's block is the class's body, no value: it stays empty. */
 static int desugar_empty_block_body(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
+  char *body_of_class = calloc((size_t)n0 + 1, 1);
+  if (!body_of_class) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_BlockNode) continue;
+    int b = class_def_builder(nt, id), blk = b >= 0 ? nt_ref(nt, b, "block") : -1;
+    if (blk >= 0 && blk < n0) body_of_class[blk] = 1;
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_BlockNode || body_of_class[id]) continue;
     int body = nt_ref(nt, id, "body");
     if (body >= 0) {
       /* a `begin`/rescue body is not a StatementsNode and is never empty */
@@ -10881,6 +10886,7 @@ static int desugar_empty_block_body(Compiler *c) {
     c->nscope[body] = c->nscope[id];
     changed = 1;
   }
+  free(body_of_class);
   return changed;
 }
 
@@ -47399,10 +47405,12 @@ int desugar_self_superclass_at(Compiler *c, LowerCtx *lc, int id) {
 }
 /* `RetryOptions = Options.new(:max, :interval)` where Options < Struct:
    the Struct.new class below Options, as in superclass position below */
-/* the Struct subclass K a `X = K.new(..)` write at id makes a class below, or NULL */
+/* the Struct subclass K a `X = K.new(..)` write at id makes a class below, or
+   NULL; a class builder's write (`X = Class.new do ... end`) defines its
+   class itself */
 static const char *struct_new_write_class(const NodeTable *ntc, int id) {
   int v = nt_ref(ntc, id, "value");
-  if (v < 0 || nt_kind(ntc, v) != NK_CallNode || !sp_streq(nt_str(ntc, v, "name"), "new")) return NULL;
+  if (v < 0 || class_def_builder(ntc, id) >= 0 || nt_kind(ntc, v) != NK_CallNode || !is_new_name(nt_str(ntc, v, "name"))) return NULL;
   int rv = nt_ref(ntc, v, "receiver");
   if (rv < 0 || (nt_kind(ntc, rv) != NK_ConstantReadNode && nt_kind(ntc, rv) != NK_ConstantPathNode)) return NULL;
   return struct_subclass_maker(ntc, nt_str(ntc, rv, "name"), 0) ? nt_str(ntc, rv, "name") : NULL;
@@ -47582,8 +47590,9 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   AN_STEP_V("desugar_inline_struct_blocks", desugar_inline_struct_blocks(c));      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
   AN_STEP_V("desugar_singleton_class_meta", desugar_singleton_class_meta(c));      /* Foo.singleton_class.attr_accessor :a -> class << Foo; attr_accessor :a; end */
-  /* X = Class.new(B) do..end -> class X < B; ..; end, a body the host grafts
-     (its class_eval "<text>") and lowers as a class body */
+  /* Class.new(B) do..end held by no constant -> an anonymous class, a body
+     the host grafts (its class_eval "<text>") and lowers as a class body;
+     a constant's builder keeps its block, the class's frame */
   host_begin(&hs, &lc);
   AN_STEP_V("desugar_class_new_blocks", desugar_class_new_blocks(c, &hs));
   host_end(c, &hs);

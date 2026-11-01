@@ -3200,6 +3200,15 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
        form sets the constant, and the constant is the expression's value */
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    /* a class builder's write (`K = Class.new do ... end`, one the record
+       opens its class at: elab_header_class) is emitted where it stands,
+       once (emit_builder_write); its value, the class, is not made where a
+       run of the write would make a new one */
+    if (elab_header_class(c, id, NULL, NULL) >= 0) {
+      unsupported_feature(c, id, "a constant's Class.new or Module.new used as a value (the value of a "
+                                 "block, a lambda or an expression) is not supported: assign it on a line of its own");
+      return 1;
+    }
     if (!comp_const_write_valued(c, cv)) {
       char msg[400];
       snprintf(msg, sizeof msg, "`%s = ...` used as a value is not supported for a constant holding %s; "

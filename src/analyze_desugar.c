@@ -12005,7 +12005,9 @@ static void bls_walk(NodeTable *nt, int id, int lvl, BlsTag *tag) {
    so is a block a later step makes a class body (Class.new do..end), which
    reads no local of the enclosing scope or stays a block: the lowering
    context hands the scope's statements and the node that names it, the
-   body and its owner for the body's own. */
+   body and its owner for the body's own. A class builder's block is one
+   too: it reads no local of the enclosing scope (one that does stays a
+   value builder), so each of its locals is the block's own. */
 int desugar_body_local_scopes_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   BlsTag tag = { c, lc->scope, 0, "" };
@@ -12400,16 +12402,16 @@ int desugar_define_method_proc_arg_at(Compiler *c, LowerCtx *lc, int stmt) {
   return 1;
 }
 
-/* `class D; x = 5; define_method(:f) { x } end`: a local of a class, module
-   or top-level body that a define_method block reads or writes becomes a
-   global private to that body, in the body and in every block of it. The
-   body runs once, so the global is the local's one binding. */
+/* `class D; x = 5; define_method(:f) { x } end`: a local of a class,
+   module, class builder's block or top-level body that a define_method
+   block reads or writes becomes a global private to that body, in the body
+   and in every block of it. The body runs once, so the global is the
+   local's one binding. */
 int desugar_define_method_captures_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  NodeKind ck = nt_kind(nt, id);
   int body = prog_is_root(c, id) ? nt_ref(nt, id, "statements")
-           : ck == NK_ClassNode || ck == NK_ModuleNode || ck == NK_SingletonClassNode
-           ? nt_ref(nt, id, "body") : -1;
+           : nt_kind(nt, id) == NK_SingletonClassNode || class_def_opens_frame(nt, id)
+           ? class_def_body(nt, id) : -1;
   if (body < 0) return 0;
   int changed = 0;
   DmcNames s = { 0 };
@@ -19860,19 +19862,12 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     int reads_outer = cn_reads_outer_local(nt, body, 0) ||
                       cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
     int capture_refusal = reads_outer && !defer_refusals_at(c, id);
-    if (!reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
-        nt_ref(nt, par, "value") == id) {
-      /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
-      const char *cn = nt_str(nt, par, "name");
-      char name[256]; snprintf(name, sizeof name, "%s", cn ? cn : "SpinelAnon");
-      nt_node_reset(nt, par, is_module ? "ModuleNode" : "ClassNode");
-      int cp = fwd_new_node_like(nt, par, "ConstantReadNode");
-      nt_node_set_str(nt, cp, "name", name);
-      nt_node_set_ref(nt, par, "constant_path", cp);
-      if (!is_module) nt_node_set_ref(nt, par, "superclass", super_node);
-      nt_node_set_ref(nt, par, "body", body);
-      nt_node_set_int(nt, par, "class_new_anonymous", 1);
-      nt_node_set_int(nt, par, "block_made_body", 1);
+    /* `Name = Class.new(...) do ... end`: the write defines the class
+       (class_def_builder) and keeps its block, which the scope walk opens
+       as a frame at the write; the block's class_eval text is grafted into
+       it */
+    if (!reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode && nt_ref(nt, par, "value") == id) {
+      if (nt_ref(nt, blk, "body") != body) nt_node_set_ref(nt, blk, "body", body);
       cn_host_body(c, h, par, body);
       changed = 1;
       continue;
@@ -21112,7 +21107,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     char q[1024];
-    if (k == NK_ConstantWriteNode) {
+    if (k == NK_ConstantWriteNode && class_def_builder(nt, id) < 0) {
       int v = nt_ref(nt, id, "value");
       NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
       const char *nm = nt_str(nt, id, "name");
@@ -21132,10 +21127,10 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
       inh_add_name(&r.known, q);
       continue;
     }
-    if (!class_def_opens_cref(nt, id)) continue;
+    if (!class_def_is_class(nt, id) && !class_def_is_module(nt, id)) continue;
     int sc = class_def_super(nt, id);
     if (sc >= 0) qs[id] = inh_resolve_super(&r, qn, nt, parent, id, sc);
-    inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q, NULL);
+    inh_resolve_path(&r, qn, nt, parent, id, class_def_path(nt, id), 0, q, sizeof q, NULL);
     qn[id] = strdup(q);
     if (!qn[id]) break;
     inh_add_name(&r.known, q);
@@ -26818,8 +26813,7 @@ int desugar_static_class_eval(Compiler *c, HostStep *h) {
 int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
-  NodeKind ok = nt_kind(nt, owner);
-  if (ok == NK_ClassNode || ok == NK_ModuleNode) n = sce_body(c, h, owner, body, at, n, locals, gone, &changed);
+  if (class_def_opens_frame(nt, owner)) n = sce_body(c, h, owner, body, at, n, locals, gone, &changed);
   if (changed) comp_grow_node_arrays(c);
   return n;
 }
@@ -26866,6 +26860,7 @@ static int cbs_path_text(const NodeTable *nt, int p, char *buf, size_t cap, int 
   if (p < 0) return 0;
   NodeKind k = nt_kind(nt, p);
   const char *nm = nt_str(nt, p, "name");
+  if (k == NK_ConstantWriteNode) k = NK_ConstantReadNode;   /* (a builder's write is its own name) */
   if (!nm || (k != NK_ConstantReadNode && k != NK_ConstantPathNode)) return 0;
   if (k == NK_ConstantPathNode) {
     int par = nt_ref(nt, p, "parent");

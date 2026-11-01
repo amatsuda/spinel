@@ -1196,7 +1196,7 @@ static int ct_fx_stmt(CtBind *b, Compiler *c, int list, int call, const CtFx *f)
 static int ct_text_stmts(Compiler *c, HostStep *h, int frame, int cls, LoadPoint p, const CtFx *f, int **ids, int *n) {
   NodeTable *nt = (NodeTable *)c->nt;
   *ids = NULL; *n = 0;
-  if (nt_kind(nt, frame) != NK_ClassNode || sce_graft_text(c, h, frame, f->name, f->site, p, ids, n) < 0) return 0;
+  if (!class_def_is_class(nt, frame) || sce_graft_text(c, h, frame, f->name, f->site, p, ids, n) < 0) return 0;
   int ok = 1, nn = 0;
   for (int i = 0; i < *n && ok; i++) {
     int d = (*ids)[i], rv = nt_ref(nt, d, "receiver");
@@ -1258,7 +1258,7 @@ int ct_macro_form(Compiler *c, int call, int list, int j) {
   const int *bb = nt_arr(nt, list, "body", &bn);
   if (!h || !name || (rv >= 0 && nt_kind(nt, rv) != NK_SelfNode && !nt_int(nt, call, "self_call", 0)) ||
       nt_ref(nt, call, "block") >= 0 || j >= bn || bb[j] != call || !ct_macros_in_analysis(nt) || elab_stmt_list(c, call, &frame) != list ||
-      (nt_kind(nt, frame) != NK_ClassNode && nt_kind(nt, frame) != NK_ModuleNode) || nt_ref(nt, frame, "body") != list)
+      !class_def_opens_frame(nt, frame) || class_def_body(nt, frame) != list)
     return -1;
   /* the class, and what its call can meet at its point */
   int cls = elab_self_at(c, call);

@@ -117,7 +117,7 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_rescue_block_bodies_at, desugar_rescue_block_bodies_left, "a block whose body is not a StatementsNode" },
   [LW_MARK_SYM_PROC_BLOCKS] = { "mark_sym_proc_blocks", LF_MARKS, { NK_BlockNode },
     mark_sym_proc_blocks_at, NULL, NULL },
-  [LW_BODY_LOCAL_SCOPES] = { "desugar_body_local_scopes", LF_SCOPE, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+  [LW_BODY_LOCAL_SCOPES] = { "desugar_body_local_scopes", LF_SCOPE | LF_FRAMES, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
     desugar_body_local_scopes_at, NULL, "a local of a class body" },
   [LW_ERRNO_ALIASES] = { "desugar_errno_aliases", 0, { NK_ConstantPathNode },
     desugar_errno_aliases_at, desugar_errno_aliases_left, "`Errno::EWOULDBLOCK`, an alias of another errno's class" },
@@ -164,7 +164,7 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_empty_hash_compare_by_identity_at, desugar_empty_hash_compare_by_identity_left, "`{}.compare_by_identity`" },
   [LW_DEFINE_METHOD_PROC_ARG] = { "desugar_define_method_proc_arg", LF_STMT | LF_FRAMES, { NK_SingletonClassNode },
     desugar_define_method_proc_arg_at, NULL, "`define_method(:m, proc)` in a body" },
-  [LW_DEFINE_METHOD_CAPTURES] = { "desugar_define_method_captures", 0, { NK_ProgramNode, NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+  [LW_DEFINE_METHOD_CAPTURES] = { "desugar_define_method_captures", LF_FRAMES, { NK_ProgramNode, NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
     desugar_define_method_captures_at, NULL, "a body local a define_method block captures" },
   [LW_DEFINE_METHOD_KEYWORDS] = { "desugar_define_method_keywords", LF_STMT | LF_FRAMES, { NK_SingletonClassNode },
     desugar_define_method_keywords_at, NULL, "a `define_method` block with keyword or rest parameters" },
@@ -320,7 +320,7 @@ static int lower_scope(Compiler *c, LowerCtx *lc, const Lowering *w, int owner, 
 static int lower_site(Compiler *c, LowerCtx *lc, const Lowering *w, int id, int ask, int *first) {
   const NodeTable *nt = c->nt;
   if (w->flags & LF_SCOPE) {
-    int body = nt_ref(nt, id, "body");
+    int body = class_def_body(nt, id);
     return body >= 0 ? lower_scope(c, lc, w, id, id, &body, 1, ask, first) : 0;
   }
   if (w->flags & LF_STMT) {
