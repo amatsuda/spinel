@@ -13140,18 +13140,19 @@ static int once_block_jump(const NodeTable *nt, int node, NodeKind k, int depth)
   return -1;
 }
 
-/* The block of Class.new or Module.new is a ClassNode's body by now
-   (desugar_class_new_blocks), and the block of Struct.new or Data.define is
-   read as one where it stands. A `next` in it stops the body there, and the
-   definitions after it are not made; which methods a class has is settled
-   at compile time, so that is refused. Written in a `class` body it is a
-   SyntaxError, so only those blocks bring one here. */
+/* The block of Class.new or Module.new is a class body by now: a
+   constant's builder keeps it (class_def_body), an anonymous one's is a
+   ClassNode's (desugar_class_new_blocks); the block of Struct.new or
+   Data.define is read as one where it stands. A `next` in it stops the
+   body there, and the definitions after it are not made; which methods a
+   class has is settled at compile time, so that is refused. Written in a
+   `class` body it is a SyntaxError, so only those blocks bring one here. */
 static void refuse_class_body_next(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     int body = -1;
-    if (k == NK_ClassNode || k == NK_ModuleNode) body = nt_ref(nt, id, "body");
+    if (class_def_opens_frame(nt, id)) body = class_def_body(nt, id);
     else if (k == NK_CallNode && is_struct_call(nt, id)) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) body = nt_ref(nt, blk, "body");

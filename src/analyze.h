@@ -282,8 +282,9 @@ void elab_open_histories(Compiler *c, void (*fn)(void *arg, int cls, int sg, con
    reopening's class side, its instance side is searched too. */
 int elab_call_method(Compiler *c, int id, int cls, const char *name, int sg);
 /* the class self is where node runs at its load point: a class or module
-   body's; -1 for main's top level; -2 for any other frame (a singleton
-   class body, an eval form's or class builder's block) or no point */
+   body's, or a constant's class builder's block; -1 for main's top level;
+   -2 for any other frame (a singleton class body, an eval form's or an
+   anonymous builder's block) or no point */
 int elab_self_at(Compiler *c, int node);
 /* the versions of method `name` the record holds, in every class's and
    module's histories: defs, define_methods, attrs, aliases, module_function
@@ -484,6 +485,9 @@ int elab_builder_class(Compiler *c, int node);
    table alone: a class's def_node, or a node a pass walked to */
 int is_struct_call(const NodeTable *nt, int val);   /* `Struct.new(..)` / `Data.define(..)` */
 const NodeKind *class_def_kinds(int *n);   /* the node kinds a definition can be */
+int class_def_builder(const NodeTable *nt, int def_node);   /* a constant write's Class.new / Module.new call that defines a class, -1 for none */
+int class_cref(Compiler *c, int cls);   /* the class whose constants code in cls's body writes */
+int class_def_path(const NodeTable *nt, int def_node);   /* the constant node it writes: a header's path, a builder's write or path target */
 const char *class_def_name(const NodeTable *nt, int def_node);   /* the constant name it writes, NULL for none */
 const char *class_def_bare_name(const NodeTable *nt, int def_node);   /* ...written as a plain constant, NULL under a path */
 void class_def_set_body(NodeTable *nt, int def_node, int body);   /* its body statements, as a pass rebuilds them */

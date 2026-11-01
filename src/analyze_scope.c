@@ -566,6 +566,7 @@ void expand_struct_forwarding_super(Compiler *c) {
 typedef struct {
   int scope, cls, proc, dead;
   int cbody, direct, struct_direct, dm_sclass;
+  int bclass1;   /* at a class builder's call: the class its write made, plus one (0 for none) */
   ElabPos pos;
   int slot;
 } WalkCtx;
@@ -1274,6 +1275,13 @@ static const char *reopened_native_class(Compiler *c, int cp, int class_id, cons
 }
 
 
+/* Is a class's body a block, which opens no constant scope: a class
+   builder's (`X = Class.new do ... end`), or an anonymous one's rewritten
+   to a header (block_made_body)? */
+static int block_body_class(const NodeTable *nt, int def_node) {
+  return nt_int(nt, def_node, "block_made_body", 0) || class_def_builder(nt, def_node) >= 0;
+}
+
 /* Did qualify_colliding_classes rename this class or module header to its
    `Outer__Leaf` key, so that its C name is its own, not the builtin's? Not
    when the enclosing class or module is a `Class.new do ... end` or
@@ -1282,7 +1290,7 @@ static const char *reopened_native_class(Compiler *c, int cp, int class_id, cons
 static int header_qualified(Compiler *c, int cp, int class_id) {
   if (cp < 0 || !nt_str(c->nt, cp, "qc_ruby_name")) return 0;
   int encl = class_id >= 0 && class_id < c->nclasses ? c->classes[class_id].def_node : -1;
-  return !(encl >= 0 && nt_int(c->nt, encl, "block_made_body", 0));
+  return !(encl >= 0 && block_body_class(c->nt, encl));
 }
 
 /* Class bodies and direct singleton definitions obey the same reopen limits. */
@@ -1457,13 +1465,14 @@ void header_parent_encloses(Compiler *c, int par, int child, const char *leaf, i
 }
 
 
-/* `class C < S` where the constant S names nothing where the header
-   stands (elab_const_ref_at): CRuby raises NameError there, before the
-   class exists or its body runs. The header becomes that raise, and its
-   parts become nil nodes, as a replaced subtree does. */
+/* `class C < S` (or `C = Class.new(S) do ... end`) where the constant S
+   names nothing where the header stands (elab_const_ref_at): CRuby raises
+   NameError there, before the class exists or its body runs. The header
+   becomes that raise, and its parts become nil nodes, as a replaced
+   subtree does. */
 static int class_superclass_missing(Compiler *c, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int sc = nt_ref(nt, id, "superclass"), owner = -1;
+  int sc = class_def_super(nt, id), owner = -1;
   NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NilNode;
   const char *miss = NULL;
   if ((sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) ||
@@ -1485,14 +1494,28 @@ static int class_superclass_missing(Compiler *c, int id) {
   }
   long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0),
             col = nt_int(nt, id, "node_col", 0);
-  nt_subtree_blank(nt, nt_ref(nt, id, "constant_path"));
-  nt_subtree_blank(nt, sc);
-  nt_subtree_blank(nt, nt_ref(nt, id, "body"));
+  if (class_def_builder(nt, id) >= 0)   /* (its call, with the superclass and block) */
+    nt_subtree_blank(nt, nt_ref(nt, id, "value"));
+  else {
+    nt_subtree_blank(nt, nt_ref(nt, id, "constant_path"));
+    nt_subtree_blank(nt, sc);
+    nt_subtree_blank(nt, nt_ref(nt, id, "body"));
+  }
   nt_node_reset(nt, id, "CallNode");
   if (col) nt_node_set_int(nt, id, "node_col", col);
   int made = name_error_raise(nt, id, msg, ln, fl);
   comp_grow_node_arrays(c);
   return made;
+}
+
+/* The class whose constants a statement in class cls's body writes: cls,
+   or for the block of a class builder's write (`X = Class.new do ... end`),
+   which opens no constant scope, the class around the write */
+int class_cref(Compiler *c, int cls) {
+  while (cls >= 0 && !class_def_opens_cref(c->nt, c->classes[cls].def_node) &&
+         class_def_builder(c->nt, c->classes[cls].def_node) >= 0)
+    cls = c->classes[cls].enclosing_class;
+  return cls;
 }
 
 static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
@@ -1511,7 +1534,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   else if (is_proc_create(c, id)) proc = id;
   NodeKind ty_k = nt_kind(c->nt, id);
   int child = scope_idx;
-  int child_class = class_id;
+  int child_class = class_id, builder_class = -1;
   if (ty_k == NK_LoadNode) elab_walk_site(c, id, &w.pos);   /* a require that places its file runs it here */
 
   /* `class << self; def X; ...; end; end` -- treat body defs as class methods. */
@@ -1564,7 +1587,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     /* Unsupported receiver: fall through to the generic walk below. */
   }
 
-  if (ty_k == NK_ClassNode && class_superclass_missing(c, id)) {
+  if ((ty_k == NK_ClassNode || class_def_builder(c->nt, id) >= 0) && class_superclass_missing(c, id)) {
     walk_scope_in(c, id, w);   /* the raise the header became */
     return;
   }
@@ -1606,7 +1629,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     int names_root = cls_toplevel ||
                      (cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode && nt_ref(c->nt, cp, "parent") < 0) ||
                      (cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantReadNode && class_id >= 0 &&
-                      nt_int(c->nt, c->classes[class_id].def_node, "block_made_body", 0));
+                      block_body_class(c->nt, c->classes[class_id].def_node));
     if (nt_kind(c->nt, id) == NK_ClassNode && cname && is_builtin_module_const_name(cls_leaf) && names_root) {
       int ln = (int)nt_int(c->nt, id, "node_line", 0);
       const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
@@ -1634,8 +1657,13 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     }
     if (nt_kind(c->nt, id) == NK_ClassNode && cname)
       refuse_native_class_reopen(c, id, cp, class_id, cls_leaf);
-    child_class = elab_rec_open(c, id, cp, cname, class_id);
+    child_class = elab_rec_open(c, id, cp, cname, class_cref(c, class_id));
   }
+  /* `X = Class.new(S) do ... end`: the class is made at the write, as a
+     header's, and the block is walked with the class as self and definee
+     (bclass1); its constants stay the cref's */
+  else if (class_def_builder(c->nt, id) >= 0)
+    builder_class = elab_rec_open(c, id, -1, class_def_name(c->nt, id), class_cref(c, class_id));
   else if (ty_k == NK_DefNode) {
     const char *name = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_new(c, name, id);
@@ -1836,11 +1864,14 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   }
 
   WalkCtx cw = { .scope = child, .cls = child_class, .proc = proc, .dead = dead,
-                 .cbody = w.cbody, .direct = w.direct, .struct_direct = w.struct_direct };
+                 .cbody = w.cbody, .direct = w.direct, .struct_direct = w.struct_direct,
+                 .bclass1 = builder_class + 1 };
+  int bblk = ty_k == NK_CallNode && w.bclass1 ? nt_ref(c->nt, id, "block") : -1;   /* the builder's block */
   NodeKind wk = nt_kind(c->nt, id);
   if (child != scope_idx || wk == NK_ClassNode || wk == NK_ModuleNode || wk == NK_SingletonClassNode)
     cw.struct_direct = 0;
-  else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_body(c->nt, id) >= 0)
+  else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && is_struct_call(c->nt, nt_ref(c->nt, id, "value")) &&
+           class_def_body(c->nt, id) >= 0)
     cw.struct_direct = 1;
   if (child_class >= 0) cw.cbody = child_class;
   /* direct is the class whose body we are *directly* in (where `self` is the
@@ -1869,6 +1900,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       WalkCtx rw = cw;
       rw.dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
       rw.pos = elab_child(c->nt, id, r, &w.pos);
+      if (r == bblk) rw.cls = rw.cbody = rw.direct = w.bclass1 - 1;
       walk_child(c, r, rw);
     }
     for (int i = 0; pass == 1 && i < na; i++) {
@@ -2281,81 +2313,148 @@ int is_struct_call(const NodeTable *nt, int val) {
 
 /* The node kinds a definition can be, in the order a pass that iterates
    every definition takes them: kind by kind (NT_FOREACH_KIND over each,
-   its ids ascending), the class headers, then the module headers. A loop
+   its ids ascending), the class headers, the module headers, then the
+   constant writes a builder's class may be (class_def_builder). A loop
    over them asks each node the fact it needs (class_def_opens_frame,
    class_def_opens_cref, class_def_is_class, class_def_is_module). *n
    receives the count. */
 const NodeKind *class_def_kinds(int *n) {
-  static const NodeKind kinds[] = { NK_ClassNode, NK_ModuleNode };
+  static const NodeKind kinds[] = { NK_ClassNode, NK_ModuleNode, NK_ConstantWriteNode };
   *n = (int)(sizeof kinds / sizeof kinds[0]);
   return kinds;
 }
 
-/* The constant name a definition writes: a header's path's last name (its
-   C spelling, which the qualify passes may have renamed); NULL for none.
-   The name half of the accessors: the next step answers a class builder's
-   constant write too. */
+/* The Class.new or Module.new call a constant write holds as its value
+   (`X = Class.new(S) do ... end`), the write being the class's definition:
+   the call, -1 for any other node. Its block is the class's body and its
+   first argument the superclass; the block opens a frame (self and
+   definee are the class) but no cref. A path write (`A::B = Class.new do
+   ... end`) is no definition yet: it stays a value. */
+static int builder_call_of(const NodeTable *nt, int def_node, int *module) {
+  int val = nt_ref(nt, def_node, "value"), recv = val >= 0 ? nt_ref(nt, val, "receiver") : -1;
+  if (recv < 0 || nt_kind(nt, val) != NK_CallNode || nt_kind(nt, recv) != NK_ConstantReadNode) return -1;
+  const char *rn = nt_str(nt, recv, "name"), *mn = nt_str(nt, val, "name");
+  int blk = nt_ref(nt, val, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  *module = is_module_new(rn, mn);
+  return *module || is_class_new(rn, mn) ? val : -1;
+}
+/* The builder call of a constant write (-1: none), and in *module whether
+   it is Module.new. The loops over class_def_kinds ask every constant
+   write, per question, so the answer is found once per write while the
+   table holds (NtBuilders); -1 for any other node. */
+static int builder_call(const NodeTable *nt, int def_node, int *module) {
+  *module = 0;
+  if (def_node < 0 || nt_kind(nt, def_node) != NK_ConstantWriteNode) return -1;
+  NodeTable *m = (NodeTable *)nt;   /* the index is the table's own */
+  struct NtBuilders *b = m->builders;
+  if (!b && !(b = m->builders = calloc(1, sizeof *b))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (b->ver != nt->version || b->edits != (unsigned long)nt->edits || b->cnt != nt->count) {
+    if (nt->count > b->cap) {
+      int cap = b->cap > 0 ? b->cap : 1024;
+      while (cap < nt->count) cap *= 2;
+      int *call = realloc(b->call, sizeof(int) * (size_t)cap);
+      unsigned char *mod = call ? realloc(b->module, (size_t)cap) : NULL;
+      unsigned *st = mod ? realloc(b->stamp, sizeof(unsigned) * (size_t)cap) : NULL;
+      if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      b->call = call; b->module = mod; b->stamp = st;
+      memset(b->stamp + b->cap, 0, sizeof(unsigned) * (size_t)(cap - b->cap));
+      b->cap = cap;
+    }
+    if (++b->cur == 0) { memset(b->stamp, 0, sizeof(unsigned) * (size_t)b->cap); b->cur = 1; }
+    b->ver = nt->version; b->edits = (unsigned long)nt->edits; b->cnt = nt->count;
+  }
+  if (b->stamp[def_node] != b->cur) {
+    int is_mod = 0;
+    b->call[def_node] = builder_call_of(nt, def_node, &is_mod);
+    b->module[def_node] = (unsigned char)(b->call[def_node] >= 0 && is_mod);
+    b->stamp[def_node] = b->cur;
+  }
+  *module = b->module[def_node];
+  return b->call[def_node];
+}
+int class_def_builder(const NodeTable *nt, int def_node) {
+  int module;
+  return builder_call(nt, def_node, &module);
+}
+
+/* The constant node a definition writes: a header's path, or a builder's
+   write itself (`X = Class.new`) */
+int class_def_path(const NodeTable *nt, int def_node) {
+  return class_def_builder(nt, def_node) >= 0 ? def_node : nt_ref(nt, def_node, "constant_path");
+}
+
+/* The constant name a definition writes: its path's last name (a header's
+   C spelling, which the qualify passes may have renamed); NULL for none. */
 const char *class_def_name(const NodeTable *nt, int def_node) {
-  int cp = nt_ref(nt, def_node, "constant_path");
+  int cp = class_def_path(nt, def_node);
   return cp >= 0 ? nt_str(nt, cp, "name") : NULL;
 }
 
-/* ...when the definition writes it as a plain constant (`class X`), not
-   under a path (`class A::X`, `class ::X`): NULL otherwise. The next step
-   answers a builder's `X = Class.new` write too. */
+/* ...when the definition writes it as a plain constant (`class X`,
+   `X = Class.new`), not under a path (`class A::X`): NULL otherwise. */
 const char *class_def_bare_name(const NodeTable *nt, int def_node) {
-  int cp = nt_ref(nt, def_node, "constant_path");
-  return cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+  int cp = class_def_path(nt, def_node);
+  NodeKind k = cp >= 0 ? nt_kind(nt, cp) : NK_NONE;
+  return k == NK_ConstantReadNode || k == NK_ConstantWriteNode ? nt_str(nt, cp, "name") : NULL;
 }
 
 /* The body a definition's statements go in, set by a pass that rebuilds
-   it (a statement placed first, an accessor added): a header's "body". The
-   write half of class_def_body: the next step sets a builder's block's. */
+   it (a statement placed first, an accessor added): a header's "body", a
+   builder's block's. The write half of class_def_body. */
 void class_def_set_body(NodeTable *nt, int def_node, int body) {
-  nt_node_set_ref(nt, def_node, "body", body);
+  int b = class_def_builder(nt, def_node);
+  if (b >= 0) nt_node_set_ref(nt, nt_ref(nt, b, "block"), "body", body);
+  else nt_node_set_ref(nt, def_node, "body", body);
 }
 
 /* The class body a definition node carries: a ClassNode's or ModuleNode's
    own, or the block of `Name = Struct.new(...) do ... end` (and
-   Data.define), whose write is the class's def_node. Reading "body" off that
-   write found nothing, so an `include` / `extend` / `prepend` in the block
-   was dropped. -1 when there is none. */
+   Data.define) or of a class builder's write, the class's def_node.
+   Reading "body" off that write found nothing, so an `include` / `extend` /
+   `prepend` in the block was dropped. -1 when there is none. */
 int class_def_body(const NodeTable *nt, int def_node) {
   if (def_node < 0) return -1;
   NodeKind k = nt_kind(nt, def_node);
   if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) return nt_ref(nt, def_node, "body");
   int val = nt_ref(nt, def_node, "value");
-  if (!is_struct_call(nt, val)) return -1;
+  if (!is_struct_call(nt, val) && class_def_builder(nt, def_node) < 0) return -1;
   int blk = nt_ref(nt, val, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
   int bb = nt_ref(nt, blk, "body");
   return bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? bb : -1;
 }
 
-/* The superclass reference a definition node carries: a ClassNode's `< S`;
-   -1 for a module, a Struct write or none. Reads "superclass" for the
-   readers converted to it; the places that still read the ref off a
-   ClassNode they are walking are not through it. */
+/* The superclass reference a definition node carries: a ClassNode's `< S`,
+   a class builder's first argument; -1 for a module, a Struct write or
+   none. */
 int class_def_super(const NodeTable *nt, int def_node) {
-  return nt_ref(nt, def_node, "superclass");
+  int b = class_def_builder(nt, def_node);
+  if (b < 0) return nt_ref(nt, def_node, "superclass");
+  int an = nt_ref(nt, b, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  return class_def_is_class(nt, def_node) && ac >= 1 ? av[0] : -1;
 }
 
-/* Was this definition written as a module (`module M`)? */
+/* Was this definition written as a module (`module M`, `M = Module.new`)? */
 int class_def_is_module(const NodeTable *nt, int def_node) {
-  return nt_kind(nt, def_node) == NK_ModuleNode;
+  int module;
+  return builder_call(nt, def_node, &module) >= 0 ? module : def_node >= 0 && nt_kind(nt, def_node) == NK_ModuleNode;
 }
 
-/* Was this definition written as a class (`class X`): not a module, a Struct
-   or Data write, or none? */
+/* Was this definition written as a class (`class X`, `X = Class.new`): not
+   a module, a Struct or Data write, or none? */
 int class_def_is_class(const NodeTable *nt, int def_node) {
-  return nt_kind(nt, def_node) == NK_ClassNode;
+  int module;
+  return builder_call(nt, def_node, &module) >= 0 ? !module : def_node >= 0 && nt_kind(nt, def_node) == NK_ClassNode;
 }
 
 /* Does this definition open a frame whose self and definee are the class: a
-   class or module body. What the passes that move defs, ivars, self, attr_*
-   and include / extend / prepend ask of a node they found. A Struct or Data
-   block's body opens one too, but a Struct write answers no here: the
-   passes reach that body through their own Struct arms (and class_def_body). */
+   class or module body, a class builder's block. What the passes that move
+   defs, ivars, self, attr_* and include / extend / prepend ask of a node
+   they found. A Struct or Data block's body opens one too, but a Struct
+   write answers no here: the passes reach that body through their own
+   Struct arms (and class_def_body). */
 int class_def_opens_frame(const NodeTable *nt, int def_node) {
   return class_def_is_class(nt, def_node) || class_def_is_module(nt, def_node);
 }
@@ -2365,7 +2464,8 @@ int class_def_opens_frame(const NodeTable *nt, int def_node) {
    node. Kept apart from class_def_opens_frame: a block that builds a class
    takes the class as self, but its constants are the enclosing scope's. */
 int class_def_opens_cref(const NodeTable *nt, int def_node) {
-  return class_def_is_class(nt, def_node) || class_def_is_module(nt, def_node);
+  NodeKind k = nt_kind(nt, def_node);
+  return k == NK_ClassNode || k == NK_ModuleNode;
 }
 
 /* Register the symbol members of a Struct.new(...) call onto `cls`. */
@@ -4475,10 +4575,11 @@ void register_globals_consts(Compiler *c) {
         LocalVar *cv = comp_const_intern(c, nm);
         lv_set_type(cv, TY_REGEX);
       }
-      /* a Struct/Data const names a class, not a value constant.
-         Do NOT skip when the name collides with a module: M::V = "str" is a
-         value constant even though top-level `module V` exists. */
-      if (nm && is_c_ident(nm) && !is_regex_const) {
+      /* Do NOT skip when the name collides with a module: M::V = "str" is a
+         value constant even though top-level `module V` exists. A class
+         builder's write (`X = Class.new do ... end`) names the class, as a
+         header does: no value constant. */
+      if (nm && is_c_ident(nm) && !is_regex_const && class_def_builder(nt, id) < 0) {
         LocalVar *cv = comp_const_intern(c, nm);
         cv->const_def_write = 1;
         /* `CONST = SomeClass.new(...)`: reads of CONST during the new()
@@ -5583,14 +5684,17 @@ static LoadPoint gvar_first_read(Compiler *c, const char *gname) {
       if (p.region > 0) return p;
       if (p.region == 0 && (best.region < 0 || p.seq < best.seq)) best = p;
     }
+  int init_named = -1;   /* elab_names_method of `initialize`, asked once */
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     const char *nm = nt_str(nt, n, "name");
     if (!nm || elab_in_method_body(c, n)) continue;
     LoadPoint p = elab_point_from(c, n);
     if (p.region < 0 || (p.region == 0 && best.region == 0 && p.seq >= best.seq)) continue;
-    if (is_new_name(nm)) nm = "initialize";   /* `new` runs `initialize` */
-    if (is_method_naming_call(nm) || visibility_of_name(nm) || is_mixin_call(nm) ? elab_form_runs(c, n) == ELAB_NO
-                                                                                 : !elab_names_method(c, nm))
+    if (is_new_name(nm)) {   /* `new` runs `initialize` */
+      if (init_named < 0) init_named = elab_names_method(c, "initialize");
+      if (!init_named) continue;
+    } else if (is_method_naming_call(nm) || visibility_of_name(nm) || is_mixin_call(nm) ? elab_form_runs(c, n) == ELAB_NO
+                                                                                       : !elab_names_method(c, nm))
       continue;
     if (p.region > 0) { best = p; break; }
     best = p;

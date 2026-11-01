@@ -20355,6 +20355,16 @@ static void emit_cpath_recv_name(Compiler *c, const char *name, int t, Buf *b, i
              name, name, t, name);
 }
 
+/* A class builder's write (`X = Class.new do ... end`, `P = Struct.new(:a)
+   do ... end`), whose class the record holds (elab_builder_class): the
+   block's statements run here, with the class anonymous, then the write
+   names it */
+static void emit_builder_write(Compiler *c, int id, Buf *b, int indent) {
+  int sci = elab_builder_class(c, id);
+  emit_class_body_stmts(c, sci, class_def_body(c->nt, id), b, indent);
+  if (comp_class_anonymous(c, sci)) emit_class_assign_name(c, sci, class_ruby_name(c, sci), b, indent);
+}
+
 static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int cp = nt_ref(nt, id, "constant_path");
@@ -20763,21 +20773,17 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     LocalVar *lv = isg ? comp_gvar(c, key) : comp_const(c, key);
     int v = nt_ref(nt, id, "value");
     if (!lv || (!isg && lv->type == TY_UNKNOWN)) {
-      /* The struct-def constant itself (`Foo = Struct.new(...) do ... end`) has
-         no C runtime value and is skipped -- but any top-level constant writes
-         INSIDE that block still need init code emitted. register_structs only
+      /* The struct-def constant itself (`Foo = Struct.new(...) do ... end`,
+         and a class builder's write) has no C runtime value and is skipped
+         -- but any top-level constant writes INSIDE that block still need
+         init code emitted. register_structs only
          consumes the block for class/ivar/method registration, never as
          executable statements, so without this such constants stay NULL/default
          despite being declared and typed (a method reading them, e.g. a Linedef
          FLAGS[:TWOSIDED] flag helper, silently sees an empty constant). Mirrors
          the block's defs, which take the struct's class from the load record
          (elab_record_builders). */
-      if (!isg && v >= 0 && is_struct_call(nt, v)) {
-        int sci = elab_builder_class(c, id);
-        emit_class_body_stmts(c, sci, class_def_body(nt, id), b, indent);
-        /* the block ran with the class anonymous; the write names it */
-        if (comp_class_anonymous(c, sci)) emit_class_assign_name(c, sci, class_ruby_name(c, sci), b, indent);
-      }
+      if (!isg && v >= 0 && elab_builder_class(c, id) >= 0) emit_builder_write(c, id, b, indent);
       /* a value that runs a call finding no method where it runs
          (cplan_missing: `zz`, `zz + 1`, `zz.to_s`, `id(zz)`) has no type
          either, and raises there, before the write: run the operands ahead
@@ -22232,6 +22238,9 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (k == NK_IfNode)     { emit_if(c, id, b, indent, 0, 1); return; }
   if (k == NK_UnlessNode) { emit_if(c, id, b, indent, 1, 1); return; }
   if (k == NK_CaseMatchNode) { emit_case_match(c, id, b, indent, 1, -1); return; }
+  /* a class builder's write in a value's place (one the record opens its
+     class at, elab_header_class): the expression arm refuses it */
+  if (k == NK_ConstantWriteNode && elab_header_class(c, id, NULL, NULL) >= 0) { emit_expr(c, id, b); return; }
   if (k == NK_ReturnNode) { emit_return(c, id, b, indent); return; }
   /* a tail `retry` diverges (goto back to its begin); the value is dead */
   if (k == NK_RetryNode) { emit_stmt_inner(c, id, b, indent); return; }

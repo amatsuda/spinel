@@ -695,6 +695,7 @@ void nt_free(NodeTable *nt) {
   free(nt->aux);
   free(nt->counts);
   if (nt->holders) { free(nt->holders->par); free(nt->holders->stamp); free(nt->holders); }
+  if (nt->builders) { free(nt->builders->call); free(nt->builders->module); free(nt->builders->stamp); free(nt->builders); }
   free(nt);
 }
 

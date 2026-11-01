@@ -1026,9 +1026,10 @@ static const NodeKind *lr_const_write_kinds(int *n);
    `k = Data.define(:a) do`): the one registration homes it in
    (register_structs: a constant's class by its name, a local's the class
    keyed to the write), once registration has run (elab_record_builders);
-   LR_UNKNOWN_CLASS before */
+   LR_UNKNOWN_CLASS before, and for a write with no such block */
 static int lr_builder_class(Compiler *c, int node) {
-  if (!c->lrec->structs) return LR_UNKNOWN_CLASS;
+  if (class_def_builder(c->nt, node) >= 0) return elab_header_class(c, node, NULL, NULL);   /* made at the write (elab_rec_open) */
+  if (!c->lrec->structs || class_def_body(c->nt, node) < 0) return LR_UNKNOWN_CLASS;
   if (nt_kind(c->nt, node) == NK_ConstantWriteNode) {
     int ci = const_node_class_index(c, node);
     return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
@@ -1050,7 +1051,8 @@ int elab_builder_class(Compiler *c, int node) {
    aliases up to a cap; else none known */
 static int lr_class_of(Compiler *c, const LrDef *d) {
   NodeKind k = d ? nt_kind(c->nt, d->node) : NK_NilNode;
-  if (k == NK_ClassNode || k == NK_ModuleNode) return elab_header_class(c, d->node, NULL, NULL);
+  if (k == NK_ClassNode || k == NK_ModuleNode || (d && class_def_builder(c->nt, d->node) >= 0))
+    return elab_header_class(c, d->node, NULL, NULL);
   if (k != NK_ConstantWriteNode) return LR_UNKNOWN_CLASS;
   if (class_def_body(c->nt, d->node) >= 0) return lr_builder_class(c, d->node);
   int v = nt_ref(c->nt, d->node, "value");
@@ -3897,8 +3899,8 @@ int elab_self_at(Compiler *c, int node) {
   if (p.region < 0) return LR_UNKNOWN_CLASS;
   int f = r->st[p.seq].frame;
   if (f < 0) return LR_MAIN;
-  NodeKind k = nt_kind(c->nt, r->st[f].node);
-  int cls = k == NK_ClassNode || k == NK_ModuleNode ? elab_header_class(c, r->st[f].node, NULL, NULL) : LR_UNKNOWN_CLASS;
+  /* a class or module body, or a class builder's block (made at its write) */
+  int cls = class_def_opens_frame(c->nt, r->st[f].node) ? elab_header_class(c, r->st[f].node, NULL, NULL) : LR_UNKNOWN_CLASS;
   return cls >= 0 ? cls : LR_UNKNOWN_CLASS;
 }
 
