@@ -37,6 +37,18 @@ int class_switch_arm_oint(Compiler *c, int call, int cid, const char *name) {
 
 /* `mark` (or NULL) is the slot's assigned mark (ivar_set_mark), set after
    the store. */
+/* Whether a class can be a run-time class value: it is named by reached
+   code, or it is an ancestor of one that is (`superclass` reaches it). */
+static int class_value_possible(Compiler *c, int k) {
+  if (k < 0 || !c->classes[k].unreferenced) return 1;
+  for (int j = 0; j < c->nclasses; j++) {
+    if (c->classes[j].unreferenced) continue;
+    for (int x = c->classes[j].parent; x >= 0; x = c->classes[x].parent)
+      if (x == k) return 1;
+  }
+  return 0;
+}
+
 static void emit_attr_writer_converted(Compiler *c, int arg, TyKind ivt, int tmp,
                                        const char *name, const char *mark, Buf *b) {
   TyKind avk = store_value_kind(c, arg);
@@ -4424,6 +4436,10 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           int rdef9 = 0;
           for (int k = 0; k < c->nclasses; k++) {
             if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, id, k, name, argc)) continue;
+            /* a class no reached code names, and no named class descends
+               from, is no class value: its singleton copy is not compiled
+               (#10592), so an arm calling it would dangle */
+            if (!class_value_possible(c, k)) continue;
             int defcls9 = -1;
             int kmi = call_target(c, id, k, name, CT_CMETHOD, &defcls9);
             if (kmi < 0) continue;
