@@ -560,7 +560,7 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
     if (!vs || k >= n) break;
     int v = vs[k];
     if (v < 0 || nt_kind(nt, v) != NK_PreExecutionNode) continue;
-    if (w->reg) walk_scope_stmt(c, v, sc, at);
+    if (w->reg) walk_scope_stmt(c, v, k, sc, at);
     else elab_walk(w, v, at);
   }
   for (int k = 0;; k++) {
@@ -570,7 +570,7 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
     if (v < 0) continue;
     if (nt_kind(nt, v) != NK_PreExecutionNode) {
       int seen = w->r->at[v] != -2;   /* a statement two lists share joins once */
-      if (w->reg) walk_scope_stmt(c, v, sc, at);
+      if (w->reg) walk_scope_stmt(c, v, k, sc, at);
       if (seen) continue;
       if (!w->reg) elab_walk(w, v, at);
     }
@@ -1506,13 +1506,14 @@ static LrMixKind lr_mix_kind(const NodeTable *nt, int node, const char *nm, int 
 /* The builtin classes and modules a header of the program reopens, by the
    name the header makes its class under (lr_reopened), taken before the
    walk: a reference to one before its header waits for the class
-   (LR_LATER) */
+   (LR_LATER). So does a Thread or a Fiber an attr declaration names: the
+   walk makes its reopening there (handle_attr_form). */
 static void lr_reopens_take(Compiler *c) {
   const NodeTable *nt = c->nt;
   LoadRecord *r = c->lrec;
-  for (int pass = 0; pass < 2; pass++)
-    NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, n) {
-      const char *nm = class_def_name(nt, n);
+  for (int pass = 0; pass < 3; pass++)
+    NT_FOREACH_KIND(nt, pass == 2 ? NK_CallNode : pass ? NK_ModuleNode : NK_ClassNode, n) {
+      const char *nm = pass < 2 ? class_def_name(nt, n) : handle_attr_decl(nt, n);
       if (!nm || !(is_builtin_class_name(nm) || is_builtin_module_const_name(nm))) continue;
       r->reopens = lr_grow(r->reopens, &r->creopens, r->nreopens, sizeof *r->reopens);
       if (!(r->reopens[r->nreopens++] = strdup(nm))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }

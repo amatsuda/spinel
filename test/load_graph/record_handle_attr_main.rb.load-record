@@ -1,0 +1,47 @@
+load record: 27 points, 1 regions
+r0 #0 f0 ProgramNode line 10
+r0 #1 f0 ModuleNode Cfg line 10
+  r0 #2 f0 ClassNode Thread line 11
+    r0 #3 f0 DefNode x line 12
+  r0 #4 f0 ClassNode Thread line 14
+    r0 #5 f0 DefNode x line 14
+    r0 #6 f0 DefNode x= line 14
+r0 #7 f0 CallNode x= line 16
+r0 #8 f0 CallNode p line 17
+r0 #9 f0 CallNode p line 18
+r0 #10 f0 IfNode line 19
+  r0 #11 may f0 ClassNode Fiber line 20
+    r0 #12 may f0 DefNode tag line 20
+r0 #13 f0 CallNode p line 22
+r0 #14 f0 CallNode instance_eval line 23
+  r0 #15 f0 NilNode line 0
+r0 #16 f0 CallNode p line 24
+r0 #17 f0 ModuleNode Own line 25
+  r0 #18 f0 ClassNode Thread line 26
+    r0 #19 f0 DefNode own_x line 26
+    r0 #20 f0 DefNode own_x= line 26
+  r0 #21 f0 ClassNode Own__Thread line 27
+    r0 #22 f0 DefNode hi line 28
+r0 #23 f0 CallNode own_x= line 31
+r0 #24 f0 CallNode p line 32
+r0 #25 f0 ClassNode Thread line 23
+  r0 #26 f0 DefNode ie line 23
+class Cfg: body#1
+class Thread: body#2 body#4 body#18 body#25
+class Fiber: body#11
+class Own: body#17
+class Own__Thread: body#21
+entity Cfg: owner main leaf Cfg
+entity Own: owner main leaf Own
+entity Own__Thread: owner Own leaf Thread
+const Cfg: write#1
+Thread#x: def#3 runs=#8 def#5 runs=#8 end=yes
+Thread#x=: def#6 end=yes
+Fiber#tag: def#12 may end=unknown
+const Own: write#17
+Thread#own_x: def#19 end=yes
+Thread#own_x=: def#20 end=yes
+const Own::Thread: write#21
+Own__Thread#hi: def#22 end=yes
+Thread#ie: def#26 end=yes
+versions Thread#x: def#3..#5 seen=def#3 idle, def#5..end seen=def#5; 2 of the name

@@ -1690,6 +1690,13 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     child = new_idx;
   }
   else if (ty_k == NK_CallNode) {
+    /* `Thread.attr_accessor :x`: the reopening it means, in its place and
+       walked next, or at its file's end (handle_attr_form) */
+    {
+      int first = handle_attr_form(c, id, w.slot ? w.pos.list : -1, w.slot - 1, w.slot && !dead, w.pos.file >= 0 ? w.pos.file : 0);
+      if (first >= 0) { walk_scope_in(c, first, w); return; }
+      if (first == -2) return;
+    }
     /* a class-body macro the walk runs: what it defines stands in its
        place, walked from the first statement on */
     if (w.slot && class_id >= 0 && !dead) {
@@ -1926,10 +1933,10 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   walk_scope_in(c, id, (WalkCtx){ .scope = scope_idx, .cls = class_id, .proc = -1, .cbody = -1, .direct = -1, .pos = { .e = -1 } });
 }
 
-/* A statement of a file's top level, entered by the load record's walk at
+/* Statement k of a file's top level, entered by the load record's walk at
    pos (analyze_elab.c): in the file's scope, outside any class body */
-void walk_scope_stmt(Compiler *c, int stmt, int scope_idx, ElabPos pos) {
-  walk_child(c, stmt, (WalkCtx){ .scope = scope_idx, .cls = -1, .proc = -1, .cbody = -1, .direct = -1, .pos = pos });
+void walk_scope_stmt(Compiler *c, int stmt, int k, int scope_idx, ElabPos pos) {
+  walk_child(c, stmt, (WalkCtx){ .scope = scope_idx, .cls = -1, .proc = -1, .cbody = -1, .direct = -1, .pos = pos, .slot = k + 1 });
 }
 
 static void mf_mark(Compiler *c, int mi) {
