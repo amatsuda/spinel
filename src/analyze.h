@@ -477,6 +477,16 @@ int elab_body_visibility_at(Compiler *c, int node);
 /* method `name`'s visibility on cls (singleton when sg) at p: SP_VIS_*,
    -1 when not known or not defined */
 int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p);
+/* ... when no change of it follows: elab_method_vis_at's answer at p, or -1
+   where an entry of the name's histories along cls's superclass chain at or
+   after p (one in another region too, whose order is not known, and an
+   unplaced one, a visibility call in a method body that runs at a point
+   the record does not know) gives another visibility, or a call of a
+   program's method that may define something runs on the class at or after
+   p, whose body may change it (a send or an eval is passed over: the
+   record holds it opaque whatever it names, and the forms of it that
+   change a visibility are raised or refused today) */
+int elab_method_vis_held_from(Compiler *c, int cls, const char *name, int sg, LoadPoint p);
 /* The entries a class side (cls, LR_MAIN for main's; sg) has of a name
    as the load phase ends, as the registration applies them: an attr form,
    an undef, a module_function copy or an alias counts when no condition in

@@ -271,6 +271,7 @@ typedef enum {
   PA_READER,      /* an attr reader's ivar load */
   PA_NATIVE,      /* a native class's C binding */
   PA_ARITY,       /* the call's count is refused: ArgumentError */
+  PA_VIS,         /* the target's visibility refuses the explicit receiver: NoMethodError */
   PA_SYNTH_ENUM,  /* a Struct's synthesized each/each_pair: an Enumerator */
   PA_STRUCT_SET,  /* a Struct's builtin member write */
   PA_BUILTIN,     /* a builtin value's arm (key PA_KEY_BUILTIN + its PolyFamily) */
@@ -360,6 +361,7 @@ typedef struct {
   short def;            /* the class the arm reads from: the method's defining
                            class (an exception reopening's for its definer), the
                            reader's ivar class; -1 for others */
+  unsigned char vis;    /* a PA_VIS arm's SP_VIS_*: the visibility that refuses */
   int mi;               /* the user method scope, or -1 */
 } PolyArm;
 

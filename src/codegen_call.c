@@ -21524,6 +21524,17 @@ static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *
   return 1;
 }
 
+/* The NoMethodError a private or protected (vis) method vnm raises for the
+   boxed receiver _t<tv>, an expression: the receiver staged for
+   NoMethodError#receiver and named as the runtime's NoMethodError text
+   names it (sp_nomethod_recv_desc: nil, true, `class X`, `an instance
+   of X`), its description rooted while the message is built. */
+void emit_vis_raise_boxed(int vis, const char *vnm, int tv, Buf *b) {
+  int td = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = sp_nomethod_recv_desc(_t%d); SP_GC_ROOT_STR(_t%d); sp_exc_stage_recv(_t%d); "
+                "sp_raise_cls(\"NoMethodError\", sp_sprintf(\"%%s method '%%s' called for %%s\", \"%s\", \"%s\", _t%d)); })",
+             td, tv, td, tv, vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, td);
+}
 static int emit_vis_refusal_x(Compiler *c, int id, Buf *b);
 /* A private (or protected) method of a program's Object reopening, called
    with an explicit receiver whose own class does not define the name: the
@@ -21574,9 +21585,10 @@ static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind
   else { buf_puts(b, "sp_exc_stage_recv("); emit_boxed(c, vrecv, b); buf_puts(b, "), "); }
   { int vac; const int *vav = call_args(nt, id, &vac);
     for (int k = 0; k < vac; k++) { buf_puts(b, "(void)("); emit_expr(c, vav[k], b); buf_puts(b, "), "); } }
-  if (boxed)
-    buf_printf(b, "sp_raise_cls(\"NoMethodError\", sp_str_concat((&(\"\\xff\" \"%s method '%s' called for an instance of \")[1]), "
-                  "sp_poly_class_name(_t%d))), %s; }))", kind, vnm, tv, default_value_from_compiler(c, repr_of(c, id).as_ty));
+  if (boxed) {
+    emit_vis_raise_boxed(vis, vnm, tv, b);
+    buf_printf(b, ", %s; }))", default_value_from_compiler(c, repr_of(c, id).as_ty));
+  }
   else {
     char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ", kind, vnm);
     buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
