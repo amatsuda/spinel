@@ -663,6 +663,15 @@ else {
             sbuf_set(out, "poly", 4);
             return true;
         }
+        case RBS_TYPES_LITERAL: {
+            /* `true` and `false` are the two values of bool, as TrueClass
+             * and FalseClass are; other literals (`1`, `:a`, `"s"`) name
+             * one value, which no slot type stands for. */
+            rbs_node_t *lit = ((rbs_types_literal_t *) node)->literal;
+            if (lit == NULL || lit->type != RBS_AST_BOOL) return false;
+            sbuf_set(out, "bool", 4);
+            return true;
+        }
         case RBS_TYPES_CLASS_SINGLETON:
             /* `singleton(X)`: the class itself, a Class value. It used to
              * fall out of the subset, which dropped the whole method's seed,
@@ -672,7 +681,7 @@ else {
         default:
             /* Out of subset: Self / Top / Bottom / Any / Instance /
              * Class / Block / Function / Interface / Intersection /
-             * Literal / Proc / Tuple / UntypedFunction / Variable. */
+             * Literal (but true and false) / Proc / Tuple / UntypedFunction / Variable. */
             return false;
     }
 }
