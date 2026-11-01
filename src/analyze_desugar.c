@@ -12101,6 +12101,7 @@ int desugar_builder_block_param_left(Compiler *c, LowerCtx *lc, int id) {
   (void)lc;
   return builder_block_param(c->nt, id) >= 0;
 }
+static int rbp_captured(const NodeTable *nt, int node, const char *name, int level);
 int desugar_builder_block_param_at(Compiler *c, LowerCtx *lc, int id) {
   (void)lc;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -12108,14 +12109,39 @@ int desugar_builder_block_param_at(Compiler *c, LowerCtx *lc, int id) {
   if (rq < 0) return 0;
   int blk = nt_ref(nt, class_def_builder(nt, id), "block"), body = class_def_body(nt, id);
   if (body >= 0) {
-    int wr = fwd_new_node_like(nt, rq, "LocalVariableWriteNode");
-    nt_node_set_str(nt, wr, "name", nt_str(nt, rq, "name"));
-    nt_node_set_ref(nt, wr, "value", fwd_new_node_like(nt, rq, "SelfNode"));
+    const char *k = nt_str(nt, rq, "name");
     int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    /* The usual reassignment is a plain `k = v` of the body itself, with
+       no block or lambda before it that could read `k` later: from that
+       write on the name is a local of its own, as a `*rest` parameter's
+       copy is, so `k` stays the class and the local after it keeps its
+       own type. Shared, the local held both, and a call on its class arm
+       raised NoMethodError (`k.instance_methods` before `k = n + 1`). */
+    int w = 0, shared = 0;
+    while (w < bn && bpw_walk(nt, bb[w], k, NULL) == 0) shared |= rbp_captured(nt, bb[w++], k, 0);
+    int wv = w < bn && nt_kind(nt, bb[w]) == NK_LocalVariableWriteNode && sp_streq(nt_str(nt, bb[w], "name"), k)
+             ? nt_ref(nt, bb[w], "value") : -1;
+    if (wv >= 0 && !shared && bpw_walk(nt, wv, k, NULL) == 0 && !rbp_captured(nt, wv, k, 0)) {
+      char nn[300]; snprintf(nn, sizeof nn, "__bbpv_%s", k);
+      nt_node_set_str(nt, bb[w], "name", nn);
+      for (int j = w + 1; j < bn; j++) bpw_walk(nt, bb[j], k, nn);
+    }
+    int wr = fwd_new_node_like(nt, rq, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wr, "name", k);
+    nt_node_set_ref(nt, wr, "value", fwd_new_node_like(nt, rq, "SelfNode"));
+    bb = nt_arr(nt, body, "body", &bn);
     int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
     if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     nb[0] = wr;
     if (bn) memcpy(nb + 1, bb, sizeof(int) * (size_t)bn);
+    /* numbered after the body, the write would come after the reads it
+       feeds in the write-type fold, which visits writes in node order: it
+       takes the first statement's number, and that statement takes its
+       (#6491) */
+    if (bn > 0 && bb[0] < wr) {
+      elab_swap_nodes(c, nb[1], wr);
+      nb[0] = nb[1]; nb[1] = wr;
+    }
     nt_node_set_arr(nt, body, "body", nb, bn + 1);
     free(nb);
   }

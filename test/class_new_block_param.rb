@@ -27,3 +27,24 @@ Z = Class.new do |k|
   K2 = k
 end
 p K2.equal?(Z), K2.name, Z.name
+
+# a plain write makes the parameter a local of its own from there on; a
+# lambda made before the write, or a conditional write, shares it
+W = Class.new do |k|
+  def self.tag = "w"
+  s = k.tag
+  k = s * 2
+  p k, k.size
+end
+V = Class.new do |k|
+  def self.v = 10
+  pr = -> { k }
+  k = k.v + 1
+  p pr.call, k
+end
+U = Class.new do |k|
+  def self.tag = "u"
+  s = k.tag
+  k = s * 2 if s
+  p k, k.size
+end
