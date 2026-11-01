@@ -124,6 +124,10 @@ const CtLocal *ct_frame_local(const CtEnv *e, int frame, const char *name);
 int ct_macro_call(const NodeTable *nt, CtEnv *e, int call);
 /* forget the locals (a new block call), keeping the classes and effects */
 void ct_env_new_call(CtEnv *e);
+/* do a and b hold one String object? A copy of a value (a local's read,
+   String#to_s, an element) shares the String's storage, and each String the
+   evaluator makes has storage of its own, so the storage is the identity */
+int ct_same_string(const CtVal *a, const CtVal *b);
 /* note that core method cls#meth ran */
 void ct_env_ran(CtEnv *e, const char *cls, const char *meth);
 void ct_env_free(CtEnv *e);

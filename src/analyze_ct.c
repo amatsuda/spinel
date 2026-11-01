@@ -1018,12 +1018,21 @@ static int ct_fx_code(const CtFx *f, const NodeTable *nt) {
          f->k == CT_FX_LOCAL ? nt_ref(nt, f->site, "value") : -1;
 }
 
-/* Is the local effect f writes a String the macro made, unfrozen: a new
-   object of known bytes, written as `+"bytes"`, which is one too. A frozen
-   one (a class's name, a literal's) is the object its value answers, which
-   that value, run where the call stands, answers again. */
-static int ct_local_made(const CtFx *f) {
-  return f->val.k == CT_VALUE && f->val.mv.k == MV_STR && !f->val.mv.frozen;
+/* Is the local effect f writes a String the macro made, unfrozen, which no
+   other local of its frame that the kept code reads (a promoted one) held
+   when the write ran: a new object of known bytes, written as `+"bytes"`,
+   which is one too. A frozen one (a class's name, a literal's) is the
+   object its value answers, which that value, run where the call stands,
+   answers again. One a promoted local held (`s = t`) is written as a read of
+   that local: the same object. A holder nothing reads (a parameter) shows no
+   identity, and the write keeps `+"bytes"`. */
+static int ct_local_made(const CtBind *b, const CtFx *f) {
+  if (f->val.k != CT_VALUE || f->val.mv.k != MV_STR || f->val.mv.frozen) return 0;
+  for (int i = 0; i < f->nsnap; i++)
+    if (strcmp(f->snap[i].name, f->name) != 0 && ct_same_string(&f->snap[i].v, &f->val) &&
+        ct_promoted(b, f->frame, f->snap[i].name))
+      return 0;
+  return 1;
 }
 
 /* is effect f one the call's statements carry: a definition, a residual,
@@ -1094,7 +1103,7 @@ static int ct_node_at(NodeTable *nt, const char *type, int call) {
    class's), or the residual statement or local write, cloned; each bound */
 static int ct_fx_stmt(CtBind *b, Compiler *c, int list, int call, const CtFx *f) {
   NodeTable *nt = b->nt;
-  if (f->k == CT_FX_LOCAL && ct_local_made(f)) {
+  if (f->k == CT_FX_LOCAL && ct_local_made(b, f)) {
     int st = ct_node_at(nt, "LocalVariableWriteNode", f->site), dup = ct_node_at(nt, "CallNode", f->site);
     int lit = ct_node_at(nt, "StringNode", f->site);
     nt_node_set_str(nt, lit, "content", f->val.mv.s);
@@ -1262,8 +1271,9 @@ int ct_macro_form(Compiler *c, int call, int list, int j) {
   for (int more = 1; ok && more; ) {
     more = 0;
     for (int f = 0; f < e.nfx && ok; f++)
-      if (e.fx[f].k == CT_FX_LOCAL && !bound[f] && ct_promoted(&b, e.fx[f].frame, e.fx[f].name)) {
-        if (!ct_local_made(&e.fx[f])) ok = ct_bind_fx(&b, c, list, &e.fx[f], ct_fx_code(&e.fx[f], nt));
+      if (e.fx[f].k == CT_FX_LOCAL && !bound[f] && ct_promoted(&b, e.fx[f].frame, e.fx[f].name) &&
+          !ct_local_made(&b, &e.fx[f])) {   /* (a holder promoted later makes it so: asked again) */
+        ok = ct_bind_fx(&b, c, list, &e.fx[f], ct_fx_code(&e.fx[f], nt));
         bound[f] = more = 1;
       }
   }
