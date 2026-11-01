@@ -664,7 +664,14 @@ static sp_int sp_powmod_mul(sp_int a, sp_int b, sp_int mod) {
   return (sp_int)r;
 #endif
 }
-sp_int sp_powmod(sp_int base,sp_int exp,sp_int mod){if(exp<0)sp_raise_cls("RangeError","Integer#pow() 1st argument cannot be negative when 2nd argument specified");if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");sp_int r=1;sp_int m=mod<0?-mod:mod;if(m==1){r=0;}
+/* Integer#pow(e, m): base**exp reduced below |mod|, with mod's sign. The
+   modulus INTPTR_MIN is the one whose magnitude (2^63, or 2^31 on a 32-bit
+   target) is past sp_int: negating it overflows, so its residues are kept
+   as the low bits of unsigned products (a product mod 2^64 has the right
+   low 63 bits), and the answer, 0 or a residue less that magnitude, fits. */
+sp_int sp_powmod(sp_int base,sp_int exp,sp_int mod){if(exp<0)sp_raise_cls("RangeError","Integer#pow() 1st argument cannot be negative when 2nd argument specified");if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");
+if(mod==INTPTR_MIN){uintptr_t mask=(uintptr_t)INTPTR_MAX,r=1,b=(uintptr_t)base&mask;while(exp>0){if(exp%2==1)r=(r*b)&mask;exp=exp/2;b=(b*b)&mask;}return r==0?0:(sp_int)r-INTPTR_MAX-1;}
+sp_int r=1;sp_int m=mod<0?-mod:mod;if(m==1){r=0;}
 else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=sp_powmod_mul(r,base,m);exp=exp/2;base=sp_powmod_mul(base,base,m);}}if(mod<0&&r>0)r-=m;return r;}
 sp_int sp_ceildiv(sp_int a,sp_int b){if(b==0)sp_raise_cls("ZeroDivisionError","divided by 0");if(b==-1)return -a;sp_int q=a/b;if(a%b!=0&&((a^b)>=0))q++;return q;}
 sp_int sp_int_clamp(sp_int v,sp_int lo,sp_int hi){return v<lo?lo:v>hi?hi:v;}
