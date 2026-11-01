@@ -1686,9 +1686,7 @@ void emit_int_expr_offt(Compiler *c, int node, Buf *b) {
 static int class_is_user_numeric(Compiler *c, int cid) {
   const NodeTable *nt = c->nt;
   for (int k = cid, hop = 0; k >= 0 && hop < 64; k = c->classes[k].parent, hop++) {
-    int dn = c->classes[k].def_node;
-    if (dn < 0 || nt_kind(nt, dn) != NK_ClassNode) continue;
-    int sup = nt_ref(nt, dn, "superclass");
+    int sup = class_def_super(nt, c->classes[k].def_node);
     if (sup < 0) continue;
     NodeKind sk = nt_kind(nt, sup);
     const char *sn = (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) ? nt_str(nt, sup, "name") : NULL;
@@ -5241,8 +5239,8 @@ static int sg_parent_answers_as_object(Compiler *c, int par, const char *n) {
     if (k->is_struct || k->is_data || k->ary_root > 0 || k->c_struct || k->is_native_class ||
         class_is_exc_subclass(c, p))
       return 0;
-    if (k->parent < 0 && k->def_node >= 0 && nt_kind(c->nt, k->def_node) == NK_ClassNode) {
-      int sc = nt_ref(c->nt, k->def_node, "superclass");
+    if (k->parent < 0 && class_def_is_class(c->nt, k->def_node)) {
+      int sc = class_def_super(c->nt, k->def_node);
       const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
       if (sc >= 0 && (!sn || !sp_streq(sn, "Object"))) return 0;
     }
@@ -11040,7 +11038,7 @@ int class_is_exc_subclass(Compiler *c, int ci) {
   if (memo && g_excsub[ci]) return g_excsub[ci] == 2;
   int ans = 0;
   for (int k = ci, guard = 0; k >= 0 && guard < 256; guard++) {
-    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
+    int sc = class_def_super(c->nt, c->classes[k].def_node);
     const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
     if (superclass_builtin_exc_name(c->nt, sc)) { ans = 1; break; }
     int next = c->classes[k].parent;
@@ -11093,7 +11091,7 @@ static void excf_fill(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].name || !is_exc_name(c->classes[k].name)) continue;
     g_excf[k] = 1;
-    if (nt_ref(c->nt, c->classes[k].def_node, "superclass") < 0) {
+    if (class_def_super(c->nt, c->classes[k].def_node) < 0) {
       g_excf[k] |= 2; g_excf_any = 1;
       if (g_excf_reopen) g_excf_reopen[g_excf_nreopen++] = k;
     }
@@ -11279,7 +11277,7 @@ int obj_str_ret_poly(Compiler *c, int cid, int want_inspect) {
    walking up the chain until a builtin exception name is found. */
 const char *exc_builtin_parent(Compiler *c, int ci) {
   for (int k = ci; k >= 0; k = c->classes[k].parent) {
-    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
+    int sc = class_def_super(c->nt, c->classes[k].def_node);
     const char *sn = superclass_builtin_exc_name(c->nt, sc);
     if (sn) return sn;
   }
@@ -11787,8 +11785,7 @@ static void emit_ivar_nil_inits(Compiler *c, Buf *b, ClassInfo *ci, const char *
    kind, not in ClassInfo, and two emitters need the same answer. */
 int comp_class_is_module(Compiler *c, ClassInfo *ci) {
   if (ci && ci->def_node < 0) return is_builtin_module_const_name(ci->name);
-  const char *dt = ci ? nt_type(c->nt, ci->def_node) : NULL;
-  return dt && sp_streq(dt, "ModuleNode");
+  return ci && class_def_is_module(c->nt, ci->def_node);
 }
 
 /* The proc-form clone of class `cid`'s yielding initialize, when it has one
@@ -12747,7 +12744,7 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
     if (ci->parent >= 0 || is_builtin_reopen(ci->name) || ci->is_singleton_of) continue;
-    int sn = nt_ref(c->nt, ci->def_node, "superclass");
+    int sn = class_def_super(c->nt, ci->def_node);
     const char *pn = sn >= 0 ? nt_str(c->nt, sn, "name") : NULL;
     if (!pn || !sp_streq(pn, "Integer")) continue;
     buf_printf(b, "      sp_PolyArray_push(a, sp_box_class(((sp_Class){%d, SPL(\"%s\")})));\n",
@@ -13251,9 +13248,7 @@ static int conv_bridge_callee(Compiler *c, int i, const char *mname, TyKind want
   ClassInfo *ci2 = &c->classes[i];
   if (is_builtin_reopen(ci2->name) || ci2->is_native_class) return -1;
   if (!any_shape && comp_ty_value_obj(c, ty_object(i))) return -1;
-  int dn = ci2->def_node;
-  NodeKind dk = nt_kind(c->nt, dn);
-  if (dk == NK_ModuleNode) return -1;   /* no instances */
+  if (class_def_is_module(c->nt, ci2->def_node)) return -1;   /* no instances */
   int tdef = -1;
   int tmi = comp_method_in_chain(c, i, mname, &tdef);
   /* a no-parameter method only (a `&block` parameter is not in nparams; the
@@ -13270,12 +13265,10 @@ static int conv_bridge_callee(Compiler *c, int i, const char *mname, TyKind want
      too. Anything else -- a #to_int answering a String -- is not a
      conversion the protocol can use. */
   if (!any_shape && c->scopes[tmi].ret != want && c->scopes[tmi].ret != TY_POLY) return -1;
-  int ddn = c->classes[tdef].def_node;
-  NodeKind ddk = nt_kind(c->nt, ddn);
   *out_mi = tmi;
   /* a module def is copied into the includer; an ancestor CLASS def is one
      real function the child casts into */
-  return (ddk == NK_ModuleNode) ? i : tdef;
+  return class_def_is_module(c->nt, c->classes[tdef].def_node) ? i : tdef;
 }
 /* Whether the per-class object switches (to_s, inspect, the conversions and
    the Marshal rows) have an arm for class i, and so whether the dispatch is
@@ -18062,7 +18055,7 @@ int write_text_file(const char *path, const char *text) {
 int class_builtin_superclass(Compiler *c, int i) {
   int builtin_par = c->classes[i].is_struct ? (c->classes[i].is_data ? -146 : -145)
                                             : -116;  /* Object */
-  int sc_node = nt_ref(c->nt, c->classes[i].def_node, "superclass");
+  int sc_node = class_def_super(c->nt, c->classes[i].def_node);
   if (sc_node >= 0) {
     NodeKind sc_k = nt_kind(c->nt, sc_node);
     const char *sc_nm = (sc_k == NK_ConstantReadNode || sc_k == NK_ConstantPathNode) ? nt_str(c->nt, sc_node, "name") : NULL;
@@ -18084,7 +18077,7 @@ int class_builtin_superclass(Compiler *c, int i) {
    Module#=== -- continues up the real exception chain. */
 const char *class_builtin_superclass_name(Compiler *c, int i) {
   if (c->classes[i].is_struct) return NULL;
-  int sc_node = nt_ref(c->nt, c->classes[i].def_node, "superclass");
+  int sc_node = class_def_super(c->nt, c->classes[i].def_node);
   if (sc_node < 0) return NULL;
   const char *sc_nm = superclass_builtin_exc_name(c->nt, sc_node);
   if (!sc_nm || builtin_class_id(sc_nm) != 0) return NULL;
@@ -18830,8 +18823,7 @@ static int scope_is_orphan_method(Compiler *c, int s) {
   const ClassInfo *ci = &c->classes[k0];
   if (ci->is_struct || ci->is_native_class || is_builtin_reopen(ci->name) ||
       k0 == c->toplevel_class) return 0;
-  int dn = ci->def_node;
-  if (dn < 0 || dn >= c->nt->count || nt_kind(c->nt, dn) != NK_ClassNode) return 0;
+  if (!class_def_is_class(c->nt, ci->def_node)) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if ((k == k0 || is_descendant(c, k, k0)) && c->classes[k].instantiated) return 0;
   return 1;
@@ -19623,8 +19615,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_printf(b, "static const int sp_cls_is_module[%d] = {", c->nclasses);
     for (int i = 0; i < c->nclasses; i++) {
       if (i) buf_puts(b, ",");
-      NodeKind dk = nt_kind(c->nt, c->classes[i].def_node);
-      buf_printf(b, "%d", (dk == NK_ModuleNode) ? 1 : 0);
+      buf_printf(b, "%d", class_def_is_module(nt, c->classes[i].def_node) ? 1 : 0);
     }
     buf_puts(b, "};\n");
   }
@@ -20200,7 +20191,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
         char *cn = strdup(cn0);
         /* find the direct parent name (builtin or user) */
         const char *par = NULL;
-        int sc = nt_ref(c->nt, c->classes[i].def_node, "superclass");
+        int sc = class_def_super(nt, c->classes[i].def_node);
         if (sc >= 0) {
           NodeKind sk = nt_kind(c->nt, sc);
           if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode)
@@ -20866,7 +20857,7 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
           char mk[192];
           snprintf(mk, sizeof mk, "sp_anon_text(\"\",sp_sprintf(SPL(\"#<%s:0x%%016llx>\"),"
                                   "(unsigned long long)(uintptr_t)&sp_class_to_s+%d))",
-                   nt_kind(c->nt, c->classes[i].def_node) == NK_ModuleNode ? "Module" : "Class", i);
+                   class_def_is_module(c->nt, c->classes[i].def_node) ? "Module" : "Class", i);
           char nx[96]; anon_name_expr(nx, sizeof nx, i);
           buf_printf(b, "case %d:if(%s)return %s;{static const char *t;", i, nx, nx);
           if (g_uses_threads)

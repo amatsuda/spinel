@@ -1840,7 +1840,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   NodeKind wk = nt_kind(c->nt, id);
   if (child != scope_idx || wk == NK_ClassNode || wk == NK_ModuleNode || wk == NK_SingletonClassNode)
     cw.struct_direct = 0;
-  else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_body(c, id) >= 0)
+  else if ((wk == NK_ConstantWriteNode || wk == NK_LocalVariableWriteNode) && class_def_body(c->nt, id) >= 0)
     cw.struct_direct = 1;
   if (child_class >= 0) cw.cbody = child_class;
   /* direct is the class whose body we are *directly* in (where `self` is the
@@ -2263,8 +2263,7 @@ void register_locals(Compiler *c) {
 int is_c_ident(const char *s);
 
 /* Is CallNode `val` a `Struct.new(...)` / `Data.define(...)`? */
-int is_struct_call(Compiler *c, int val) {
-  const NodeTable *nt = c->nt;
+int is_struct_call(const NodeTable *nt, int val) {
   if (val < 0 || nt_kind(nt, val) != NK_CallNode) return 0;
   const char *mn = nt_str(nt, val, "name");
   int vr = nt_ref(nt, val, "receiver");
@@ -2274,22 +2273,63 @@ int is_struct_call(Compiler *c, int val) {
                 (sp_streq(rn, "Data") && mn && sp_streq(mn, "define")));
 }
 
+/* The class definition readers below take a definition node: a class's
+   def_node, or a node a pass found by walking the tree. They answer from the
+   node table alone, so the passes ahead of the scope walk, which have no
+   record yet, ask them too. A definition form that is not a ClassNode or
+   ModuleNode joins here, in one place per fact. */
+
 /* The class body a definition node carries: a ClassNode's or ModuleNode's
    own, or the block of `Name = Struct.new(...) do ... end` (and
    Data.define), whose write is the class's def_node. Reading "body" off that
    write found nothing, so an `include` / `extend` / `prepend` in the block
    was dropped. -1 when there is none. */
-int class_def_body(Compiler *c, int def_node) {
-  const NodeTable *nt = c->nt;
+int class_def_body(const NodeTable *nt, int def_node) {
   if (def_node < 0) return -1;
   NodeKind k = nt_kind(nt, def_node);
   if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) return nt_ref(nt, def_node, "body");
   int val = nt_ref(nt, def_node, "value");
-  if (!is_struct_call(c, val)) return -1;
+  if (!is_struct_call(nt, val)) return -1;
   int blk = nt_ref(nt, val, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
   int bb = nt_ref(nt, blk, "body");
   return bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? bb : -1;
+}
+
+/* The superclass reference a definition node carries: a ClassNode's `< S`;
+   -1 for a module, a Struct write or none. Reads "superclass" for the
+   readers converted to it; the places that still read the ref off a
+   ClassNode they are walking are not through it. */
+int class_def_super(const NodeTable *nt, int def_node) {
+  return nt_ref(nt, def_node, "superclass");
+}
+
+/* Was this definition written as a module (`module M`)? */
+int class_def_is_module(const NodeTable *nt, int def_node) {
+  return nt_kind(nt, def_node) == NK_ModuleNode;
+}
+
+/* Was this definition written as a class (`class X`): not a module, a Struct
+   or Data write, or none? */
+int class_def_is_class(const NodeTable *nt, int def_node) {
+  return nt_kind(nt, def_node) == NK_ClassNode;
+}
+
+/* Does this definition open a frame whose self and definee are the class: a
+   class or module body. What the passes that move defs, ivars, self, attr_*
+   and include / extend / prepend ask of a node they found. A Struct or Data
+   block's body opens one too, but a Struct write answers no here: the
+   passes reach that body through their own Struct arms (and class_def_body). */
+int class_def_opens_frame(const NodeTable *nt, int def_node) {
+  return class_def_is_class(nt, def_node) || class_def_is_module(nt, def_node);
+}
+
+/* Does this definition open a constant scope (its cref): a class or module
+   body. What the passes that qualify, key or look up constants ask of a
+   node. Kept apart from class_def_opens_frame: a block that builds a class
+   takes the class as self, but its constants are the enclosing scope's. */
+int class_def_opens_cref(const NodeTable *nt, int def_node) {
+  return class_def_is_class(nt, def_node) || class_def_is_module(nt, def_node);
 }
 
 /* Register the symbol members of a Struct.new(...) call onto `cls`. */
@@ -2550,8 +2590,7 @@ static int sg_class_root(Compiler *c, int k) {
   for (int d = 0; k >= 0 && d < 64; d++) {
     int p = c->classes[k].parent;
     if (p < 0) {
-      int dn = c->classes[k].def_node;
-      int sc = dn >= 0 ? nt_ref(c->nt, dn, "superclass") : -1;
+      int sc = class_def_super(c->nt, c->classes[k].def_node);
       NodeKind sk = sc >= 0 ? nt_kind(c->nt, sc) : NK_NilNode;
       const char *sn = sk == NK_ConstantReadNode || sk == NK_ConstantPathNode ? nt_str(c->nt, sc, "name") : NULL;
       p = sn ? comp_class_index(c, sn) : -1;
@@ -3425,7 +3464,7 @@ void register_structs(Compiler *c) {
     if (ty_k == NK_ConstantWriteNode) {
       const char *cname = nt_str(nt, id, "name");
       int val = nt_ref(nt, id, "value");
-      if (!cname || !is_c_ident(cname) || !is_struct_call(c, val)) continue;
+      if (!cname || !is_c_ident(cname) || !is_struct_call(nt, val)) continue;
       int ci = comp_class_index(c, cname);
       if (ci >= 0) {
         /* A `class D` reopening this constant pre-created a memberless class
@@ -3451,7 +3490,7 @@ void register_structs(Compiler *c) {
        omits the synthetic name (CRuby shows `#<struct a=1, b=2>`). */
     else if (ty_k == NK_LocalVariableWriteNode) {
       int val = nt_ref(nt, id, "value");
-      if (!is_struct_call(c, val)) continue;
+      if (!is_struct_call(nt, val)) continue;
       char an[48];
       snprintf(an, sizeof an, "StructAnon_%s", comp_node_tag(c, id));
       ClassInfo *cls = comp_class_new(c, an, id);
@@ -3463,7 +3502,7 @@ void register_structs(Compiler *c) {
        struct/data call is the receiver of another call, with no name to hold it.
        Synthesize an anon class keyed to the call node itself so the receiver
        resolution (.new / .members / .class) can find it. #2682 */
-    else if (ty_k == NK_CallNode && is_struct_call(c, id)) {
+    else if (ty_k == NK_CallNode && is_struct_call(nt, id)) {
       /* ...or used as a VALUE anywhere else (`p Struct.new(:a)`, an element,
          a return): the class still has to exist to be printed or passed, and
          with none registered the call reported `Struct.new` as undefined
@@ -3491,7 +3530,7 @@ void register_structs(Compiler *c) {
     /* class X < Struct.new(:a, :b); ... end */
     else if (ty_k == NK_ClassNode) {
       int sup = nt_ref(nt, id, "superclass");
-      if (!is_struct_call(c, sup)) continue;
+      if (!is_struct_call(nt, sup)) continue;
       int ci = elab_header_class(c, id, NULL, NULL);
       if (ci >= 0) register_struct_members(c, &c->classes[ci], sup);
     }
@@ -3895,9 +3934,8 @@ int builtin_instance_method_known(const char *cls, const char *m);
    (`class X < Hash`), or NULL: the alias pass runs before the class chains
    are resolved, so it reads the declaration */
 static const char *alias_embedding_parent(Compiler *c, ClassInfo *cls) {
-  int dn = cls->def_node;
-  if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) return NULL;
-  const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
+  if (!class_def_is_class(c->nt, cls->def_node)) return NULL;
+  const char *par = builtin_value_superclass(c, class_def_super(c->nt, cls->def_node));
   return par && (sp_streq(par, "Array") || sp_streq(par, "Hash") || sp_streq(par, "String")) ? par : NULL;
 }
 /* The Object / Kernel methods an alias in a program class can capture: a
@@ -6222,9 +6260,9 @@ static void check_builtin_subclasses(Compiler *c) {
 static int anon_super_class(Compiler *c, int k) {
   for (int x = k, g = 0; x >= 0 && x < c->nclasses && g < 256; x = c->classes[x].parent, g++) {
     int dn = c->classes[x].def_node;
-    if (dn < 0 || dn >= c->nt->count || nt_kind(c->nt, dn) != NK_ClassNode) continue;
+    if (!class_def_is_class(c->nt, dn)) continue;
     if (nt_int(c->nt, dn, "anon_super", 0)) return 1;
-    int sc = nt_ref(c->nt, dn, "superclass");
+    int sc = class_def_super(c->nt, dn);
     if (sc >= 0 && nt_kind(c->nt, sc) == NK_CallNode) return 1;
   }
   return 0;
@@ -6287,9 +6325,8 @@ static void mark_array_subclasses(Compiler *c) {
                     c->classes[r].parent != sro && g < 256; g++)
       r = c->classes[r].parent;
     if (r == hro || r == aro || r == sro) continue;
-    int dn = c->classes[r].def_node;
-    if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) continue;
-    const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
+    if (!class_def_is_class(c->nt, c->classes[r].def_node)) continue;
+    const char *par = builtin_value_superclass(c, class_def_super(c->nt, c->classes[r].def_node));
     if (is_embedding_builtin(par)) {
       c->classes[i].ary_root = r + 1;
       c->classes[i].ary_hash = sp_streq(par, "Hash");
@@ -6333,7 +6370,7 @@ void resolve_parents(Compiler *c) {
   check_builtin_subclasses(c);
   const NodeTable *nt = c->nt;
   for (int i = 0; i < c->nclasses; i++) {
-    int sc = nt_ref(nt, c->classes[i].def_node, "superclass");
+    int sc = class_def_super(nt, c->classes[i].def_node);
     /* `class R < Options.new(:a)` / `R = Options.new(:a)`: the Struct.new
        class's parent is Options (#9292) */
     const char *spn = c->classes[i].def_node >= 0 ? nt_str(nt, c->classes[i].def_node, "struct_parent") : NULL;
@@ -7157,7 +7194,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
   const char *cn = c->classes[ci].name;
   int core = is_builtin_reopen_name(cn) || is_builtin_module_name(cn) || sp_streq(cn, CLASS_REOPEN_NAME);
   int late = core ? -1 : include_late_stmt(c, ci, body_node), cell = 0, cell_stmt = -1;
-  int sc = nt_ref(nt, c->classes[ci].def_node, "superclass");
+  int sc = class_def_super(nt, c->classes[ci].def_node);
   NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NONE;
   if ((sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) &&
       is_comparable_builtin_name(nt_str(nt, sc, "name")))
@@ -8501,7 +8538,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       Scope *encl = comp_scope_of(c, id);
       if (rn && sp_streq(rn, "class") && rr >= 0 && nt_kind(nt, rr) == NK_SelfNode &&
           mname && !sp_streq(mname, "new") && encl && !encl->is_cmethod && encl->class_id >= 0 &&
-          nt_kind(nt, c->classes[encl->class_id].def_node) != NK_ModuleNode) {
+          !class_def_is_module(nt, c->classes[encl->class_id].def_node)) {
         int base = encl->class_id;
         /* the enclosing class too: one that inherits the method holds its
            own class-level ivars as its descendants do */

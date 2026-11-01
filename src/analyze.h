@@ -478,6 +478,15 @@ int elab_header_class(const Compiler *c, int node, int *owner, const char **leaf
 /* ...and the class a class builder's write opens (`X = Struct.new(:a) do`,
    `k = Data.define(:a) do`), -1 for a write no builder made a class at */
 int elab_builder_class(Compiler *c, int node);
+/* the readers of a class definition node (analyze_scope.c), from the node
+   table alone: a class's def_node, or a node a pass walked to */
+int is_struct_call(const NodeTable *nt, int val);   /* `Struct.new(..)` / `Data.define(..)` */
+int class_def_body(const NodeTable *nt, int def_node);   /* its body statements, -1 for none */
+int class_def_super(const NodeTable *nt, int def_node);   /* its superclass reference, -1 for none */
+int class_def_is_module(const NodeTable *nt, int def_node);
+int class_def_is_class(const NodeTable *nt, int def_node);   /* written as `class` */
+int class_def_opens_frame(const NodeTable *nt, int def_node);   /* self and definee are the class */
+int class_def_opens_cref(const NodeTable *nt, int def_node);   /* its constants are a scope of their own */
 /* what a class builder's call (Class.new, Module.new) makes, as the
    builders' lowering noted it ahead of the walk (elab_builder_note); a copy
    answers as the node it copies: EB_NONE for none noted; EB_DYNAMIC_SUPER,

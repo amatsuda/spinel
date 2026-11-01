@@ -3913,7 +3913,7 @@ static int defined_super_reaches(Compiler *c, int sup) {
     while (c->classes[root].parent >= 0) root = c->classes[root].parent;
     const ClassInfo *ri = &c->classes[root];
     int plain = mod || (!ri->is_struct && !ri->is_builtin_const &&
-                        (ri->def_node < 0 || nt_ref(c->nt, ri->def_node, "superclass") < 0));
+                        class_def_super(c->nt, ri->def_node) < 0);
     return plain ? 0 : -1;
   }
   char base[256];

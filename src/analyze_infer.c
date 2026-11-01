@@ -2100,8 +2100,7 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
   for (int k = cid, g = 0; k >= 0 && g <= c->nclasses; k = c->classes[k].parent, g++) {
     if (c->classes[k].is_native_class) return 0;
     if (c->classes[k].parent < 0 && !c->classes[k].is_struct) {
-      int dn = c->classes[k].def_node;
-      if (dn >= 0 && nt_kind(nt, dn) == NK_ClassNode && nt_ref(nt, dn, "superclass") >= 0) return 0;
+      if (class_def_super(nt, c->classes[k].def_node) >= 0) return 0;
     }
   }
   return 1;
@@ -2157,7 +2156,7 @@ static int an_module_tree(Compiler *c, int m, int *mods, int *n, int cap) {
   for (int j = 0; j < *n; j++) if (mods[j] == m) return 0;   /* reached twice */
   ClassInfo *mc = &c->classes[m];
   if (!comp_class_is_module(c, mc) || mc->is_native_class || mc->nincluded_mod_names > 0) return 0;
-  if (mc->def_node < 0 || nt_kind(nt, mc->def_node) != NK_ModuleNode) return 0;
+  if (!class_def_is_module(nt, mc->def_node)) return 0;
   mods[(*n)++] = m;
   int nb = 0;
   const LrOpen *ob = elab_class_bodies(c, m, &nb);
@@ -2327,8 +2326,7 @@ int an_class_singleton_methods_listable(Compiler *c, int cid) {
     ClassInfo *ci = &c->classes[k];
     if (ci->is_native_class || ci->is_struct || ci->is_data) return 0;
     if (ci->parent < 0) {
-      int dn = ci->def_node;
-      if (dn >= 0 && nt_kind(nt, dn) == NK_ClassNode && nt_ref(nt, dn, "superclass") >= 0) return 0;
+      if (class_def_super(nt, ci->def_node) >= 0) return 0;
     }
   }
   return 1;
@@ -4324,7 +4322,7 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) { *out = TY_POLY; return 1; }
     }
     if (rk == NK_ConstantReadNode || rk == NK_LocalVariableReadNode ||
-        (rk == NK_CallNode && is_struct_call(c, recv))) {  /* inline Data.define(...).new (#2682) */
+        (rk == NK_CallNode && is_struct_call(nt, recv))) {  /* inline Data.define(...).new (#2682) */
       const char *cn = rk == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
       int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
       if (ci >= 0) {
@@ -8261,7 +8259,7 @@ static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, c
     int mci = -1;
     if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
       mci = comp_class_index(c, cn);
-    else if (rk == NK_LocalVariableReadNode || (rk == NK_CallNode && is_struct_call(c, recv)))
+    else if (rk == NK_LocalVariableReadNode || (rk == NK_CallNode && is_struct_call(nt, recv)))
       mci = class_var_static_ci(c, recv);
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) { *out = TY_POLY_ARRAY; return 1; }

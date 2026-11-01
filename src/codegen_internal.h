@@ -2321,7 +2321,6 @@ void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
 int is_arith_op(const char *op);
 int is_cmp_op(const char *op);
 const char *int_shift_fn(Compiler *c, const char *op, int v);
-int class_def_body(Compiler *c, int def_node);
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
 TyKind an_builtin_answer(Compiler *c, int id);
 int builtin_read_ignores_block(const char *nm);
@@ -2347,7 +2346,6 @@ int block_given_tail_then_last(Compiler *c, int last);
 int call_forwards_own_block(Compiler *c, int cid);
 int is_blk_param_call(Compiler *c, int node, int mi);
 int ie_block_body(Compiler *c, int blk);
-int is_struct_call(Compiler *c, int val);
 int sclass_value_call(Compiler *c, int id);
 int scope_body_last(Compiler *c, int mi);
 int str_in(const char *s, const char *const *set);
