@@ -134,6 +134,8 @@ src/codegen.c obj_to_a_method to_a, and the method its alias names
 src/codegen_call_kernel.c emit_call_kernel_arms =anm the conversion protocol's names
 src/codegen_call_kernel.c emit_kconv_obj_nil the conversion protocol's names
 src/codegen_call_recv.c emit_obj_conv_call the conversion protocol's names
+src/codegen_call_recv.c obj_may_answer whether any value of the class can answer the name
+src/codegen_call_recv.c zip_hash_arm_builtin a name's presence (to_ary, method_missing) in the classes a Hash answers through
 src/codegen_stmt.c ops_builtin the operators' names
 src/codegen_util.c exc_has_nonstring_msg_override message / to_s
 src/codegen_util.c exc_has_user_msg_override message / to_s
@@ -160,6 +162,7 @@ src/analyze_cls.c cf_kdyn_method a scope's own name
 src/analyze_cls.c cf_node a scope's own name
 src/analyze_infer.c infer_uncached a scope's own shadow name
 src/analyze_infer.c super_reaches_exc_text super, by its def's name
+src/analyze_infer.c an_rat_op_own1 whether a reopened Rational, Integer or Object defines the operator itself (then no Rational is counted)
 src/analyze_pass.c infer_param_types_ex =s->name super, by its def's name
 src/analyze_pass.c propagate_prep_params a prepended method's own name
 src/analyze_scope.c cmethod_reaches_class_ivar_walk =c->scopes[mi].name a scope's own name
@@ -177,6 +180,7 @@ src/codegen.c emit_super super, by its def's name
 src/codegen.c emit_super_inline super, by its def's name
 src/codegen.c sg_delegate_scope a scope's own name
 src/codegen.c sg_parent_answers_as_object a scope's own name
+src/codegen.c range_rat_walk_own_def a name's presence in a Range, Enumerable or Integer reopen
 src/codegen_call_class.c emit_respond_to_runtime_name =c->scopes[s].name a scope's own name
 src/codegen_expr.c defined_super_reaches super, by its def's name
 src/codegen_util.c ivs_super_method super, by its def's name
@@ -235,6 +239,7 @@ src/analyze_scope.c resolve_inherited_aliases an alias's original name
 src/analyze_scope.c resolve_parents a scope's own name
 src/analyze_scope.c settle_mixin_aliases an alias's name
 src/analyze_scope.c sg_transplant_module a transplanted method's own name
+src/analyze_scope.c inc_super_behind the superclass method's parameters, for the shadow entry's shape
 src/compiler.c comp_name_is_sg_alias_only an alias's name
 src/compiler.c resolve_alias_side an alias's name
 
@@ -258,6 +263,9 @@ src/analyze.c synth_to_enum_generators a synthesized helper's name
 src/analyze_desugar.c desugar_builtin_enum_calls a synthesized helper's name
 src/analyze_desugar.c desugar_builtin_scalar_calls =gn a synthesized helper's name
 src/analyze_desugar.c fwd_bam_lambda_count a synthesized helper's name
+src/analyze_desugar.c ie_enum_reopen_answers a name's presence in the Enumerable reopen
+src/analyze_desugar.c desugar_ie_bare_object_calls comp_method_in_class a name's presence in the reopened builtin
+src/analyze_desugar.c desugar_value_callable_forwards comp_method_in_chain a name's presence in the Array reopen (the forward stays a call)
 
 # the renaming of a redefined method's calls, which binding a call to a
 # version in call_target replaces
@@ -268,7 +276,11 @@ src/analyze.c promote_shared_stored_strings_pass the String sharing analysis
 src/analyze.c strbuf_block_forward_container the String sharing analysis
 src/analyze.c strbuf_container_source_walk_body the String sharing analysis
 src/analyze.c strbuf_demand_user_elem_call the String sharing analysis
+src/analyze.c cr_live_weak which segment classes answer a constant call's name (class liveness)
+src/analyze.c cr_live_event which segment classes answer a constant call's name (class liveness)
+src/analyze.c class_takes_merge_argc whether the class's own merge takes the arguments
 src/codegen_call.c strbuf_call_picks_up the String sharing routes
+src/codegen_call.c user_defines_or_reads_walk which classes define or read the name
 src/codegen_stmt.c strbuf_route_boxed_exc_message the String sharing routes
 src/codegen_stmt.c strbuf_route_loop the String sharing routes
 src/codegen_stmt.c strbuf_route_operand the String sharing routes
