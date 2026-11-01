@@ -52,7 +52,7 @@ ok=1; n=0
 MACRO_FORMS="test/class_macro_through_superclass.rb test/define_method_computed_name_implicit_rescue.rb
   test/class_macro_called_from_another_macro.rb test/class_macro_keyword_param_attr_reader.rb
   test/class_method_attr_macro.rb test/class_method_define_method_macro.rb test/class_macro_self_name.rb
-  test/class_macro_name_of_an_attr_reader.rb"
+  test/class_macro_name_of_an_attr_reader.rb test/class_body_call_reaches_generated_class_method.rb"
 
 # Compile $1 plain and under promote (and, given a second argument, plain
 # under --load-model=graph without SPINEL_CLASS_MACROS), run each, and run

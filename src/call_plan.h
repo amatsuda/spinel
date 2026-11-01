@@ -183,6 +183,12 @@ int cplan_target_binds(Compiler *c, int id, int mi);
    else -- a define_method block, an accessor, a wrapper the compiler made --
    takes every count. */
 int cplan_def_takes_argc(Compiler *c, int mi, int argc);
+/* Is call id a class body's call on self (receiverless or `self.`) that
+   the plan binds to one method of the body's class (UC_CMETH, CP_DIRECT)?
+   That binding is the one method the call runs, so reachability follows it
+   instead of the name: a same-name method the class's lookup does not find
+   there (a module method a singleton def shadows) is no target of it. */
+int cplan_cbody_direct(Compiler *c, int id);
 int cplan_boxed_cmethod(Compiler *c, int id, const char *name);
 /* Object fallback behind a class-gated exception accessor, or -1. */
 int cplan_exc_object_method(Compiler *c, int call, const char *name);
