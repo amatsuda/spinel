@@ -123,7 +123,8 @@ int cplan_super_chain_mi(Compiler *c, int id, Scope *s, int par, const char *nam
     int top = par;
     while (c->classes[top].parent >= 0) top = c->classes[top].parent;
     int obj = comp_super_parent(c, top, 0);
-    if (obj >= 0 && obj != top && comp_method_in_chain(c, obj, name, NULL) >= 0) { par = obj; mi = 1; }
+    /* (not under BasicObject: Object is not in that chain) */
+    if (obj >= 0 && obj != top && !class_is_blank_slate(c, top) && comp_method_in_chain(c, obj, name, NULL) >= 0) { par = obj; mi = 1; }
   }
   return mi >= 0 ? call_target(c, id, par, name,
                                CT_REACH | (s->is_cmethod ? CT_CMETHOD : 0), NULL) : -1;

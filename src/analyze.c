@@ -25753,7 +25753,7 @@ int an_super_object_text(Compiler *c, int n, int mi) {
   const Scope *s = &c->scopes[mi];
   /* (an included module's method under the class's own is a shadow of the
      class: `__inc_0_inspect`) */
-  const char *nm = s->name ? comp_scope_user_name(s) : NULL;
+  const char *nm = s->name ? comp_scope_def_name(c, s) : NULL;
   if (!nm || s->is_cmethod || s->class_id < 0 || s->nparams != 0 ||
       (!sp_streq(nm, "inspect") && !sp_streq(nm, "to_s")))
     return 0;
@@ -25764,7 +25764,7 @@ int an_super_object_text(Compiler *c, int n, int mi) {
   ClassInfo *ci = &c->classes[cid];
   /* (a reopened builtin -- Exception, String, Object -- has its own
      inspect and to_s behind the program's) */
-  if (comp_class_is_module(c, ci) || is_builtin_reopen(ci->name) || ci->is_struct || ci->is_data ||
+  if (comp_class_is_module(c, ci) || is_builtin_reopen(ci->name) || class_lacks_kernel(c, cid) || ci->is_struct || ci->is_data ||
       ci->is_native_class || ci->nsub_root > 0 ||
       comp_ary_root(c, cid) >= 0 || class_inherits_builtin_exception(c, cid) || class_is_exc_subclass(c, cid))
     return 0;
