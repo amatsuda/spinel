@@ -475,6 +475,19 @@ int elab_class_candidates(Compiler *c, int node, int **out);   /* the classes a 
    Object's; below -1 not known) and the name (NULL outside the load
    phase's walk) */
 int elab_header_class(const Compiler *c, int node, int *owner, const char **leaf);
+/* ...and the class a class builder's write opens (`X = Struct.new(:a) do`,
+   `k = Data.define(:a) do`), -1 for a write no builder made a class at */
+int elab_builder_class(Compiler *c, int node);
+/* what a class builder's call (Class.new, Module.new) makes, as the
+   builders' lowering noted it ahead of the walk (elab_builder_note); a copy
+   answers as the node it copies: EB_NONE for none noted; EB_DYNAMIC_SUPER,
+   a class of a superclass only the run time holds */
+enum { EB_NONE, EB_DYNAMIC_SUPER };
+int elab_builder_kind(const Compiler *c, int node);
+void elab_builder_note(Compiler *c, int node, int kind);
+/* nt_swap_nodes, and the record's entries of the two nodes trade places
+   with their contents */
+void elab_swap_nodes(Compiler *c, int a, int b);
 /* what constant reference ref (a ConstantReadNode or ConstantPathNode)
    names, read where statement `site` stands: ELAB_NO when it names no
    constant there and the record sees every write of the name there can

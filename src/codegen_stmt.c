@@ -20772,7 +20772,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
          the block's defs, which take the struct's class from the load record
          (elab_record_builders). */
       if (!isg && v >= 0 && is_struct_call(c, v)) {
-        int sci = comp_class_index(c, nm);
+        int sci = elab_builder_class(c, id);
         emit_class_body_stmts(c, sci, class_def_body(c, id), b, indent);
         /* the block ran with the class anonymous; the write names it */
         if (comp_class_anonymous(c, sci)) emit_class_assign_name(c, sci, class_ruby_name(c, sci), b, indent);
@@ -21367,7 +21367,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     /* `k = Struct.new(...) do ... end`: the block's statements run too */
     int v = nt_ref(nt, id, "value");
     if (v >= 0 && is_struct_call(c, v)) {
-      int sci = anon_struct_ci_for_value(c, v);
+      int sci = elab_builder_class(c, id);
       if (sci >= 0) emit_class_body_stmts(c, sci, class_def_body(c, id), b, indent);
     }
     return;

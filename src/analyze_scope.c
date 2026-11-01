@@ -1435,7 +1435,7 @@ static int class_by_ruby_path(Compiler *c, const char *path) {
    collided is found by the path the header writes. Under a builtin
    (`module Comparable::Ext`) the class is modelled outside it, and its
    name keeps the builtin's path, as CRuby's does. */
-static void header_parent_encloses(Compiler *c, int par, int child, const char *leaf, int named) {
+void header_parent_encloses(Compiler *c, int par, int child, const char *leaf, int named) {
   char path[256];
   int has_path = header_parent_path(c->nt, par, path, sizeof path);
   int pc = has_path ? class_by_ruby_path(c, path) : -1;
@@ -1500,13 +1500,12 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   int scope_idx = w.scope, class_id = w.cls, proc = w.proc, dead = w.dead;
   c->nscope[id] = scope_idx;
   c->node_cbody[id] = w.cbody;
+  int refused_builder = nt_int(c->nt, id, "class_new_capture", 0) || elab_builder_kind(c, id) != EB_NONE;
   if (proc >= 0 && nt_kind(c->nt, id) == NK_CallNode &&
-      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
-       is_ivar_access(nt_str(c->nt, id, "name"))))
+      (refused_builder || is_ivar_access(nt_str(c->nt, id, "name"))))
     nt_node_set_int((NodeTable *)c->nt, id, "refusal_proc", proc);
   if (dead && nt_kind(c->nt, id) == NK_CallNode &&
-      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
-       is_define_method_name(nt_str(c->nt, id, "name")) || is_ivar_access(nt_str(c->nt, id, "name"))))
+      (refused_builder || is_define_method_name(nt_str(c->nt, id, "name")) || is_ivar_access(nt_str(c->nt, id, "name"))))
     nt_node_set_int((NodeTable *)c->nt, id, "refusal_dead", 1);
   if (nt_kind(c->nt, id) == NK_DefNode) proc = -1;
   else if (is_proc_create(c, id)) proc = id;
@@ -1570,7 +1569,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     return;
   }
   if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
-    int cp = nt_ref(c->nt, id, "constant_path"), made = 0;
+    int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
     int alias = elab_header_entity(c, id, &w.pos);
     int cls_toplevel = class_id < 0 && cp >= 0 &&
@@ -1635,40 +1634,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     }
     if (nt_kind(c->nt, id) == NK_ClassNode && cname)
       refuse_native_class_reopen(c, id, cp, class_id, cls_leaf);
-    if (cname && comp_class_index(c, cname) < 0) {
-      comp_class_new(c, cname, id);
-      child_class = c->nclasses - 1;
-      made = 1;
-      c->classes[child_class].enclosing_class = class_id;
-      /* a name qualify_colliding_classes gave carries the Ruby path it
-         resolved the header to (`AP = P; class AP::Foo` is P::Foo) */
-      const char *qrn = cp >= 0 ? nt_str(c->nt, cp, "qc_ruby_name") : NULL;
-      if (qrn) c->classes[child_class].ruby_name_cache = strdup(qrn);
-      /* `class A::B`: A encloses B wherever it is written. The leaf is the
-         header's as written: a `__` in it is the program's own, not the
-         nesting mark cls_leaf strips */
-      int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
-      if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode))
-        header_parent_encloses(c, par, child_class, cname, qrn != NULL);
-      /* `class ::B` names B at the top level wherever it is written: no
-         module encloses it, and its name is B */
-      else if (par < 0 && cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode)
-        c->classes[child_class].enclosing_class = -1;
-    }
-    else if (cname) {
-      child_class = comp_class_index(c, cname);  /* reopened class/module */
-      /* A class can be opened bare first (no superclass -- e.g. just to hold a
-         nested class) and reopened later with `< Super`. The parent link is read
-         from def_node's "superclass" ref, so prefer the opening that declares one;
-         otherwise the superclass is lost and a subclass's overrides aren't
-         dispatched against the right ancestor chain (matz/spinel#1477). */
-      if (child_class >= 0 && nt_ref(c->nt, id, "superclass") >= 0 &&
-          c->classes[child_class].def_node >= 0 &&
-          nt_ref(c->nt, c->classes[child_class].def_node, "superclass") < 0) {
-        comp_class_set_def(c, child_class, id);
-      }
-    }
-    elab_header_opened(c, id, cname ? child_class : -1, made);
+    child_class = elab_rec_open(c, id, cp, cname, class_id);
   }
   else if (ty_k == NK_DefNode) {
     const char *name = nt_str(c->nt, id, "name");

@@ -73,7 +73,7 @@ static void graft(Compiler *c, int site, Buf *b, int ext, int slot, int arity) {
       nt_node_set_int(nt, i, "cext_arity", arity);
     }
   }
-  nt_swap_nodes(nt, site, root);
+  elab_swap_nodes(c, site, root);
   nt_node_reset(nt, root, "NilNode");
   free(b->p);
   memset(b, 0, sizeof(*b));

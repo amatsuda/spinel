@@ -2203,7 +2203,7 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (is_raise_alias(name) && nt_int(nt, id, "sclass_self", 0) && cplan_reachable(c, id))
     return "the ancestry and the method table of a singleton class are not modeled: its name, "
            "identity, instance_methods(false) and method_defined? are; see docs/limitations.md";
-  if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
+  if (elab_builder_kind(c, id) == EB_DYNAMIC_SUPER && cplan_reachable(c, id))
     return "Class.new with a non-constant superclass is not supported; "
            "use a constant superclass (see docs/limitations.md)";
   if (nt_int(nt, id, "attr_splat", 0) && cplan_reachable(c, id)) {

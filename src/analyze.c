@@ -41918,7 +41918,7 @@ static int kwb_clone_split(Compiler *c, int call, Scope *sc) {
   }
   st[ns++] = ch;
   int seq = kwb_seq(nt, st, ns);
-  nt_swap_nodes(nt, call, seq);
+  elab_swap_nodes(c, call, seq);
   return seq;
 }
 static const char *const kwo_rows[][3] = {
@@ -41955,7 +41955,8 @@ static int kwo_tree(NodeTable *nt, int call, int row, int i, int mask, const cha
   return cl;
 }
 /* The same for `x.step(1, **h)` and the builtins that take `by:`, `to:` or `random:`. */
-static int kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
+static int kwb_optional_split(Compiler *c, int call, int row, Scope *sc) {
+  NodeTable *nt = (NodeTable *)c->nt;
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
   if (n < 1 || n > 16 || nt_argv_kwh(nt, av, n) < 0) return -1;
@@ -41984,7 +41985,7 @@ static int kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
     int g[2] = { rw, sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, rn, -1), NULL, 0), nt_new_node(nt, "NilNode"), seq) };
     seq = kwb_seq(nt, g, 2);
   }
-  nt_swap_nodes(nt, call, seq);
+  elab_swap_nodes(c, call, seq);
   return seq;
 }
 static int kwo_leaves(NodeTable *nt, int call) {
@@ -42019,7 +42020,7 @@ int desugar_builtin_kwsplat_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   int orow = nt_kind(nt, id) == NK_CallNode ? kwo_row(nt_str(nt, id, "name")) : -1;
   for (int i = 0; orow >= 0 && i < lc->nids; i++) if (kwb_is(nt_str(nt, lc->ids[i], "name"), kwo_rows[orow][0])) orow = -1;
-  if (orow >= 0 && kwo_leaves(nt, id)) kwb_drop_orphan(c, lc, kwb_optional_split(nt, id, orow, NULL));
+  if (orow >= 0 && kwo_leaves(nt, id)) kwb_drop_orphan(c, lc, kwb_optional_split(c, id, orow, NULL));
   int row = nt_kind(nt, id) == NK_CallNode ? kwb_row(nt_str(nt, id, "name")) : -1;
   for (int i = 0; row >= 0 && i < lc->nids; i++) if (kwb_is(nt_str(nt, lc->ids[i], "name"), kwb_rows[row][0])) row = -1;
   int an = row >= 0 ? nt_ref(nt, id, "arguments") : -1, n = 0, en = 0, args[16];
@@ -42570,7 +42571,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       if (nt_int(nt, cp, "enum_site", -1) == id) nt_node_set_int(nt, cp, "enum_site", cl);
     }
     if (krow >= 0) kwb_clone_split(c, cl, comp_scope_of(c, id));
-    if (orow >= 0) kwb_optional_split(nt, cl, orow, comp_scope_of(c, id));
+    if (orow >= 0) kwb_optional_split(c, cl, orow, comp_scope_of(c, id));
     if (vob_test && m == 0) {
       int bx = nt_ref(nt, blk, "expression");
       int test = bx >= 0 ? nt_clone_subtree(nt, bx) : sd_call(nt, "block_given?", -1, NULL, 0);

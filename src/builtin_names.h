@@ -149,6 +149,8 @@ int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
 int is_match_p_name(const char *n);   /* match? */
 int is_record_class_builder(const char *recv, const char *meth); /* Struct.new, Data.define */
+int is_class_new(const char *recv, const char *meth); /* Class.new */
+int is_module_new(const char *recv, const char *meth); /* Module.new */
 int is_class_builder(const char *recv, const char *meth); /* Struct.new, Data.define, Class.new, Module.new */
 int is_value_constructor(const char *recv, const char *meth); /* Hash.new, Array.new, String.new, Object.new */
 int is_array_new(const char *recv, const char *meth); /* Array.new */
@@ -717,6 +719,7 @@ int is_plain_builtin_superclass(int id);       /* BC_PLAIN or an exception: give
 /* names the compile-time evaluation and its questions ask about (ct_eval.c,
    analyze_ct.c) */
 int is_class_const_name(const char *n);    /* Class: the constant Class.new is called on */
+int is_module_const_name(const char *n);   /* Module: the constant Module.new is called on */
 int is_hash_read_only(const char *n);      /* the Hash calls that read a table and leave it as it is */
 int is_to_a_name(const char *n);           /* to_a: the receiver's own Array, for an Array */
 int is_hash_self_answer(const char *n);    /* each each_pair each_key each_value freeze to_h: answer the Hash itself */
