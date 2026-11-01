@@ -286,6 +286,11 @@ int elab_call_method(Compiler *c, int id, int cls, const char *name, int sg);
    -2 for any other frame (a singleton class body, an eval form's or an
    anonymous builder's block) or no point */
 int elab_self_at(Compiler *c, int node);
+/* the class whose body is node's lexical scope (cref), which owns a
+   constant node writes: a class or module body's; a class builder's block
+   keeps the scope it is written in. -1 for main's top level; -2 in a
+   singleton class body or with no point */
+int elab_cref_at(Compiler *c, int node);
 /* the versions of method `name` the record holds, in every class's and
    module's histories: defs, define_methods, attrs, aliases, module_function
    copies, undefs and removes (not visibility changes) */

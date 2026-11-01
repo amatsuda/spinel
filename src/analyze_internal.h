@@ -758,7 +758,7 @@ enum {
   LW_USER_BACKTICK, LW_LITERAL_UNDEF_METHOD, LW_EXPLICIT_INITIALIZE_CALLS, LW_NOARG_DISPLAY_WRAPPERS,
   LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_SELF_SUPERCLASS, LW_STRUCT_SUBCLASS_NEW_WRITE,
   LW_REFUSE_SUPERCLASS_EXPRS, LW_RESCUE_BLOCK_BODIES,
-  LW_MARK_SYM_PROC_BLOCKS, LW_BODY_LOCAL_SCOPES, LW_ERRNO_ALIASES, LW_PAREN_DEF_BODY, LW_MARK_MATCH_RANGES,
+  LW_MARK_SYM_PROC_BLOCKS, LW_BUILDER_BLOCK_PARAM, LW_BODY_LOCAL_SCOPES, LW_ERRNO_ALIASES, LW_PAREN_DEF_BODY, LW_MARK_MATCH_RANGES,
   LW_MARK_RANGE_LOCALS, LW_DUPLICATE_UNDERSCORE_PARAMS, LW_ENCODING_QUERIES, LW_ALIAS_METHOD_STRING_NAMES,
   LW_ALIAS_METHOD_VALUES, LW_REASSIGNED_BLOCK_PARAMS,
   LW_ITSELF_RECEIVER, LW_TAP_VALUE_WRITE, LW_BLK_PARAM_WRITES, LW_REST_PARAM_WRITES, LW_YIELD_IN_CLOSURE,
@@ -879,6 +879,7 @@ LowerFn desugar_user_backtick_at;                                            /* 
 LowerFn desugar_explicit_initialize_calls_at, scope_numbered_block_params_at, rename_shadowing_block_params_at,
   rename_shadowing_block_params_span;
 LowerFn desugar_body_local_scopes_at, desugar_define_method_captures_at;     /* analyze_desugar.c */
+LowerFn desugar_builder_block_param_at, desugar_builder_block_param_left;   /* analyze_desugar.c */
 LowerFn desugar_forwarding_to_rest_callee_at, desugar_recursive_param_defaults_at;
 LowerFn desugar_stored_enum_each_at;                                         /* analyze_desugar.c */
 LowerFn desugar_literal_undef_method_at, desugar_literal_undef_method_left;

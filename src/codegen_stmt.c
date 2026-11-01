@@ -20927,8 +20927,12 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
     }
     if (!isg) emit_const_flag_set(lv, key, b, indent);
-    if (!isg && lv->type == TY_CLASS)
-      emit_class_const_name(c, key, nm, g_class_body_id, b, indent);
+    /* the name is the constant's under its lexical scope: a builder's block
+       (`X = Class.new do K = self end`) names K at the top level */
+    if (!isg && lv->type == TY_CLASS) {
+      int cref = elab_cref_at(c, id);
+      emit_class_const_name(c, key, nm, cref >= -1 ? cref : g_class_body_id, b, indent);
+    }
     if (!isg) emit_const_write_last_value(c, lv, key, b, indent);
     return 1;
   }

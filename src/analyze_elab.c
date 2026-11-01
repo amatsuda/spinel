@@ -3904,6 +3904,12 @@ int elab_self_at(Compiler *c, int node) {
   return cls >= 0 ? cls : LR_UNKNOWN_CLASS;
 }
 
+int elab_cref_at(Compiler *c, int node) {
+  (void)elab_fresh(c);
+  LoadPoint p = elab_point_of(c, node);
+  return p.region < 0 ? LR_UNKNOWN_CLASS : lr_cref(c, p.seq);
+}
+
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
   if (!lr_ready(c, p) || mod < 0) return ELAB_UNKNOWN;
   return lr_search(c, cls, sg, NULL, mod, p, p.region < 0, 0, NULL, 0);
