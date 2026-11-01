@@ -142,7 +142,7 @@ struct LoadRecord {
   unsigned char defs_computed;          /* ...and whether the program makes or copies a method by a computed name */
   struct LrVers *vers; int nvers, cvers, *vers_head;
   int follow;                /* the aliases lr_class_of is following, to cap a chain */
-  struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
+  struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class), and the class builders' calls and writes noted ahead of the walk (elab_builder_note) */
   ElabSurface *surf; int *surf_at;   /* elab_class_surface's, by class side: [2 * (cls + 1) + sg] .. [+ 1] */
   int *dscope, ndscope;      /* [ndscope] by node: the method scope the scope walk made of a def or define_method (elab_def_scope), 0 for none */
   int core[CORE_N];          /* every header with a core name as it registers (elab_header_opened), its index + 1; 0 before one; only Object, BasicObject, Module and Kernel are read (lr_core) */
@@ -945,8 +945,12 @@ static LrClass *lr_class(LoadRecord *r, int cls) {
    before the header (found, the write or header the record holds, -1 for
    none) as elab_const_own_at answered (verdict), and the class that names
    (want): the found header's class, LR_UNKNOWN_CLASS for an alias or one
-   not known, LR_NEW for a new class. */
-typedef struct LrHeader { int node, cls, owner, verdict, found, want, next; char *leaf; } LrHeader;
+   not known, LR_NEW for a new class. The map also keys a class builder's
+   call, and the constant write holding it, by what the builder makes
+   (builder, EB_*; EB_NONE on a header): such an entry opens no class
+   (cls and want LR_UNKNOWN_CLASS), so the header readers answer it as a
+   node they hold nothing for. */
+typedef struct LrHeader { int node, cls, owner, verdict, found, want, next; char *leaf; unsigned char builder; } LrHeader;
 
 static LrCheck *lr_family(LoadRecord *r, const char *reader);
 static void lr_node_desc(Compiler *c, int id, char *buf, size_t sz);
@@ -961,7 +965,7 @@ static LrHeader *lr_header(LoadRecord *r, int node, int make) {
   for (int i = r->hdr_head[h]; i >= 0; i = r->hdr[i].next) if (r->hdr[i].node == node) return &r->hdr[i];
   if (!make) return NULL;
   r->hdr = lr_grow(r->hdr, &r->chdr, r->nhdr, sizeof *r->hdr);
-  r->hdr[r->nhdr] = (LrHeader){ node, LR_UNKNOWN_CLASS, LR_UNKNOWN_CLASS, ELAB_UNKNOWN, -1, LR_UNKNOWN_CLASS, r->hdr_head[h], NULL };
+  r->hdr[r->nhdr] = (LrHeader){ node, LR_UNKNOWN_CLASS, LR_UNKNOWN_CLASS, ELAB_UNKNOWN, -1, LR_UNKNOWN_CLASS, r->hdr_head[h], NULL, EB_NONE };
   r->hdr_head[h] = r->nhdr;
   return &r->hdr[r->nhdr++];
 }
@@ -1031,6 +1035,12 @@ static int lr_builder_class(Compiler *c, int node) {
   }
   int ci = comp_class_of_def(c, node);
   return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
+}
+
+/* ...asked by codegen, which emits the builder's block at its write */
+int elab_builder_class(Compiler *c, int node) {
+  int ci = c->lrec ? lr_builder_class(c, node) : LR_UNKNOWN_CLASS;
+  return ci >= 0 ? ci : -1;
 }
 
 /* The class a constant's write or definition holds: a class or module
@@ -4336,6 +4346,101 @@ void elab_header_opened(Compiler *c, int node, int cls, int made) {
   lr_node_desc(c, node, d, sizeof d);
   fprintf(stderr, "spinel-elab-check: header node=%s kind=%s class=%s entity=%s::%s want=%s\n", d, kind,
           lr_class_name(c, h->cls), lr_class_name(c, h->owner), h->leaf, lr_class_name(c, h->want));
+}
+
+/* The class the class or module header at node opens, as registration
+   holds it under cname (qualify's spelling): a new one, made here, whose
+   body encl's encloses -- or, for `class A::B`, the class A names
+   wherever the header stands, and for `class ::B` none -- else the class
+   of that name it reopens, whose definition becomes this opening when it
+   is the first to declare a superclass. The node -> class map answers it
+   from here on (elab_header_opened); a header with no name opens none,
+   and its body stays encl's. */
+int elab_rec_open(Compiler *c, int node, int cp, const char *cname, int encl) {
+  if (!cname) { elab_header_opened(c, node, -1, 0); return encl; }
+  int ci = comp_class_index(c, cname), made = ci < 0;
+  if (made) {
+    comp_class_new(c, cname, node);
+    ci = c->nclasses - 1;
+    c->classes[ci].enclosing_class = encl;
+    /* a name qualify_colliding_classes gave carries the Ruby path it
+       resolved the header to (`AP = P; class AP::Foo` is P::Foo) */
+    const char *qrn = cp >= 0 ? nt_str(c->nt, cp, "qc_ruby_name") : NULL;
+    if (qrn) c->classes[ci].ruby_name_cache = strdup(qrn);
+    /* `class A::B`: A encloses B wherever it is written. The leaf is the
+       header's as written: a `__` in it is the program's own, not the
+       nesting mark the walk strips */
+    int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
+    if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode))
+      header_parent_encloses(c, par, ci, cname, qrn != NULL);
+    /* `class ::B` names B at the top level wherever it is written: no
+       module encloses it, and its name is B */
+    else if (par < 0 && cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode)
+      c->classes[ci].enclosing_class = -1;
+  }
+  /* A class can be opened bare first (no superclass -- e.g. just to hold a
+     nested class) and reopened later with `< Super`. The parent link is read
+     from def_node's "superclass" ref, so prefer the opening that declares one;
+     otherwise the superclass is lost and a subclass's overrides aren't
+     dispatched against the right ancestor chain (matz/spinel#1477). */
+  else if (nt_ref(c->nt, node, "superclass") >= 0 && c->classes[ci].def_node >= 0 &&
+           nt_ref(c->nt, c->classes[ci].def_node, "superclass") < 0)
+    comp_class_set_def(c, ci, node);
+  elab_header_opened(c, node, ci, made);
+  return ci;
+}
+
+/* What a class builder's call makes (EB_*), noted where the builders are
+   lowered, ahead of the walk (desugar_class_new_blocks): the node -> class
+   map holds it beside the headers, for the walk and the call plan to read.
+   A builder whose class the program cannot have (one built from a
+   superclass only the run time holds) is noted at its call and at the
+   constant write holding it. A copy of such a node (a clone: a module's
+   method copied into each class that includes it) answers as the node it
+   copies (nt_origin), along a chain of up to 64 copies. */
+void elab_builder_note(Compiler *c, int node, int kind) {
+  lr_header(lr_get(c), node, 1)->builder = (unsigned char)kind;
+}
+int elab_builder_kind(const Compiler *c, int node) {
+  for (int depth = 0; c->lrec && node >= 0 && depth < 64; depth++) {
+    const LrHeader *h = lr_header(c->lrec, node, 0);
+    if (h) return h->builder;
+    char how = 0; int a = 0, k = 0; unsigned pass = 0;
+    int o = nt_origin(c->nt, node, &how, &a, &pass, &k);
+    if (o < 0 || how != 'c') break;
+    node = o;
+  }
+  return EB_NONE;
+}
+
+/* Header map entry h now keys `node`: moved to that node's bucket */
+static void lr_header_rekey(LoadRecord *r, LrHeader *h, int node) {
+  int i = (int)(h - r->hdr), *p = &r->hdr_head[(unsigned)h->node % LR_BUCKETS];
+  while (*p != i) p = &r->hdr[*p].next;
+  *p = h->next;
+  h->node = node;
+  h->next = r->hdr_head[(unsigned)node % LR_BUCKETS];
+  r->hdr_head[(unsigned)node % LR_BUCKETS] = i;
+}
+
+/* Exchange the contents of nodes a and b (nt_swap_nodes), and with them
+   what the record keeps by node: a header's or a builder's entry in the
+   node -> class map, a source constant write, a def's method scope. A pass
+   that numbers a new node ahead of an existing one swaps through here, so
+   a fact noted of the existing node follows it to its new number. */
+void elab_swap_nodes(Compiler *c, int a, int b) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (a < 0 || b < 0 || a >= nt->count || b >= nt->count || a == b) return;
+  nt_swap_nodes(nt, a, b);
+  LoadRecord *r = c->lrec;
+  if (!r) return;
+  LrHeader *ha = lr_header(r, a, 0), *hb = lr_header(r, b, 0);
+  if (ha) lr_header_rekey(r, ha, b);
+  if (hb) lr_header_rekey(r, hb, a);
+  for (int i = 0; i < r->nsrcw; i++)
+    r->srcw[i].node = r->srcw[i].node == a ? b : r->srcw[i].node == b ? a : r->srcw[i].node;
+  int sa = lr_def_scope(r, a), sb = lr_def_scope(r, b);
+  if (sa || sb) { elab_def_scope(c, a, sb); elab_def_scope(c, b, sa); }
 }
 
 int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {

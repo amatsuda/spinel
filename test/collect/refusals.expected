@@ -302,6 +302,12 @@ spinel: 1 refusal, nothing written
 == test/reject/class_new_variable_constant_block.rb [promote] rc=1
 spinel: test/reject/class_new_variable_constant_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_included_hook.rb [default] rc=1
+spinel: test/reject/class_new_variable_included_hook.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_included_hook.rb [promote] rc=1
+spinel: test/reject/class_new_variable_included_hook.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/class_new_variable_local.rb [default] rc=1
 spinel: test/reject/class_new_variable_local.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
 spinel: 1 refusal, nothing written
@@ -314,6 +320,34 @@ spinel: 1 refusal, nothing written
 == test/reject/class_new_variable_local_block.rb [promote] rc=1
 spinel: test/reject/class_new_variable_local_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_module_method.rb [default] rc=1
+spinel: test/reject/class_new_variable_module_method.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: test/reject/class_new_variable_module_method.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 2 refusals, nothing written
+== test/reject/class_new_variable_module_method.rb [promote] rc=1
+spinel: test/reject/class_new_variable_module_method.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: test/reject/class_new_variable_module_method.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 2 refusals, nothing written
+== test/reject/class_new_variable_rest_write.rb [default] rc=1
+spinel: test/reject/class_new_variable_rest_write.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_rest_write.rb [promote] rc=1
+spinel: test/reject/class_new_variable_rest_write.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_rest_write_branch.rb [default] rc=1
+spinel: test/reject/class_new_variable_rest_write_branch.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_rest_write_branch.rb [promote] rc=1
+spinel: test/reject/class_new_variable_rest_write_branch.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_rest_write_included.rb [default] rc=1
+spinel: test/reject/class_new_variable_rest_write_included.rb:6: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: test/reject/class_new_variable_rest_write_included.rb:6: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 2 refusals, nothing written
+== test/reject/class_new_variable_rest_write_included.rb [promote] rc=1
+spinel: test/reject/class_new_variable_rest_write_included.rb:6: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: test/reject/class_new_variable_rest_write_included.rb:6: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 2 refusals, nothing written
 == test/reject/class_new_without_block_iterator.rb [default] rc=1
 spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written

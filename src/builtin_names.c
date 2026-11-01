@@ -28,11 +28,15 @@ int is_record_class_builder(const char *recv, const char *meth) {
                           (sp_streq(recv, "Data") && sp_streq(meth, "define")));
 }
 
+/* Class.new: the builder of an anonymous class */
+int is_class_new(const char *recv, const char *meth) { return is_new_name(meth) && is_class_const_name(recv); }
+/* Module.new: the builder of an anonymous module */
+int is_module_new(const char *recv, const char *meth) { return is_new_name(meth) && is_module_const_name(recv); }
+
 /* Struct.new, Data.define, Class.new, Module.new: the builders of a class or a
    module, whose block runs as its body */
 int is_class_builder(const char *recv, const char *meth) {
-  return is_record_class_builder(recv, meth) ||
-         (recv && meth && sp_streq(meth, "new") && (sp_streq(recv, "Class") || sp_streq(recv, "Module")));
+  return is_record_class_builder(recv, meth) || is_class_new(recv, meth) || is_module_new(recv, meth);
 }
 
 /* Hash.new, Array.new, String.new, Object.new: a builtin's own constructor */
@@ -2209,6 +2213,7 @@ int is_plain_builtin_superclass(int id) {
 
 /* ---- the compile-time evaluation and its questions ---- */
 int is_class_const_name(const char *n) { return n && sp_streq(n, "Class"); }
+int is_module_const_name(const char *n) { return n && sp_streq(n, "Module"); }
 int is_hash_read_only(const char *n) {
   static const char *const R[] = { "each", "each_pair", "[]", "fetch", "key?", "has_key?", "include?",
     "member?", "key", "keys", "values", "size", "length", "empty?", "dig", "to_a", "frozen?", "freeze",

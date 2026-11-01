@@ -728,7 +728,7 @@ int desugar_rest_param_writes_at(Compiler *c, LowerCtx *lc, int id) {
      copy's. */
   if (bn > 0 && bb[0] < wr) {
     int first = bb[0];
-    nt_swap_nodes(nt, first, wr);
+    elab_swap_nodes(c, first, wr);
     nb[0] = first; nb[1] = wr;
   }
   nt_node_set_arr(nt, body, "body", nb, bn + 1);
@@ -3487,7 +3487,7 @@ int desugar_mutator_receiver_value(Compiler *c) {
       long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
       int seq[2] = { r, pr };
       nt_node_set_ref(nt, id, "receiver", x2);
-      nt_swap_nodes(nt, id, pr);
+      elab_swap_nodes(c, id, pr);
       nt_node_reset(nt, id, "ParenthesesNode");
       nt_node_set_arr(nt, st, "body", seq, 2);
       nt_node_set_ref(nt, id, "body", st);
@@ -3520,7 +3520,7 @@ int desugar_mutator_receiver_value(Compiler *c) {
       int seq[2] = { r, pr };
       /* the call moves into a new node; the call's own becomes the paren */
       nt_node_set_ref(nt, id, "receiver", tr);
-      nt_swap_nodes(nt, id, pr);
+      elab_swap_nodes(c, id, pr);
       nt_node_reset(nt, id, "ParenthesesNode");
       nt_node_set_arr(nt, st, "body", seq, 2);
       nt_node_set_ref(nt, id, "body", st);
@@ -4814,7 +4814,7 @@ void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, 
     nt_node_set_arr(nt, body, "body", st, n);
     nt_node_set_ref(nt, p, "body", body);
     if (sn) to_v = p;
-    else nt_swap_nodes(nt, id, p);
+    else elab_swap_nodes(c, id, p);
   }
   int pos[2] = { step_kw_paren(nt, to_v), step_kw_paren(nt, by_v) };
   nt_node_set_arr(nt, args, "arguments", pos, 2);
@@ -4893,7 +4893,7 @@ int step_kw_unknown(Compiler *c, NodeTable *nt, int id, int args) {
     nt_node_set_ref(nt, p, "body", body);
   }
   free(st);
-  nt_swap_nodes(nt, id, p);
+  elab_swap_nodes(c, id, p);
   nt_node_set_int(nt, p, "step_kw_unk", 1);
   comp_grow_node_arrays(c);
   for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
@@ -9588,7 +9588,7 @@ static void fwd_branch_on_callable(Compiler *c, int id, int cx) {
     nt_node_set_ref(nt, pred, "block", -1);
   }
   /* the call moves to `ifn`'s number, the conditional takes `id`'s */
-  nt_swap_nodes(nt, id, ifn);
+  elab_swap_nodes(c, id, ifn);
   int call = ifn;
   nt_node_reset(nt, id, "IfNode");
   if (nt_str(nt, call, "dyn_name")) {
@@ -16809,7 +16809,7 @@ int desugar_reduce_splat_args(Compiler *c) {
     /* the call moves to a new number, and the conditional takes `id`'s */
     int call = bs_new(&b, "CallNode");
     if (!b.ok) continue;
-    nt_swap_nodes(nt, id, call);
+    elab_swap_nodes(c, id, call);
     nt_node_reset(nt, id, "ParenthesesNode");
     int ary = bs_new(&b, "ArrayNode");
     if (ary >= 0) nt_node_set_arr(nt, ary, "elements", av, argc);
@@ -16939,7 +16939,7 @@ int desugar_iter_splat_args(Compiler *c) {
     /* the call moves to a new number, and the parenthesized form takes `id`'s */
     int call = bs_new(&b, "CallNode");
     if (!b.ok) continue;
-    nt_swap_nodes(nt, id, call);
+    elab_swap_nodes(c, id, call);
     nt_node_reset(nt, id, "ParenthesesNode");
     int ary = bs_new(&b, "ArrayNode");
     if (ary >= 0) nt_node_set_arr(nt, ary, "elements", av, argc);
@@ -19625,6 +19625,49 @@ int desugar_singleton_class_meta(Compiler *c) {
   return changed;
 }
 
+/* What a class builder (Class.new, Module.new) call makes that the program
+   cannot have as a class (EB_*; EB_NONE for any other node): a class of a
+   superclass only the run time holds (`Class.new(base)`). */
+static int builder_refused_kind(const NodeTable *nt, int call) {
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return EB_NONE;
+  int recv = nt_ref(nt, call, "receiver");
+  const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+  if (!is_class_new(rn, nt_str(nt, call, "name"))) return EB_NONE;
+  int an = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  return ac >= 1 && nt_kind(nt, av[0]) != NK_ConstantReadNode && nt_kind(nt, av[0]) != NK_ConstantPathNode
+         ? EB_DYNAMIC_SUPER : EB_NONE;
+}
+
+/* Such a builder call (par: the constant write holding it, else -1): built
+   from the running method's values, it is not a class the program has. The
+   call becomes the raise that stands for it where it runs, and so does the
+   constant write, which never completes; every node of its block and its
+   arguments goes inert, as the passes after this one that walk the whole
+   table by node kind would otherwise still find its defs, ivar writes and
+   reads and give them to the code around it. The record keeps what the
+   builder was (elab_builder_note), for the walk and the call plan to refuse
+   it where it is reached, so the fact is the record's, not a mark the
+   lowering leaves. */
+static void builder_lower_refused(Compiler *c, int call, int par, int kind) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  elab_builder_note(c, call, kind);
+  if (par >= 0) elab_builder_note(c, par, kind);
+  cn_neutralize(nt, nt_ref(nt, call, "block"));
+  cn_neutralize(nt, nt_ref(nt, call, "arguments"));   /* (its superclass's locals are no reads of main's) */
+  cn_reset_call(nt, call);
+  nt_node_set_str(nt, call, "name", "raise");
+  int args = fwd_new_node_like(nt, call, "ArgumentsNode");
+  int msg = str_node_like(nt, call, "Class.new with a non-constant superclass is not supported");
+  nt_node_set_arr(nt, args, "arguments", &msg, 1);
+  nt_node_set_ref(nt, call, "arguments", args);
+  if (par >= 0) {
+    cn_reset_call(nt, par);
+    nt_node_set_str(nt, par, "name", "raise");
+    nt_node_set_ref(nt, par, "arguments", args);
+  }
+}
+
 /* The class body a Class.new or Module.new block became, after rows have
    run over it as a block's code: handed to the host as one splice, which
    grafts its class_eval text and lowers it as the class body it now is */
@@ -19696,31 +19739,17 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     if (!is_new_name(nm) || recv < 0) continue;
     if (nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
-    int is_module = rn && sp_streq(rn, "Module");
-    if (!rn || (!is_module && !sp_streq(rn, "Class"))) continue;
+    int is_module = is_module_new(rn, nm);
+    if (!is_module && !is_class_new(rn, nm)) continue;
     int an = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     int super_node = (!is_module && ac >= 1) ? av[0] : -1;
-    int dynamic_super = super_node >= 0 && nt_kind(nt, super_node) != NK_ConstantReadNode &&
-                        nt_kind(nt, super_node) != NK_ConstantPathNode;
-    if (dynamic_super) {
-      cn_neutralize(nt, blk);
-      cn_reset_call(nt, id);
-      nt_node_set_str(nt, id, "name", "raise");
-      nt_node_set_int(nt, id, "class_new_superclass", 1);
-      int args = fwd_new_node_like(nt, id, "ArgumentsNode");
-      int msg = str_node_like(nt, id, "Class.new with a non-constant superclass is not supported");
-      nt_node_set_arr(nt, args, "arguments", &msg, 1);
-      nt_node_set_ref(nt, id, "arguments", args);
+    int refused = builder_refused_kind(nt, id);
+    if (refused) {
       int par = parent[id];
-      if (par >= 0 && (nt_kind(nt, par) == NK_ConstantWriteNode ||
-                      nt_kind(nt, par) == NK_ConstantPathWriteNode) &&
-          nt_ref(nt, par, "value") == id) {
-        cn_reset_call(nt, par);
-        nt_node_set_str(nt, par, "name", "raise");
-        nt_node_set_int(nt, par, "class_new_superclass", 1);
-        nt_node_set_ref(nt, par, "arguments", args);
-      }
+      int pw = par >= 0 && (nt_kind(nt, par) == NK_ConstantWriteNode || nt_kind(nt, par) == NK_ConstantPathWriteNode) &&
+               nt_ref(nt, par, "value") == id;
+      builder_lower_refused(c, id, pw ? par : -1, refused);
       changed = 1;
       continue;
     }
@@ -19734,8 +19763,6 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     /* An omitted block has the same empty class body as `{}`. */
     if (blk < 0) {
       if (ac > (is_module ? 0 : 1)) continue;
-      if (super_node >= 0 && nt_kind(nt, super_node) != NK_ConstantReadNode &&
-          nt_kind(nt, super_node) != NK_ConstantPathNode) continue;
       if (super_node >= 0 && is_embedding_builtin(nt_str(nt, super_node, "name"))) continue;
       /* Keep repeated evaluation on its existing path until class identity
          can be preserved: lowering it would reuse one static class. */
@@ -19750,10 +19777,6 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
       if (blk < 0) continue;
       nt_node_set_ref(nt, id, "block", blk);
     }
-    /* a superclass the program names is static; one held in a variable is
-       a class built at run time */
-    int static_super = super_node < 0 || nt_kind(nt, super_node) == NK_ConstantReadNode ||
-                       nt_kind(nt, super_node) == NK_ConstantPathNode;
     int body = cn_body(nt, blk);
     if (body < 0) continue;
     int par = parent[id];
@@ -19762,7 +19785,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     int reads_outer = cn_reads_outer_local(nt, body, 0) ||
                       cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
     int capture_refusal = reads_outer && !defer_refusals_at(c, id);
-    if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
+    if (!reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
         nt_ref(nt, par, "value") == id) {
       /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
       const char *cn = nt_str(nt, par, "name");
@@ -19788,7 +19811,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
       if (ak == NK_ClassNode || ak == NK_ModuleNode) { host_st = nt_ref(nt, a, "body"); break; }
       if (ak == NK_ProgramNode) { host_st = nt_ref(nt, a, "statements"); break; }
     }
-    if (static_super && !reads_outer && host_st >= 0 && nt_kind(nt, host_st) == NK_StatementsNode) {
+    if (!reads_outer && host_st >= 0 && nt_kind(nt, host_st) == NK_StatementsNode) {
       /* an anonymous class that is the same every time: name it */
       int rn2 = 0; const int *rs = nt_arr(nt, host_st, "body", &rn2);
       int at = -1;
@@ -19824,9 +19847,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     int args = fwd_new_node_like(nt, id, "ArgumentsNode");
     int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
     nt_node_set_str(nt, ex, "name", "NotImplementedError");
-    int msg = str_node_like(nt, id, static_super
-                             ? "spinel: Class.new or Module.new with a block that captures outer locals is not supported"
-                             : "spinel: Class.new with a non-constant superclass is not supported");
+    int msg = str_node_like(nt, id, "spinel: Class.new or Module.new with a block that captures outer locals is not supported");
     int av2[2] = { ex, msg };
     nt_node_set_arr(nt, args, "arguments", av2, 2);
     nt_node_set_ref(nt, id, "arguments", args);
