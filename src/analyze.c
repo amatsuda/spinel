@@ -2128,6 +2128,7 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
 }
 
 static int super_reach(Compiler *c, Scope *s);
+int builtin_instance_method_known(const char *cls, const char *m);
 /* Is a block handed to a builtin receiver's reopened yielding method run as
    a real proc? The reopen arms (emit_call_reopen_arms) reach a String's,
    Float's, Symbol's, Random's, Fiber's or Thread's own reopening, then
@@ -2152,7 +2153,10 @@ static int a_reopen_yielder_takes_block(Compiler *c, int id, TyKind rt, const ch
   else if (rt == TY_NIL) cores[n++] = CORE_NILCLASS;
   else if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) cores[n++] = CORE_NUMERIC;
   else if (ty_is_array(rt)) cores[n++] = CORE_ARRAY;
-  cores[n++] = CORE_OBJECT;
+  /* (Object's only for a name the builtin itself has no method of: the
+     builtin arms take `[x].each { }` ahead of the fallback) */
+  const char *bcn = builtin_class_of_type(rt);
+  if (!bcn || !builtin_instance_method_known(bcn, name)) cores[n++] = CORE_OBJECT;
   for (int k = 0; k < n; k++) {
     int ci = comp_core_class(c, cores[k]);
     int mi = ci >= 0 ? call_target(c, id, ci, name, 0, NULL) : -1;
