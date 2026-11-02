@@ -2501,15 +2501,14 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   while ((ch = SP_SIG_BLOCKING(fgetc(f->fp))) != EOF) {
     if (len + 2 > cap) { cap *= 2; char *nb = (char *)realloc(buf, cap); if (!nb) { free(buf); return NULL; } buf = nb; }
     buf[len++] = (char)ch;
-    /* as CRuby's getline: a byte that ends the separator is not checked
-       against the limit while fewer bytes than the separator are read, or
-       while the separator would start inside a character, and a limit
-       passed unchecked never stops that line */
-    if (sl && (unsigned char)ch == (unsigned char)sep[sl - 1]) {
-      if (len < sl) continue;
-      if (((unsigned char)buf[len - sl] & 0xC0) == 0x80 && len > sl) continue;
-      if (memcmp(buf + len - sl, sep, sl) == 0) { ended = 1; break; }
-    }
+    /* the separator ends the line where it is matched whole, and not where
+       it would start inside a character (on a continuation byte) */
+    if (sl && (unsigned char)ch == (unsigned char)sep[sl - 1] && len >= sl &&
+        !(((unsigned char)buf[len - sl] & 0xC0) == 0x80 && len > sl) &&
+        memcmp(buf + len - sl, sep, sl) == 0) { ended = 1; break; }
+    /* the limit cuts the line wherever it falls (CRuby 4.0.9; 4.0.7's
+       getline let a byte that could end a longer separator pass it
+       unchecked, and read on to the end) */
     if (lim > 0 && (sp_int)len == lim) {
       /* as CRuby's getline: a limit that falls inside a character reads on to
          its end (by up to 16 bytes) */

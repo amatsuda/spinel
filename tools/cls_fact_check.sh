@@ -9,7 +9,7 @@
 # Prints the violations, prefixed by the program, and exits 1 if any.
 set -u
 : "${SPINEL:=bin/spinel}"
-: "${RUBY:=$HOME/.rbenv/versions/4.0.7/bin/ruby}"
+: "${RUBY:=$HOME/.rbenv/versions/4.0.9/bin/ruby}"
 export SPINEL RUBY
 # Not timeout(1) alone: macOS has none, and every trace came out empty, so every program checked clean.
 if command -v timeout >/dev/null 2>&1; then limit30="timeout 30"; else limit30="perl -e alarm(30);exec(@ARGV)"; fi

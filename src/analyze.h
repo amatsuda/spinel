@@ -10,7 +10,7 @@
 
 #include "compiler.h"
 
-#define SP_RUBY_VERSION "4.0.7"
+#define SP_RUBY_VERSION "4.0.9"
 
 /* Whether a boxed ivar setter's receiver can hold class k; an unproved
    receiver conservatively reaches every class. Shared by layout/emission. */
