@@ -2130,9 +2130,9 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
 static int super_reach(Compiler *c, Scope *s);
 /* Is a block handed to a builtin receiver's reopened yielding method run as
    a real proc? The reopen arms (emit_call_reopen_arms) reach a String's,
-   Float's, Symbol's, Random's, Fiber's or Thread's own reopening, then
-   a Hash's, NilClass's, Numeric's, Array's and Object's, through the
-   method's proc-form clone with the block as a proc
+   Float's, Symbol's, Random's, Fiber's, Thread's, Range's or Time's own
+   reopening, then a Hash's, NilClass's, Numeric's, Array's and Object's,
+   through the method's proc-form clone with the block as a proc
    (emit_reopen_block_call), not spliced. Its writes to enclosing locals
    need cells: without them `total` in `1.5.twice { |v| total += v }`
    stayed 0, and on an Array or a Hash the block read a nil of its own. */
@@ -2140,12 +2140,12 @@ static int a_reopen_yielder_takes_block(Compiler *c, int id, TyKind rt, const ch
   int own = core_of_type(rt), oci = own >= 0 ? comp_core_class(c, own) : -1;
   int omi = oci >= 0 ? call_target(c, id, oci, name, 0, NULL) : -1;
   if (omi >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_FLOAT || rt == TY_SYMBOL ||
-                   rt == TY_RANDOM || rt == TY_FIBER || rt == TY_THREAD))
+                   rt == TY_RANDOM || rt == TY_FIBER || rt == TY_THREAD || rt == TY_RANGE ||
+                   rt == TY_TIME))
     return c->scopes[omi].yields;
-  /* (an Integer's, Range's, Time's, Enumerator's, IO's or Class's own
-     reopening is called, or spliced, without one) */
-  if (omi >= 0 && (rt == TY_INT || rt == TY_RANGE || rt == TY_TIME || rt == TY_ENUMERATOR ||
-                   rt == TY_IO || rt == TY_CLASS))
+  /* (an Integer's, Enumerator's, IO's or Class's own reopening is called,
+     or spliced, without one) */
+  if (omi >= 0 && (rt == TY_INT || rt == TY_ENUMERATOR || rt == TY_IO || rt == TY_CLASS))
     return 0;
   int cores[2], n = 0;
   if (ty_is_hash(rt)) cores[n++] = CORE_HASH;
@@ -34144,6 +34144,7 @@ static int pf_wanted(Compiler *c, const char *name) {
                       : (rt == TY_STRING || rt == TY_STRBUF) ? "String"
                       : rt == TY_RANDOM ? "Random"
                       : rt == TY_FIBER ? "Fiber" : rt == TY_THREAD ? "Thread"
+                      : rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time"
                       : (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) ? "Numeric" : NULL;
       int rci = rcn ? comp_class_index(c, rcn) : -1;
       if (rci >= 0 && comp_method_in_class(c, rci, name) >= 0) return 1;
