@@ -3271,16 +3271,26 @@ int emit_product_inspect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* An Integer's step(limit[, step]) without a block, with a boxed limit: a
+   nil one is the endless walk. A Float one, or a boxed step that holds a
+   Float, is CRuby's Float walk (every value a Float, where
+   sp_poly_arg_int_chk cut 2.5 to 2); an infinite limit with an Integer
+   step stays an Integer walk, as CRuby's does. */
 static int emit_step_boxed_limit(Compiler *c, int recv, const int *sv, int sc, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ sp_int _er%d = ", t); emit_int_expr(c, recv, b);
   buf_printf(b, "; sp_RbVal _el%d = ", t); emit_boxed(c, sv[0], b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_el%d); sp_int _es%d = ", t, t);
-  if (sc >= 2) emit_int_expr(c, sv[1], b); else buf_puts(b, "1");
-  buf_printf(b, "; if (_es%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");"
-                " _el%d.tag == SP_TAG_NIL ? sp_range_endless_step(sp_box_int(_er%d), sp_box_int(_es%d))"
-                " : (sp_poly_cmp_ck(sp_box_int(_er%d), _el%d), sp_Enumerator_new_from(sp_box_int_array(sp_IntArray_from_range_step(_er%d, sp_poly_arg_int_chk(_el%d), _es%d, 0)))); })",
-             t, t, t, t, t, t, t, t, t);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_el%d); sp_RbVal _es%d = ", t, t);
+  if (sc >= 2) emit_boxed(c, sv[1], b); else buf_puts(b, "sp_box_int(1)");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_es%d);"
+                " if (sp_poly_cmp_ck(_es%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");"
+                " _el%d.tag == SP_TAG_NIL ? sp_range_endless_step(sp_box_int(_er%d), _es%d)"
+                " : (sp_poly_cmp_ck(sp_box_int(_er%d), _el%d), sp_Enumerator_new_from("
+                "(_el%d.tag == SP_TAG_FLT && (isfinite(_el%d.v.f) || isnan(_el%d.v.f))) || _es%d.tag == SP_TAG_FLT"
+                " ? sp_box_float_array(sp_FloatArray_from_step((sp_float)_er%d, sp_num_to_f(_el%d), sp_num_to_f(_es%d), 0))"
+                " : sp_box_int_array(sp_IntArray_from_range_step(_er%d, _el%d.tag == SP_TAG_FLT"
+                " ? (_el%d.v.f > 0 ? (sp_int)INTPTR_MAX : (sp_int)INTPTR_MIN) : sp_poly_arg_int_chk(_el%d), sp_poly_arg_int_chk(_es%d), 0)))); })",
+             t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t);
   return 1;
 }
 
@@ -3291,14 +3301,29 @@ static int emit_step_boxed_limit(Compiler *c, int recv, const int *sv, int sc, B
    one (an endless Range) not at all. A zero step raises, a negative one
    walks down; `guard` (or NULL) runs after the zero check. */
 void emit_boxed_step_head(Buf *b, int tc, int tl, int ts, const char *excl, const char *open, const char *guard) {
-  int td = ++g_tmp;
+  int td = ++g_tmp, tf = ++g_tmp, fb = ++g_tmp, fl = ++g_tmp, fs = ++g_tmp, fn = ++g_tmp, fi = ++g_tmp;
   buf_printf(b, "if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", ts);
   if (guard) buf_printf(b, " %s", guard);
   buf_printf(b, " sp_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;", td, ts);
-  buf_printf(b, " for (; (%s) || (_t%d ? ((%s) ? sp_poly_lt(_t%d, _t%d) : sp_poly_le(_t%d, _t%d))"
-                " : ((%s) ? sp_poly_gt(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d)));"
-                " _t%d = sp_poly_add(_t%d, _t%d))",
-             open, td, excl, tc, tl, tc, tl, excl, tc, tl, tc, tl, tc, tc, ts);
+  /* a Float among the begin, the limit and the step (known only at run
+     time: a boxed step) makes it CRuby's Float walk: every value a Float,
+     the i-th computed as begin + i * step and the count fixed first, as
+     the typed Float loop does, rather than adding the step up. An open
+     limit (no end) is the infinity on the step's side. An infinite Float
+     limit alone leaves an Integer walk, as in CRuby. */
+  buf_printf(b, " sp_bool _t%d = _t%d.tag == SP_TAG_FLT || (!(%s) && _t%d.tag == SP_TAG_FLT && !isinf(_t%d.v.f)) || _t%d.tag == SP_TAG_FLT;"
+                " sp_float _t%d = 0, _t%d = 0, _t%d = 0, _t%d = 0; sp_int _t%d = 0;"
+                " if (_t%d) { _t%d = sp_num_to_f(_t%d); _t%d = (%s) ? (_t%d ? INFINITY : -INFINITY) : sp_num_to_f(_t%d); _t%d = sp_num_to_f(_t%d);"
+                " _t%d = sp_float_step_size(_t%d, _t%d, _t%d, (%s) ? 1 : 0); _t%d = sp_box_float(_t%d); }",
+             tf, tc, open, tl, tl, ts,
+             fb, fl, fs, fn, fi,
+             tf, fb, tc, fl, open, td, tl, fs, ts,
+             fn, fb, fl, fs, excl, tc, fb);
+  buf_printf(b, " for (; _t%d ? (sp_float)_t%d < _t%d : ((%s) || (_t%d ? ((%s) ? sp_poly_lt(_t%d, _t%d) : sp_poly_le(_t%d, _t%d))"
+                " : ((%s) ? sp_poly_gt(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d))));"
+                " _t%d = _t%d ? sp_box_float(sp_float_step_at(_t%d, _t%d, _t%d, ++_t%d)) : sp_poly_add(_t%d, _t%d))",
+             tf, fi, fn, open, td, excl, tc, tl, tc, tl, excl, tc, tl, tc, tl,
+             tc, tf, fb, fl, fs, fi, tc, ts);
 }
 
 /* The boxed walk of an Integer Range by a Rational step (an_range_step_rat),
@@ -3376,10 +3401,11 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tss);
     /* a span past 2**30 steps raises as the sp_int form below does, rather
        than pushing until memory runs out */
-    char guard[256];
+    char guard[320];
+    /* (a boxed limit that holds nil has no end to stop at) */
     snprintf(guard, sizeof guard,
-             "if (sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0)"
-             " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tll, tcc, tss);
+             "if (_t%d.tag == SP_TAG_NIL || (sp_poly_cmp_ck(_t%d, _t%d), sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0))"
+             " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tll, tcc, tll, tll, tcc, tss);
     buf_puts(b, " ");
     emit_boxed_step_head(b, tcc, tll, tss, "0", "0", guard);
     buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", trr, tcc);

@@ -12070,18 +12070,30 @@ int an_rat_operand(Compiler *c, int n, int infer) {
    Float among them: it walks the boxed sequence a Rational receiver walks,
    so `1.step(3, 1r/2)` yields 1, (3/2), (2/1), ... In the Integer loop the
    step 1/2 was the sp_int 0. A nil limit (no end) is left to the endless
-   walk. */
+   walk.
+   A boxed limit or step whose kind is known only at run time (`s = 1;
+   s = s + 0.5`, a parameter called with 1 and with 0.5) walks boxed too:
+   the walk turns into CRuby's Float walk when one is a Float, where the
+   Integer loop cut 1.5 to 1 and 0.5 to 0. Under --int-overflow=promote
+   every Integer local is boxed, so there only a Rational one does. */
 int an_step_rat_bound(Compiler *c, int id, int infer) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, id, "arguments");
   int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
   if (sc < 1 || sc > 2 || nt_kind(nt, sv[0]) == NK_NilNode) return 0;
-  int rat = 0;
+  int bn = nt_ref(nt, id, "block");
+  int blk = bn >= 0 && nt_kind(nt, bn) == NK_BlockNode;
+  int rat = 0, flt = 0, poly = 0;
   for (int k = 0; k < sc; k++) {
-    if ((infer ? infer_type(c, sv[k]) : comp_ntype(c, sv[k])) == TY_FLOAT) return 0;
-    if (an_rat_operand(c, sv[k], infer)) rat = 1;
+    TyKind t = infer ? infer_type(c, sv[k]) : comp_ntype(c, sv[k]);
+    if (t == TY_FLOAT) flt = 1;
+    else if (an_rat_operand(c, sv[k], infer)) rat = 1;
+    else if (t == TY_POLY && !g_promote_mode) poly = 1;
   }
-  return rat;
+  /* (without a block, a boxed limit stays with emit_step_boxed_limit: a
+     nil one there is an endless Enumerator, and it takes a boxed step) */
+  if (!blk && poly && !rat && (infer ? infer_type(c, sv[0]) : comp_ntype(c, sv[0])) == TY_POLY) return 0;
+  return poly || (rat && !flt);
 }
 
 /* An Integer Range's step(r) with a Rational r (a literal's bounds both
