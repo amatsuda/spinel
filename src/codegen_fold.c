@@ -3290,7 +3290,7 @@ static int emit_step_boxed_limit(Compiler *c, int recv, const int *sv, int sc, B
                 " ? sp_box_float_array(sp_FloatArray_from_step((sp_float)_er%d, sp_num_to_f(_el%d), sp_num_to_f(_es%d), 0))"
                 " : sp_box_int_array(sp_IntArray_from_range_step(_er%d, _el%d.tag == SP_TAG_FLT"
                 " ? (_el%d.v.f > 0 ? (sp_int)INTPTR_MAX : (sp_int)INTPTR_MIN) : sp_poly_arg_int_chk(_el%d), sp_poly_arg_int_chk(_es%d), 0)))); })",
-             t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t);
+             t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t, t);
   return 1;
 }
 
