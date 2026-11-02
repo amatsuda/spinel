@@ -4231,6 +4231,19 @@ static int sp_node_is_control(const pm_node_t *node) {
   }
 }
 
+/* Can the bytes of a path literal be written back into a spliced
+   `require_relative <path>` as they are? A backslash is an escape in either
+   quote; a `#` (which `#{`, `#@` and `#$` would open an interpolation in
+   double quotes, as in `aep/index#1`, #10724) or a `"` puts the path in
+   single quotes (sp_req_path_quote), where a `'` could not stand. */
+static int sp_req_path_ok(const char *p, size_t n) {
+  return !memchr(p, '\\', n) && !(memchr(p, '\'', n) && (memchr(p, '#', n) || memchr(p, '"', n)));
+}
+/* ...and the quote the splice writes it in */
+static char sp_req_path_quote(const char *p, size_t n) {
+  return memchr(p, '#', n) || memchr(p, '"', n) ? '\'' : '"';
+}
+
 /* a single- or double-quoted literal on one line */
 static int sp_req_quoted_line(const pm_location_t *open, const pm_location_t *close) {
   return open && close && open->start && close->start && (*open->start == '"' || *open->start == '\'') &&
@@ -4432,7 +4445,7 @@ static bool sp_join_visit(const pm_node_t *node, void *data) {
     const pm_string_node_t *sn = (const pm_string_node_t *)node;
     if (!sn->opening_loc.start || (*sn->opening_loc.start != '"' && *sn->opening_loc.start != '\'')) return false;
     piece = (const char *)sn->content_loc.start; plen = (size_t)(sn->content_loc.end - sn->content_loc.start);
-    if (memchr(piece, '#', plen)) j->bad = 1;
+    if (!sp_req_path_ok(piece, plen)) j->bad = 1;
     break;
   }
   case PM_INTERPOLATED_STRING_NODE: case PM_SOURCE_FILE_NODE:
@@ -4508,7 +4521,7 @@ static void sp_req_edit_put(SpReqEdit *e, const char *str, size_t kw, size_t ple
   st->arg = kw + (st->plain ? 9 : 18);     /* past `require "` or `require_relative "` */
   st->arg_len = plen;
   st->end = st->arg + plen + 1;
-  st->quote = '"';
+  st->quote = st->arg >= 1 && e->text[st->arg - 1] == '\'' ? '\'' : '"';   /* single for a path with a `#` */
 }
 
 /* `__dir__` or `File.dirname(__FILE__)`: the requiring file's directory. */
@@ -4527,7 +4540,7 @@ static int sp_req_plain(const pm_node_t *n, const char **str, size_t *len) {
   const pm_string_node_t *sn = (const pm_string_node_t *)n;
   if (!sp_req_quoted_line(&sn->opening_loc, &sn->closing_loc)) return 0;
   *str = (const char *)sn->content_loc.start; *len = (size_t)(sn->content_loc.end - sn->content_loc.start);
-  return !memchr(*str, '#', *len) && !memchr(*str, '\\', *len);
+  return sp_req_path_ok(*str, *len);
 }
 
 /* `dir + "a" + "b"...`: the literals' bytes after the directory, appended to
@@ -4546,7 +4559,9 @@ static int sp_req_dir_sum(const pm_parser_t *pp, const pm_node_t *n, char *out, 
 
 /* The call written as `require_relative "<path>"` where it stands (a path with
    `#{` raises LoadError at run time, as any computed one). */
-static int sp_req_splice_relative(SpReqSiteScan *s, const pm_call_node_t *call, const char *path) {
+/* ...written in quote `q`: the one the path takes (sp_req_path_quote), or
+   `"` for the `#{...}` an unresolved path is spelled as */
+static int sp_req_splice_relative(SpReqSiteScan *s, const pm_call_node_t *call, const char *path, char q) {
   const char *t = s->text;
   size_t cs = (size_t)((const char *)call->base.location.start - t), ce = (size_t)((const char *)call->base.location.end - t);
   if (memchr(t + cs, '\n', ce - cs)) return 0;
@@ -4557,7 +4572,7 @@ static int sp_req_splice_relative(SpReqSiteScan *s, const pm_call_node_t *call, 
   size_t plen = strlen(path), cap = plen + 20;
   char *buf = malloc(cap);
   if (!buf) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  snprintf(buf, cap, "require_relative \"%s\"", path);
+  snprintf(buf, cap, "require_relative %c%s%c", q, path, q);
   sp_req_edit_put(sp_req_edit_new(s, cs, ce), buf, 0, plen, &place);
   free(buf);
   return 1;
@@ -4577,7 +4592,7 @@ static int sp_req_dir_literal(const pm_parser_t *pp, const pm_node_t *n, char *o
     const pm_string_node_t *tail = (const pm_string_node_t *)is->parts.nodes[1];
     str = (const char *)tail->content_loc.start; len = (size_t)(tail->content_loc.end - tail->content_loc.start);
     if (!es || es->body.size != 1 || !sp_req_is_dir(pp, es->body.nodes[0]) || len < 2 || *str != '/' || len >= cap ||
-        memchr(str, '#', len) || memchr(str, '\\', len)) return 0;
+        !sp_req_path_ok(str, len)) return 0;
     memcpy(out, str + 1, len - 1); o = len - 1;
   }
   else if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
@@ -4616,7 +4631,7 @@ static int sp_req_dir_relative(SpReqSiteScan *s, const pm_call_node_t *call, con
   char path[512];
   size_t len;
   if (!s->dir || call->block || call->arguments->arguments.size != 1 || !sp_req_dir_literal(s->parser, arg, path, sizeof path, &len)) return 0;
-  return sp_req_splice_relative(s, call, path);
+  return sp_req_splice_relative(s, call, path, sp_req_path_quote(path, len));
 }
 
 /* A computed path Spinel cannot resolve: the call raises LoadError at run
@@ -4627,7 +4642,7 @@ static int sp_req_unresolved(SpReqSiteScan *s, const pm_call_node_t *call, const
   char *path = malloc(cap);
   if (!path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   snprintf(path, cap, "#{%.*s}", (int)alen, (const char *)arg->location.start);
-  int r = sp_req_splice_relative(s, call, path);
+  int r = sp_req_splice_relative(s, call, path, '"');
   free(path);
   return r;
 }
@@ -4735,15 +4750,16 @@ static int sp_req_loop(SpReqSiteScan *s, const pm_call_node_t *c) {
     snprintf(word, sizeof word, "%.*s", (int)(sn->content_loc.end - sn->content_loc.start), (const char *)sn->content_loc.start);
     sp_req_computed(s, req, var, word, lo, hi, !brace, joined, sizeof joined);
     size_t at = e->text ? strlen(e->text) : 0;
+    char q = sp_req_path_quote(joined, strlen(joined));
     if ((int)i < old_lines) {               /* a line of its own, at the loop's indentation */
       if (i) { sp_req_edit_put(e, "\n", 0, 0, NULL); at++; }
-      snprintf(buf, sizeof buf, "%.*srequire_relative \"%s\"", (int)(w - p), t + p, joined);
+      snprintf(buf, sizeof buf, "%.*srequire_relative %c%s%c", (int)(w - p), t + p, q, joined, q);
       sp_req_edit_put(e, buf, at + (w - p), strlen(joined), &place);
     }
     else {                                  /* the rest after `; `: hoisted, ahead of the loop's statement */
       SpReqSite joined_place = place;
       joined_place.margin = joined_place.control_only = joined_place.has_modifier = 0;
-      snprintf(buf, sizeof buf, "; require_relative \"%s\"", joined);
+      snprintf(buf, sizeof buf, "; require_relative %c%s%c", q, joined, q);
       sp_req_edit_put(e, buf, at + 2, strlen(joined), &joined_place);
     }
   }
@@ -4776,11 +4792,11 @@ static void sp_req_autoload(SpReqSiteScan *s, const pm_call_node_t *c) {
   }
   else if (sp_req_dir_literal(pp, arg, dl, sizeof dl, &flen)) { fs = dl; dir_rel = 1; }   /* "#{__dir__}/path", File.expand_path('path', __dir__) */
   else return;
-  if (memchr(fs, '#', flen)) return;
+  if (!sp_req_path_ok(fs, flen)) return;
   const char *kw = (dir_rel || sp_autoload_beside(s->dir, fs, flen)) ? "require_relative" : "require";
   int rel = kw[7] == '_';
-  char buf[1400];
-  snprintf(buf, sizeof buf, "%s \"%.*s\"", kw, (int)flen, fs);
+  char buf[1400], q = sp_req_path_quote(fs, flen);
+  snprintf(buf, sizeof buf, "%s %c%.*s%c", kw, q, (int)flen, fs, q);
   size_t a = (size_t)((const char *)c->base.location.start - t), b = (size_t)((const char *)c->base.location.end - t);
   if (s->is_main) {                        /* the require in place */
     SpReqSite place;
@@ -4820,8 +4836,8 @@ static int sp_req_rewrite_note(SpReqSiteScan *s, const pm_call_node_t *c) {
   memset(&place, 0, sizeof place);
   place.kw = (size_t)(cs - t); place.end = (size_t)((const char *)c->base.location.end - t);
   sp_req_site_place(s, (const pm_node_t *)c, &place);
-  char buf[700];
-  snprintf(buf, sizeof buf, "%.*srequire_relative \"%s\"\n", (int)(cs - lo), lo, joined);
+  char buf[700], q = sp_req_path_quote(joined, strlen(joined));
+  snprintf(buf, sizeof buf, "%.*srequire_relative %c%s%c\n", (int)(cs - lo), lo, q, joined, q);
   sp_req_edit_put(sp_req_edit_new(s, p, next), buf, (size_t)(cs - lo), strlen(joined), &place);
   return 0;
 }
