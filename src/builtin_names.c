@@ -860,6 +860,15 @@ int is_bivar_keyed_class(const char *n) {
      a String an instance variable is kept on that identity) */
   return sp_streq(n, "Array") || sp_streq(n, "Hash") || sp_streq(n, "Random") || sp_streq(n, "String");
 }
+/* A runtime handle with no ivar slots whose attributes live in a store of
+   its own (the walk's attr form, desugar_handle_ivars): the store's reader
+   (write 0) or writer, a Thread's thread-local table or a Fiber's storage;
+   NULL for any other class */
+const char *handle_attr_store(const char *n, int write) {
+  if (sp_streq(n, "Thread")) return write ? "thread_variable_set" : "thread_variable_get";
+  if (sp_streq(n, "Fiber")) return write ? "__storage_set" : "__storage_get";
+  return NULL;
+}
 int is_string_class_name(const char *n) {
   return sp_streq(n, "String");
 }

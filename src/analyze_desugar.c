@@ -2049,7 +2049,7 @@ int desugar_explicit_receiver_mixin(Compiler *c) {
    `class Fiber` reopening, or in a module only Fiber includes or prepends
    (fiber-annotation's Fiber::Annotation), emitted a member sp_Fiber does
    not have. Such an ivar lives where `Fiber.attr_accessor :x` keeps x
-   (desugar_handle_attr_accessor), under the same key, so the two agree:
+   (handle_attr_form), under the same key, so the two agree:
      @x       ->  __storage_get(:__attr_x)        (Thread: thread_variable_get)
      @x = v   ->  __storage_set(:__attr_x, v)     (Thread: thread_variable_set)
    and a receiverless `attr_accessor :x` in the body becomes that pair of
@@ -3062,19 +3062,27 @@ int desugar_handle_reopen_self_recv(Compiler *c) {
   return changed;
 }
 
-/* ---- `Thread.attr_accessor :x` / `Fiber.attr_accessor :x` -------------------
+/* ---- `Thread.attr_accessor :x` / `Fiber.attr_accessor :x`, a form of the walk (#9898) ----
    An attribute on every thread and fiber object -- activesupport's
    IsolatedExecutionState gives both an active_support_execution_state. A
    thread and a fiber are runtime handles with no ivar slots, but each has a
-   store of its own: the thread's thread-local table, the fiber's storage.
-   The declaration becomes a reopening appended to the program:
-     class Thread
+   store of its own (handle_attr_store): the thread's thread-local table,
+   the fiber's storage. The registration's walk runs the declaration as the
+   reopening it means:
+     class ::Thread
        def x = thread_variable_get(:__attr_x)
        def x=(val) = thread_variable_set(:__attr_x, val)
      end
    (a fiber's through __storage_get / __storage_set on self), keyed apart
-   from the program's own thread variables. attr_reader / attr_writer give
-   one half. Symbol names only; anything else leaves the call alone. */
+   from the program's own thread variables; desugar_handle_ivars reads `@x`
+   in a reopening under the same key. attr_reader / attr_writer give one
+   half. The reopening goes through the host in the declaration's place,
+   so the load record holds its versions there, under the declaration's
+   frame and conditions. A declaration the load phase does not run where it
+   stands -- in a method body, a lambda or a block kept for later, a branch
+   that never runs, a value -- has no place a class header can take: its
+   reopening goes at the end of its file's top level, and the declaration
+   becomes nil. Symbol names only; anything else leaves the call alone. */
 static int ma_def(NodeTable *nt, const char *name, int self_recv, int with_val, int body_stmt, long long line);
 static int ha_call(NodeTable *nt, const char *m, const char *key, int with_val, long long line) {
   int cl = nt_new_node(nt, "CallNode"); if (cl < 0) return -1;
@@ -3095,78 +3103,119 @@ static int ha_call(NodeTable *nt, const char *m, const char *key, int with_val, 
   nt_node_set_ref(nt, cl, "arguments", args);
   return cl;
 }
-int desugar_handle_attr_accessor(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int root = nt->root_id;
-  int top = root >= 0 ? nt_ref(nt, root, "statements") : -1;
-  if (top < 0 || nt_kind(nt, top) != NK_StatementsNode) return 0;
-  int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) continue;
-    const char *nm = nt_str(nt, id, "name");
-    int reader = nm && (is_attr_reader_family(nm));
-    int writer = nm && (is_attr_writer_family(nm));
-    if (!reader && !writer) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
-    if (!rn || (!sp_streq(rn, "Thread") && !sp_streq(rn, "Fiber"))) continue;
-    int is_thread = sp_streq(rn, "Thread");
-    int args = nt_ref(nt, id, "arguments");
-    int an = 0; const int *av0 = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an < 1 || !av0) continue;
-    int ok = 1;
-    for (int a = 0; a < an; a++) if (nt_kind(nt, av0[a]) != NK_SymbolNode || !nt_str(nt, av0[a], "value")) ok = 0;
-    if (!ok) continue;
-    int *av = (int *)malloc(sizeof(int) * (size_t)an);
-    if (!av) continue;
-    memcpy(av, av0, sizeof(int) * (size_t)an);
-    long long line = nt_int(nt, id, "node_line", 0);
-    int *defs = NULL, nd = 0;
-    for (int a = 0; a < an && ok; a++) {
-      const char *base = nt_str(nt, av[a], "value");
-      char key[300], wn[300];
-      snprintf(key, sizeof key, "__attr_%s", base);
-      snprintf(wn, sizeof wn, "%s=", base);
-      if (reader) {
-        int body = ha_call(nt, is_thread ? "thread_variable_get" : "__storage_get", key, 0, line);
-        int d = body >= 0 ? ma_def(nt, base, 0, 0, body, line) : -1;
-        if (d < 0) { ok = 0; break; }
-        xc_push(&defs, &nd, d);
-      }
-      if (writer) {
-        int body = ha_call(nt, is_thread ? "thread_variable_set" : "__storage_set", key, 1, line);
-        int d = body >= 0 ? ma_def(nt, wn, 0, 1, body, line) : -1;
-        if (d < 0) { ok = 0; break; }
-        xc_push(&defs, &nd, d);
-      }
+/* The class whose store declaration `call` keeps its attributes in
+   (handle_attr_store), when it is one: `Thread.attr_*` / `Fiber.attr_*`
+   of Symbol names, no block, the receiver's name as written (a read the
+   qualify passes renamed keeps it as qc_orig_name); NULL for any other
+   node */
+const char *handle_attr_decl(const NodeTable *nt, int call) {
+  const char *nm = nt_kind(nt, call) == NK_CallNode && nt_ref(nt, call, "block") < 0 ? nt_str(nt, call, "name") : NULL;
+  int recv = nm && (is_attr_reader_family(nm) || is_attr_writer_family(nm)) ? nt_ref(nt, call, "receiver") : -1;
+  int read = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode;
+  const char *rn = read ? nt_str(nt, recv, "qc_orig_name") : NULL;
+  if (read && !rn) rn = nt_str(nt, recv, "name");
+  int args = rn && handle_attr_store(rn, 0) ? nt_ref(nt, call, "arguments") : -1;
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int a = 0; a < an; a++) if (nt_kind(nt, av[a]) != NK_SymbolNode || !nt_str(nt, av[a], "value")) return NULL;
+  return av && an > 0 ? rn : NULL;
+}
+
+/* The reopening store declaration `call` of class rn means, its header
+   `::Thread` when rooted */
+static int ha_reopening(NodeTable *nt, int call, const char *rn, int rooted) {
+  const char *nm = nt_str(nt, call, "name");
+  int reader = is_attr_reader_family(nm), writer = is_attr_writer_family(nm);
+  int an = 0; const int *av0 = nt_arr(nt, nt_ref(nt, call, "arguments"), "arguments", &an);
+  char cn[64];
+  snprintf(cn, sizeof cn, "%s", rn);
+  int *av = (int *)malloc(sizeof(int) * (size_t)an);
+  if (!av) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(av, av0, sizeof(int) * (size_t)an);
+  long long line = nt_int(nt, call, "node_line", 0);
+  int *defs = NULL, nd = 0;
+  for (int a = 0; a < an; a++) {
+    char base[256], key[300], wn[300];
+    snprintf(base, sizeof base, "%s", nt_str(nt, av[a], "value"));
+    snprintf(key, sizeof key, "__attr_%s", base);
+    snprintf(wn, sizeof wn, "%s=", base);
+    if (reader) {
+      int body = ha_call(nt, handle_attr_store(cn, 0), key, 0, line);
+      int d = body >= 0 ? ma_def(nt, base, 0, 0, body, line) : -1;
+      if (d >= 0) xc_push(&defs, &nd, d);
     }
-    free(av);
-    if (!ok || !nd) { free(defs); continue; }
-    int cls = nt_new_node(nt, "ClassNode");
-    int cp = nt_new_node(nt, "ConstantReadNode");
-    int body = nt_new_node(nt, "StatementsNode");
-    if (cls < 0 || cp < 0 || body < 0) { free(defs); continue; }
-    nt_node_set_str(nt, cp, "name", rn);
-    nt_node_set_ref(nt, cls, "constant_path", cp);
-    nt_node_set_ref(nt, cls, "superclass", -1);
-    nt_node_set_arr(nt, body, "body", defs, nd);
-    nt_node_set_ref(nt, cls, "body", body);
-    nt_node_set_int(nt, cls, "node_line", line);
-    nt_node_set_int(nt, cls, "node_file", nt_int(nt, id, "node_file", 0));
-    free(defs);
-    /* the reopening joins the program's statements; the declaration goes */
-    int tn = 0; const int *tb = nt_arr(nt, top, "body", &tn);
-    int *nb = (int *)malloc(sizeof(int) * (size_t)(tn + 1));
-    if (!nb) continue;
-    memcpy(nb, tb, sizeof(int) * (size_t)tn);
-    nb[tn] = cls;
-    nt_node_set_arr(nt, top, "body", nb, tn + 1);
-    free(nb);
-    nt_node_reset(nt, id, "NilNode");
-    changed = 1;
+    if (writer) {
+      int body = ha_call(nt, handle_attr_store(cn, 1), key, 1, line);
+      int d = body >= 0 ? ma_def(nt, wn, 0, 1, body, line) : -1;
+      if (d >= 0) xc_push(&defs, &nd, d);
+    }
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  free(av);
+  int cls = nt_new_node(nt, "ClassNode");
+  int cp = nt_new_node(nt, rooted ? "ConstantPathNode" : "ConstantReadNode");
+  int body = nt_new_node(nt, "StatementsNode");
+  if (!nd || cls < 0 || cp < 0 || body < 0) { free(defs); return -1; }
+  nt_node_set_str(nt, cp, "name", cn);
+  if (rooted) nt_node_set_ref(nt, cp, "parent", -1);
+  nt_node_set_ref(nt, cls, "constant_path", cp);
+  nt_node_set_ref(nt, cls, "superclass", -1);
+  nt_node_set_arr(nt, body, "body", defs, nd);
+  nt_node_set_ref(nt, cls, "body", body);
+  nt_node_set_int(nt, cls, "node_line", line);
+  nt_node_set_int(nt, cls, "node_file", nt_int(nt, call, "node_file", 0));
+  free(defs);
+  return cls;
+}
+
+/* Declaration `call`, which the walk has reached in file `file` -- statement
+   j of `list` the load phase runs there (now), or any other node: the
+   reopening, now in its place (its first statement, which the walk takes
+   next); -2 for one put at the end of the file's top level, the
+   declaration nil; -1 for no declaration, or one whose receiver the record
+   resolves there to a constant of the program's (`M::Thread`: a reopening
+   of the core class is none), which the name as written keeps where the
+   record cannot tell. A declaration in a method body or under a block
+   between it and its frame keeps the end of the file. */
+int handle_attr_form(Compiler *c, int call, int list, int j, int now, int file) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  HostStep *h = elab_walk_host(c);
+  const char *rn = h ? handle_attr_decl(nt, call) : NULL;
+  if (!rn || elab_const_at(c, call, rn, elab_point_of(c, call), NULL) == ELAB_YES) return -1;
+  int frame = -1, bn = 0;
+  const int *bb = now && list >= 0 ? nt_arr(nt, list, "body", &bn) : NULL;
+  int here = bb && j >= 0 && j < bn && bb[j] == call && elab_stmt_list(c, call, &frame) == list &&
+             elab_point_of(c, call).region >= 0;
+  const int *par = here ? comp_parent_map(c) : NULL;
+  for (int a = par ? par[list] : -1; a >= 0 && a != frame; a = par[a])
+    if (nt_kind(nt, a) == NK_BlockNode || nt_kind(nt, a) == NK_LambdaNode) here = 0;
+  int cls = ha_reopening(nt, call, rn, here && frame >= 0);
+  if (cls < 0) return -1;
+  comp_grow_node_arrays(c);
+  int at = j, owner = frame, top = list;
+  if (!here) {
+    top = prog_root_stmts(c, file);
+    if (top < 0) return -1;
+    owner = -1;
+    bb = nt_arr(nt, top, "body", &bn);
+    at = bn;
+  }
+  int *nb = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
+  if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(nb, bb, sizeof(int) * (size_t)bn);
+  nb[at] = cls;
+  nt_node_set_arr(nt, top, "body", nb, here ? bn : bn + 1);
+  free(nb);
+  host_splice(c, h, owner, top, at, 1, NULL, NULL);
+  comp_grow_node_arrays(c);
+  if (!here) {
+    nt_node_reset(nt, call, "NilNode");
+    return -2;
+  }
+  /* the call leaves the program; its statement is the reopening's */
+  bb = nt_arr(nt, top, "body", &bn);
+  int first = bb[at];
+  elab_walk_replace(c, call, first);
+  nt_subtree_blank(nt, call);
+  return first;
 }
 
 /* Proc#>> / #<< with a Method operand: wrap the Method side in #to_proc at the

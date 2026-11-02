@@ -433,7 +433,7 @@ void elab_header_opened(Compiler *c, int node, int cls, int made);
 int elab_rec_open(Compiler *c, int node, int cp, const char *cname, int encl);
 void header_parent_encloses(Compiler *c, int par, int child, const char *leaf, int named);
 void elab_load_sites(Compiler *c, int stmt, void (*fn)(void *ud, int load, int in_place), void *ud);
-void walk_scope_stmt(Compiler *c, int stmt, int scope_idx, ElabPos pos);
+void walk_scope_stmt(Compiler *c, int stmt, int k, int scope_idx, ElabPos pos);
 int scope_own_defaults(Compiler *c, int di);
 void register_module_functions(Compiler *c);
 void register_method_visibility(Compiler *c);
@@ -739,7 +739,6 @@ int desugar_sclass_readers_through_class(Compiler *c);
 int desugar_constant_path_self_alias(Compiler *c);
 int desugar_dynamic_const_get_arms(Compiler *c);
 int desugar_reopen_implicit_self(Compiler *c);
-int desugar_handle_attr_accessor(Compiler *c);
 int desugar_handle_ivars(Compiler *c);
 int desugar_fiber_prepended_init(Compiler *c);
 int desugar_handle_reopen_self_recv(Compiler *c);
@@ -849,6 +848,8 @@ void host_begin(HostStep *h, LowerCtx *lc);
 int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* the n statements at body[at], in a frame of locals but gone (NULL: not known): the count they become */
 void host_end(Compiler *c, HostStep *h);
 int ct_macro_form(Compiler *c, int call, int list, int j);   /* analyze_ct.c: class-body macro call `call`, statement j of `list`, run under the walk: the statement now first in its place, or -1 */
+const char *handle_attr_decl(const NodeTable *nt, int call);   /* analyze_desugar.c: Thread or Fiber for a `Thread.attr_accessor :x` declaration, else NULL */
+int handle_attr_form(Compiler *c, int call, int list, int j, int now, int file);   /* analyze_desugar.c: `Thread.attr_accessor :x` reached by the walk (statement j of list, run there when now, in file): the reopening in its place (its first statement), -2 at the file's end, -1 none */
 void ct_macro_facts_free(struct CtMacroFacts *f);
 struct HostStep *elab_walk_host(Compiler *c);   /* analyze_elab.c: the host a walk-time form splices through, while the walk runs */
 int elab_walk_replace(Compiler *c, int old, int with);   /* ...and node with, spliced in place of entered statement old, takes its point */
