@@ -1,0 +1,15 @@
+name: debug-glob
+on:
+  push:
+    branches: [debug-glob-ci]
+jobs:
+  glob:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - run: ruby -v
+      - run: ruby --enable-frozen-string-literal test/dir_glob_casefold.rb | tee /tmp/linux.out
+      - run: diff test/dir_glob_casefold.rb.expected /tmp/linux.out || true
