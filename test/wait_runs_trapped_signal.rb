@@ -37,11 +37,37 @@ Process.wait(pid)
 puts "wait returned #{$?.exitstatus}"
 
 # the backtick waits too: a CHLD trap that raises lands in the rescue
-# around it
+# around it, and $? is nil then, as system and the backtick clear it for
+# their wait; a raise out of Process.wait leaves $? as it was
 trap("CHLD") { raise "CHLD raised" }
 begin
   out = `echo from the child`
   puts "backtick returned #{out.inspect}"
 rescue => e
-  puts e.message
+  puts "#{e.message}, $? #{$?.inspect}"
 end
+begin
+  system("true")
+  puts "system returned"
+rescue => e
+  puts "#{e.message}, $? #{$?.inspect}"
+end
+before = $?
+begin
+  Process.wait(spawn("true"))
+  puts "wait returned"
+rescue => e
+  puts "#{e.message}, $? kept #{$?.equal?(before)}"
+end
+
+# a trap that waits for a child of its own leaves $? to the caller's child
+$inner = false
+trap("CHLD") { unless $inner; $inner = true; system("sh", "-c", "exit 7"); end }
+`sh -c 'exit 3'`
+puts "after the backtick #{$?.exitstatus}"
+$inner = false
+system("sh", "-c", "exit 4")
+puts "after system #{$?.exitstatus}"
+$inner = false
+Process.wait(spawn("sh", "-c", "exit 5"))
+puts "after wait #{$?.exitstatus}"

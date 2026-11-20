@@ -1806,21 +1806,24 @@ const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
   }
   close(fds[0]);
   int st = 0;
+  sp_last_pid = 0;   /* $? is nil for the wait, as CRuby clears it */
   { extern int sp_sched_wait_child(int pid, int *status);
     if (sp_sched_wait_child((int)pid, &st) < 0) st = -1; }
   void sp_sig_after_wait(void);
-  /* the same wait-status layout sp_system_args leaves in $? */
-  sp_last_status = st;
-  sp_last_pid = (int)pid;
   char *r = sp_str_alloc(len);
   if (len) memcpy(r, buf, len);
   r[len] = 0;
   sp_str_set_len(r, len);
   free(buf);
   /* the signals recorded in the wait run once the output is a String and
-     the buffer is freed: a trap that raises leaves nothing behind */
+     the buffer is freed, and before $? is stored: a trap that raises
+     leaves nothing behind, and one that waits for a child of its own
+     leaves $? to this child */
   SP_GC_ROOT_STR(r);
   sp_sig_after_wait();
+  /* the same wait-status layout sp_system_args leaves in $? */
+  sp_last_status = st;
+  sp_last_pid = (int)pid;
   return r;
 }
 
@@ -4256,10 +4259,11 @@ void sp_sig_run_pending(void) {
     sp_sig_unblock(no, 0);
   }
 }
-/* A wait for a child has answered and its caller has stored $?: the signals
-   recorded while it went on run now, as CRuby runs them on the way out of
-   its wait (a trap for CHLD, which the child's own end records; a default
-   SIGINT, whose raise then leaves $? set). */
+/* A wait for a child has answered: the signals recorded while it went on
+   run now, before the caller stores $?, as CRuby runs them on the way out
+   of its wait (a trap for CHLD, which the child's own end records): a
+   trap that waits for a child of its own leaves $? to the caller's child,
+   and one that raises leaves $? as it was. */
 void sp_sig_after_wait(void) {
   if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
 }

@@ -7,4 +7,9 @@ wait2 returned true 0
 Interrupt in the wait
 CHLD ran
 wait returned 0
-CHLD raised
+CHLD raised, $? nil
+CHLD raised, $? nil
+CHLD raised, $? kept true
+after the backtick 3
+after system 4
+after wait 5

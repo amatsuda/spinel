@@ -777,13 +777,13 @@ static pid_t process_wait_reap(sp_int pid, int flags, int *status) {
     }
     sp_raise_cls("SystemCallError", sp_errf_errno("waitpid failed", errno));
   }
+  /* a signal recorded while the wait went on runs before $? is stored, as
+     CRuby runs it on the way out of its wait (lib/sp_cold.c) */
+  sp_sig_after_wait();
   if (r > 0) {
     sp_last_status = *status;
     sp_last_pid = (int)r;
   }
-  /* a signal recorded while the wait went on runs now that $? is stored, as
-     CRuby runs it on the way out of its wait (lib/sp_cold.c) */
-  sp_sig_after_wait();
   return r;
 }
 
